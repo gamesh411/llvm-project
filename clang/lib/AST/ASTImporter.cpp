@@ -5556,6 +5556,10 @@ ExpectedDecl ASTNodeImporter::VisitVarTemplateDecl(VarTemplateDecl *D) {
 
     Decl *Found = FoundDecl;
     if (VarTemplateDecl *FoundTemplate = dyn_cast<VarTemplateDecl>(Found)) {
+      // FIXME: Use the templated decl, some linkage flags are set only there.
+      if (!hasSameVisibilityContext(FoundTemplate->getTemplatedDecl(),
+                                    D->getTemplatedDecl()))
+        continue;
       if (IsStructuralMatch(D, FoundTemplate)) {
         // The variable templates structurally match; call it the same template.
         Importer.MapImported(D->getTemplatedDecl(),
