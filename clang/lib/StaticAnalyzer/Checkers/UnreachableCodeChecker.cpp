@@ -147,6 +147,10 @@ void UnreachableCodeChecker::checkEndAnalysis(ExplodedGraph &G,
     PathDiagnosticLocation DL;
     SourceLocation SL;
     if (const Stmt *S = getUnreachableStmt(CB)) {
+      // C++ try statements are always reachable if their predecessor is also
+      // reachable.
+      if (isa<CXXTryStmt>(S))
+	continue;
       // In macros, 'do {...} while (0)' is often used. Don't warn about the
       // condition 0 when it is unreachable.
       if (S->getBeginLoc().isMacroID())
