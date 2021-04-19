@@ -1,10 +1,13 @@
-// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference \
+// RUN: %clang_analyze_cc1 %s -Wno-null-dereference \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=unix.cstring \
 // RUN:   -analyzer-checker=unix.Malloc \
+// RUN:   -analyzer-checker=alpha.security.taint \
 // RUN:   -analyzer-checker=alpha.unix.cstring \
 // RUN:   -analyzer-checker=debug.ExprInspection \
-// RUN:   -analyzer-config eagerly-assume=false
+// RUN:   -analyzer-config alpha.unix.cstring.OutOfBounds:ConsiderTaint=true \
+// RUN:   -analyzer-config eagerly-assume=false \
+// RUN:   -verify=expected,tainted,OOB-consider-tainted
 //
 // RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference -DUSE_BUILTINS \
 // RUN:   -analyzer-checker=core \
@@ -22,7 +25,7 @@
 // RUN:   -analyzer-checker=debug.ExprInspection \
 // RUN:   -analyzer-config eagerly-assume=false
 //
-// RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference \
+// RUN: %clang_analyze_cc1 %s -Wno-null-dereference \
 // RUN:   -DUSE_BUILTINS -DVARIANT \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=alpha.security.taint \
@@ -30,7 +33,8 @@
 // RUN:   -analyzer-checker=unix.Malloc \
 // RUN:   -analyzer-checker=alpha.unix.cstring \
 // RUN:   -analyzer-checker=debug.ExprInspection \
-// RUN:   -analyzer-config eagerly-assume=false
+// RUN:   -analyzer-config eagerly-assume=false \
+// RUN:   -verify=expected,tainted
 //
 // RUN: %clang_analyze_cc1 -verify %s -Wno-null-dereference \
 // RUN:   -DSUPPRESS_OUT_OF_BOUND \
@@ -480,6 +484,23 @@ void strcat_overflow_2(char *y) {
     strcat(x, y); // expected-warning{{String concatenation function overflows the destination buffer}}
 }
 #endif
+
+void strcat_overflow_tainted_dst_extent(char *y) {
+  int n;
+  scanf("%d", &n);
+  char *p = malloc(n); // tainted-warning {{Untrusted data is used to specify the buffer size}}
+  p[0] = '\0';
+
+  if (strlen(y) == 3)
+    strcat(p, y); // OOB-consider-tainted-warning {{String concatenation function might overflows the destination buffer}}
+  free(p);
+}
+
+void strcat_overflow_tainted_src_content(char *y) {
+  char x[4] = "12";
+  scanf("%s100", y); // Assuming that y is at least 100 bytes long.
+  strcat(x, y);      // FIXME: The extent is not tainted, but we should still emit a warning here.
+}
 
 void strcat_no_overflow(char *y) {
   char x[5] = "12";
