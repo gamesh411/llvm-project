@@ -42,6 +42,8 @@
 
 #include "ErrnoModeling.h"
 #include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
+#include "clang/StaticAnalyzer/Checkers/Taint.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -124,7 +126,15 @@ class StdLibraryFunctionsChecker
                                   CheckerContext &C) const = 0;
     virtual ValueConstraintPtr negate() const {
       llvm_unreachable("Not implemented");
-    };
+    }
+
+    virtual void markInteresting(const CallEvent &Call,
+                                 PathSensitiveBugReport &BR) const {
+      BR.markInteresting(getArgSVal(Call, getArgNo()));
+    }
+
+    virtual bool dependsOnTaintedValue(const CallEvent &Call,
+                                       CheckerContext &C) const = 0;
 
     // Check whether the constraint is malformed or not. It is malformed if the
     // specified argument has a mismatch with the given FunctionDecl (e.g. the
@@ -226,6 +236,12 @@ class StdLibraryFunctionsChecker
       return std::make_shared<RangeConstraint>(Tmp);
     }
 
+    bool dependsOnTaintedValue(const CallEvent &Call,
+                               CheckerContext &C) const override {
+      assert(getArgNo() != Ret);
+      return taint::isTainted(Call.getState(), Call.getArgSVal(getArgNo()));
+    }
+
     bool checkSpecificValidity(const FunctionDecl *FD) const override {
       const bool ValidArg =
           getArgType(FD, ArgN)->isIntegralType(FD->getASTContext());
@@ -249,6 +265,21 @@ class StdLibraryFunctionsChecker
     ProgramStateRef apply(ProgramStateRef State, const CallEvent &Call,
                           const Summary &Summary,
                           CheckerContext &C) const override;
+
+    void markInteresting(const CallEvent &Call,
+                         PathSensitiveBugReport &BR) const override {
+      BR.markInteresting(getArgSVal(Call, getArgNo()));
+      BR.markInteresting(getArgSVal(Call, getOtherArgNo()));
+    }
+
+    bool dependsOnTaintedValue(const CallEvent &Call,
+                               CheckerContext &C) const override {
+      assert(getArgNo() != Ret);
+      assert(getOtherArgNo() != Ret);
+      ProgramStateRef State = Call.getState();
+      return taint::isTainted(State, Call.getArgSVal(getArgNo())) ||
+             taint::isTainted(State, Call.getArgSVal(getOtherArgNo()));
+    }
   };
 
   class NotNullConstraint : public ValueConstraint {
@@ -278,6 +309,12 @@ class StdLibraryFunctionsChecker
       NotNullConstraint Tmp(*this);
       Tmp.CannotBeNull = !this->CannotBeNull;
       return std::make_shared<NotNullConstraint>(Tmp);
+    }
+
+    bool dependsOnTaintedValue(const CallEvent &Call,
+                               CheckerContext &C) const override {
+      assert(getArgNo() != Ret);
+      return false;
     }
 
     bool checkSpecificValidity(const FunctionDecl *FD) const override {
@@ -378,6 +415,49 @@ class StdLibraryFunctionsChecker
       BufferSizeConstraint Tmp(*this);
       Tmp.Op = BinaryOperator::negateComparisonOp(Op);
       return std::make_shared<BufferSizeConstraint>(Tmp);
+    }
+
+    void markInteresting(const CallEvent &Call,
+                         PathSensitiveBugReport &BR) const override {
+      BR.markInteresting(getArgSVal(Call, getArgNo()));
+      if (SizeArgN.hasValue())
+        BR.markInteresting(getArgSVal(Call, SizeArgN.getValue()));
+      if (SizeMultiplierArgN.hasValue())
+        BR.markInteresting(getArgSVal(Call, SizeMultiplierArgN.getValue()));
+    }
+
+    bool dependsOnTaintedValue(const CallEvent &Call,
+                               CheckerContext &C) const override {
+      assert(getArgNo() != Ret);
+      ProgramStateRef State = Call.getState();
+
+      const auto IsExtentTainted = [&C, State](SVal BufferVal) -> bool {
+        const MemRegion *Buffer = BufferVal.getAsRegion();
+        if (!Buffer)
+          return false;
+        SVal Extent = getDynamicExtent(State, Buffer, C.getSValBuilder());
+        return taint::isTainted(State, Extent);
+      };
+
+      if (IsExtentTainted(Call.getArgSVal(getArgNo())))
+        return true;
+
+      if (SizeArgN.hasValue()) {
+        assert(SizeArgN.getValue() != Ret);
+        SVal SizeArgNVal = Call.getArgSVal(SizeArgN.getValue());
+        if (taint::isTainted(State, SizeArgNVal))
+          return true;
+      }
+
+      if (SizeMultiplierArgN.hasValue()) {
+        assert(SizeMultiplierArgN.getValue() != Ret);
+        SVal SizeMultiplierArgNVal =
+            Call.getArgSVal(SizeMultiplierArgN.getValue());
+        if (taint::isTainted(State, SizeMultiplierArgNVal))
+          return true;
+      }
+
+      return false;
     }
 
     bool checkSpecificValidity(const FunctionDecl *FD) const override {
@@ -727,17 +807,21 @@ private:
 
   void reportBug(const CallEvent &Call, ExplodedNode *N,
                  const ValueConstraint *VC, const Summary &Summary,
-                 CheckerContext &C) const {
+                 CheckerContext &C, bool IsTainted = false) const {
     if (!ChecksEnabled[CK_StdCLibraryFunctionArgsChecker])
       return;
+
     std::string Msg =
         (Twine("Function argument constraint is not satisfied, constraint: ") +
-         VC->getName().data())
+         VC->getName().data() +
+         (IsTainted ? "; It depends on tainted value" : ""))
             .str();
+
     if (!BT_InvalidArg)
       BT_InvalidArg = std::make_unique<BugType>(
           CheckNames[CK_StdCLibraryFunctionArgsChecker],
           "Unsatisfied argument constraints", categories::LogicError);
+
     auto R = std::make_unique<PathSensitiveBugReport>(*BT_InvalidArg, Msg, N);
 
     for (ArgNo ArgN : VC->getArgsToTrack())
@@ -750,6 +834,9 @@ private:
     R->addNote(VC->describe(C.getState(), Summary), R->getLocation(),
                Call.getArgSourceRange(VC->getArgNo()));
 
+    // FIXME: What if we don't want to mark every part interesting but only a
+    // smaller portion of it.
+    VC->markInteresting(Call, *R);
     C.emitReport(std::move(R));
   }
 
@@ -978,6 +1065,11 @@ void StdLibraryFunctionsChecker::checkPreCall(const CallEvent &Call,
     if (FailureSt && !SuccessSt) {
       if (ExplodedNode *N = C.generateErrorNode(NewState))
         reportBug(Call, N, Constraint.get(), Summary, C);
+      break;
+    } else if (FailureSt && SuccessSt &&
+               Constraint->dependsOnTaintedValue(Call, C)) {
+      if (ExplodedNode *N = C.generateErrorNode(NewState))
+        reportBug(Call, N, Constraint.get(), Summary, C, /*IsTainted=*/true);
       break;
     } else {
       // We will apply the constraint even if we cannot reason about the
