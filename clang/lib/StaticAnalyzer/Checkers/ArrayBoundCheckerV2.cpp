@@ -36,6 +36,7 @@ class ArrayBoundCheckerV2 :
   enum OOB_Kind { OOB_Precedes, OOB_Excedes, OOB_Tainted };
 
   void reportOOB(CheckerContext &C, ProgramStateRef errorState, OOB_Kind kind,
+                 SVal InterestingValue = UndefinedVal(),
                  std::unique_ptr<BugReporterVisitor> Visitor = nullptr) const;
 
 public:
@@ -206,6 +207,7 @@ void ArrayBoundCheckerV2::checkLocation(SVal location, bool isLoad,
     if (state_exceedsUpperBound && state_withinUpperBound) {
       if (isTainted(state, *upperboundToCheck)) {
         reportOOB(checkerContext, state_exceedsUpperBound, OOB_Tainted,
+                  *upperboundToCheck,
                   std::make_unique<TaintBugVisitor>(*upperboundToCheck));
         return;
       }
@@ -227,7 +229,7 @@ void ArrayBoundCheckerV2::checkLocation(SVal location, bool isLoad,
 
 void ArrayBoundCheckerV2::reportOOB(
     CheckerContext &checkerContext, ProgramStateRef errorState, OOB_Kind kind,
-    std::unique_ptr<BugReporterVisitor> Visitor) const {
+    SVal InterestingValue, std::unique_ptr<BugReporterVisitor> Visitor) const {
 
   ExplodedNode *errorNode = checkerContext.generateErrorNode(errorState);
   if (!errorNode)
@@ -255,6 +257,7 @@ void ArrayBoundCheckerV2::reportOOB(
   }
 
   auto BR = std::make_unique<PathSensitiveBugReport>(*BT, os.str(), errorNode);
+  BR->markInteresting(InterestingValue);
   BR->addVisitor(std::move(Visitor));
   checkerContext.emitReport(std::move(BR));
 }
