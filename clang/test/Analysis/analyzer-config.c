@@ -13,6 +13,7 @@
 // CHECK-NEXT: alpha.security.MmapWriteExec:MmapProtRead = 0x01
 // CHECK-NEXT: alpha.security.taint.TaintPropagation:Config = ""
 // CHECK-NEXT: alpha.unix.Errno:AllowErrnoReadOutsideConditionExpressions = true
+// CHECK-NEXT: alpha.unix.cstring.OutOfBounds:ConsiderTaint = false
 // CHECK-NEXT: apiModeling.StdCLibraryFunctions:DisplayLoadedSummaries = false
 // CHECK-NEXT: apiModeling.StdCLibraryFunctions:ModelPOSIX = false
 // CHECK-NEXT: apply-fixits = false
