@@ -1,9 +1,12 @@
 // RUN: %clang_analyze_cc1 -Wno-strict-prototypes -Wno-error=implicit-int -verify %s \
+// RUN:   -triple x86_64-pc-linux-gnu \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=alpha.deadcode.UnreachableCode \
 // RUN:   -analyzer-checker=alpha.core.CastSize \
 // RUN:   -analyzer-checker=unix \
-// RUN:   -analyzer-checker=debug.ExprInspection
+// RUN:   -analyzer-checker=debug.ExprInspection \
+// RUN:   -analyzer-checker=alpha.security.taint \
+// RUN:   -analyzer-config unix.DynamicMemoryModeling:CheckTaintedAllocation=true
 
 #include "Inputs/system-header-simulator.h"
 
@@ -27,6 +30,7 @@ typedef unsigned short wchar_t;
 #endif // !defined(_WCHAR_T_DEFINED)
 
 typedef __typeof(sizeof(int)) size_t;
+int scanf(const char *format, ...);
 void *malloc(size_t);
 void *alloca(size_t);
 void *valloc(size_t);
@@ -1890,9 +1894,88 @@ int conjure(void);
 void testExtent(void) {
   int x = conjure();
   clang_analyzer_dump(x);
-  // expected-warning-re@-1 {{{{^conj_\$[[:digit:]]+{int, LC1, S[[:digit:]]+, #1}}}}}}
+  // expected-warning-re@-1 {{{{^conj_\$[[:digit:]]+{int, LC[[:digit:]]+, S[[:digit:]]+, #1}}}}}}
   int *p = (int *)malloc(x);
   clang_analyzer_dumpExtent(p);
-  // expected-warning-re@-1 {{{{^conj_\$[[:digit:]]+{int, LC1, S[[:digit:]]+, #1}}}}}}
+  // expected-warning-re@-1 {{{{^conj_\$[[:digit:]]+{int, LC[[:digit:]]+, S[[:digit:]]+, #1}}}}}}
   free(p);
+}
+
+void tainted_allocation_char() {
+  char n;
+  scanf("%c", &n);
+  if (n < 0) {
+    // 'n' might be negative, in which case it wraps around
+    // Unfortunately, right now the SymIntExpr of `conj{char,n} < 2147483648U`
+    // is not evaluated according to the C semantics. The promotion is elided.
+    // THIS IS BAD.
+    char *p = malloc(n); // FIXME: This should trigger a warning.
+    // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+    free(p);
+  }
+
+  char *p = malloc(n); // FIXME: This should trigger a warning. Same reasoning.
+  // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+  free(p);
+}
+
+void tainted_allocation_int() {
+  int n;
+  scanf("%d", &n);
+  if (n < 100) {
+    if (n > 0) {
+      char *p = malloc(n); // no-warning
+      // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+      free(p);
+    }
+    // 'n' might be negative, in which case it wraps around
+    char *p = malloc(n); // no-warning
+    // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+    // expected-warning@-2 {{Allocating tainted amount of memory without a reasonable upperbound}}
+    free(p);
+  }
+
+  char *p = malloc(n);
+  // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+  // expected-warning@-2 {{Allocating tainted amount of memory without a reasonable upperbound}}
+  free(p);
+}
+
+void tainted_allocation_size_t_within() {
+  const size_t UINT32_MAX_PER_2 = 2147483647; // 01111111111111111111111111111111
+  size_t n;
+  scanf("%lu", &n);
+
+  if (n < 100) {
+    char *p = malloc(n); // no-warning
+    // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+    free(p);
+  }
+
+  // Just within the reasonable range.
+  if (n <= UINT32_MAX_PER_2) {
+    char *p = malloc(n); // no-warning
+    // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+    free(p);
+  }
+
+  // No bounds check or whatsoever.
+  char *p = malloc(n);
+  // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+  // expected-warning@-2 {{Allocating tainted amount of memory without a reasonable upperbound}}
+  free(p);
+}
+
+void tainted_allocation_size_t_outside() {
+  const size_t UINT32_MAX_PER_2 = 2147483647; // 01111111111111111111111111111111
+  size_t n;
+  scanf("%lu", &n);
+
+  // Just outside the reasonable range.
+  if (n <= (UINT32_MAX_PER_2 + 1)) {
+    char *p = malloc(n);
+    // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+    // expected-warning@-2 {{Allocating tainted amount of memory without a reasonable upperbound}}
+    free(p);
+  }
 }

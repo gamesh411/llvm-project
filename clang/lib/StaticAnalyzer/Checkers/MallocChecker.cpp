@@ -51,6 +51,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
+#include "clang/AST/OperationKinds.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
@@ -319,6 +320,11 @@ public:
 
   bool ShouldRegisterNoOwnershipChangeVisitor = false;
 
+  /// When enabled, allocating with a tainted size going to emit a bugreport if
+  /// we can not prove that the size is less then or equal to UINT32MAX/2.
+  /// This heuristic is similar to rsize_t.
+  bool ShouldCheckTaintedAllocation = false;
+
   /// Many checkers are essentially built into this one, so enabling them will
   /// make MallocChecker perform additional modeling and reporting.
   enum CheckKind {
@@ -373,6 +379,7 @@ private:
   mutable std::unique_ptr<BugType> BT_MismatchedDealloc;
   mutable std::unique_ptr<BugType> BT_OffsetFree[CK_NumCheckKinds];
   mutable std::unique_ptr<BugType> BT_UseZerroAllocated[CK_NumCheckKinds];
+  mutable std::unique_ptr<BugType> BT_TaintedAllocation;
 
 #define CHECK_FN(NAME)                                                         \
   void NAME(const CallEvent &Call, CheckerContext &C) const;
@@ -512,10 +519,10 @@ private:
   /// \param [in] State The \c ProgramState right before allocation.
   /// \returns The ProgramState right after allocation.
   [[nodiscard]]
-  static StateAndPred MallocMemAux(CheckerContext &C, const CallEvent &Call,
-                                   const Expr *SizeEx, SVal Init,
-                                   ProgramStateRef State, ExplodedNode *Pred,
-                                   AllocationFamily Family);
+  StateAndPred MallocMemAux(CheckerContext &C, const CallEvent &Call,
+                            const Expr *SizeEx, SVal Init,
+                            ProgramStateRef State, ExplodedNode *Pred,
+                            AllocationFamily Family) const;
 
   /// Models memory allocation.
   ///
@@ -527,9 +534,9 @@ private:
   /// \param [in] State The \c ProgramState right before allocation.
   /// \returns The ProgramState right after allocation.
   [[nodiscard]]
-  static StateAndPred MallocMemAux(CheckerContext &C, const CallEvent &Call,
-                                   SVal Size, SVal Init, ProgramStateRef State,
-                                   ExplodedNode *Pred, AllocationFamily Family);
+  StateAndPred MallocMemAux(CheckerContext &C, const CallEvent &Call, SVal Size,
+                            SVal Init, ProgramStateRef State,
+                            ExplodedNode *Pred, AllocationFamily Family) const;
 
   // Check if this malloc() for special flags. At present that means M_ZERO or
   // __GFP_ZERO (in which case, treat it like calloc).
@@ -643,8 +650,8 @@ private:
   /// \param [in] State The \c ProgramState right before reallocation.
   /// \returns The ProgramState right after allocation.
   [[nodiscard]]
-  static StateAndPred CallocMem(CheckerContext &C, const CallEvent &Call,
-                                ProgramStateRef State, ExplodedNode *Pred);
+  StateAndPred CallocMem(CheckerContext &C, const CallEvent &Call,
+                         ProgramStateRef State, ExplodedNode *Pred) const;
 
   /// See if deallocation happens in a suspicious context. If so, escape the
   /// pointers that otherwise would have been deallocated and return true.
@@ -1721,7 +1728,7 @@ StateAndPred MallocChecker::MallocMemReturnsAttr(CheckerContext &C,
 
 StateAndPred MallocChecker::MallocMemAux(
     CheckerContext &C, const CallEvent &Call, const Expr *SizeEx, SVal Init,
-    ProgramStateRef State, ExplodedNode *Pred, AllocationFamily Family) {
+    ProgramStateRef State, ExplodedNode *Pred, AllocationFamily Family) const {
   if (!State)
     return {nullptr, Pred};
 
@@ -1733,7 +1740,7 @@ StateAndPred MallocChecker::MallocMemAux(CheckerContext &C,
                                          const CallEvent &Call, SVal Size,
                                          SVal Init, ProgramStateRef State,
                                          ExplodedNode *Pred,
-                                         AllocationFamily Family) {
+                                         AllocationFamily Family) const {
   if (!State)
     return {nullptr, Pred};
 
@@ -1767,6 +1774,47 @@ StateAndPred MallocChecker::MallocMemAux(CheckerContext &C,
           return "";
         });
     Pred = C.addTransition(State, Pred, Note);
+  }
+
+  // If we allocate tainted and unconstrained amount of memory.
+  if (ShouldCheckTaintedAllocation && taint::isTainted(State, Size)) {
+    class clang::ASTContext &Ctx = C.getASTContext();
+    QualType Ty = Ctx.UnsignedIntTy;
+
+    const uint64_t TyBits = Ctx.getTypeSize(Ty);
+    assert(TyBits > 0);
+    assert(TyBits <= 64);
+    auto val = ((uint64_t)1) << (TyBits - 1); // 0b1000...0
+    NonLoc ReasonableUpperbound =
+        svalBuilder.makeIntVal(val, Ty).castAs<NonLoc>();
+
+    SVal Check = svalBuilder.evalBinOpNN(
+        State, clang::BO_GE, Size.castAs<NonLoc>(), ReasonableUpperbound,
+        svalBuilder.getConditionType());
+
+    ProgramStateRef St1, St2;
+    std::tie(St1, St2) = State->assume(Check.castAs<DefinedOrUnknownSVal>());
+    if ((St1 && !St2) || (St1 && St2)) {
+      ExplodedNode *N = C.generateErrorNode(State);
+      if (!N)
+        return {nullptr, Pred};
+
+      if (!BT_TaintedAllocation)
+        BT_TaintedAllocation.reset(new BugType(CheckNames[CK_MallocChecker],
+                                               "Tainted allocation",
+                                               categories::MemoryError));
+
+      // Generate a report for this bug.
+      auto Report = std::make_unique<PathSensitiveBugReport>(
+          *BT_TaintedAllocation,
+          "Allocating tainted amount of memory without a reasonable "
+          "upperbound.",
+          N);
+      Report->addRange(Call.getSourceRange());
+      Report->addVisitor(std::make_unique<taint::TaintBugVisitor>(Size));
+
+      C.emitReport(std::move(Report));
+    }
   }
 
   return MallocUpdateRefState(C, CE, State, Pred, Family);
@@ -2695,7 +2743,7 @@ MallocChecker::ReallocMemAux(CheckerContext &C, const CallEvent &Call,
 
 StateAndPred MallocChecker::CallocMem(CheckerContext &C, const CallEvent &Call,
                                       ProgramStateRef State,
-                                      ExplodedNode *Pred) {
+                                      ExplodedNode *Pred) const {
   if (!State)
     return {nullptr, Pred};
 
@@ -3632,6 +3680,9 @@ void ento::registerDynamicMemoryModeling(CheckerManager &mgr) {
   checker->ShouldRegisterNoOwnershipChangeVisitor =
       mgr.getAnalyzerOptions().getCheckerBooleanOption(
           checker, "AddNoOwnershipChangeNotes");
+  checker->ShouldCheckTaintedAllocation =
+      mgr.getAnalyzerOptions().getCheckerBooleanOption(
+          checker, "CheckTaintedAllocation");
 }
 
 bool ento::shouldRegisterDynamicMemoryModeling(const CheckerManager &mgr) {

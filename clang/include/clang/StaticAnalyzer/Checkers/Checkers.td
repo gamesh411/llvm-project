@@ -527,7 +527,14 @@ def DynamicMemoryModeling: Checker<"DynamicMemoryModeling">,
                   "NoStoreFuncVisitor.",
                   "true",
                   Released,
-                  Hide>
+                  Hide>,
+    CmdLineOption<Boolean,
+                  "CheckTaintedAllocation",
+                  "If set to true, the checker will emit a diagnostic if the"
+                  " size of the allocation is tainted and there is no "
+                  "reasonable upper bound to it.",
+                  "false",
+                  InAlpha>
   ]>,
   Dependencies<[CStringModeling]>,
   Documentation<NotDocumented>,
