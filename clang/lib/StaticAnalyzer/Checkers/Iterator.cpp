@@ -181,30 +181,47 @@ const ContainerData *getContainerData(ProgramStateRef State,
   return State->get<ContainerMap>(Cont);
 }
 
-const IteratorPosition *getIteratorPosition(ProgramStateRef State,
+const IteratorPosition *getLValIteratorPosition(ProgramStateRef State,
                                             const SVal &Val) {
+
   if (auto Reg = Val.getAsRegion()) {
     Reg = Reg->getMostDerivedObjectRegion();
-    return State->get<IteratorRegionMap>(Reg);
-  } else if (const auto Sym = Val.getAsSymbol()) {
-    return State->get<IteratorSymbolMap>(Sym);
-  } else if (const auto LCVal = Val.getAs<nonloc::LazyCompoundVal>()) {
-    return State->get<IteratorRegionMap>(LCVal->getRegion());
+    return State->get<IteratorLValRegionMap>(Reg);
   }
-  return nullptr;
+
+  if (const auto Sym = Val.getAsSymbol()) {
+    return State->get<IteratorLValSymbolMap>(Sym);
+  }
+
+  llvm_unreachable("Val must be a Region or a Symbol.");
 }
 
-ProgramStateRef setIteratorPosition(ProgramStateRef State, const SVal &Val,
+const IteratorPosition *getRValIteratorPosition(ProgramStateRef State,
+                                            const SVal &Val) {
+  const auto Sym = Val.getAsSymbol();
+  assert(Sym && "Must be a Symbol");
+  return State->get<IteratorRValSymbolMap>(Sym);
+}
+
+ProgramStateRef setIteratorLValPosition(ProgramStateRef State, const SVal &Val,
                                     const IteratorPosition &Pos) {
   if (auto Reg = Val.getAsRegion()) {
     Reg = Reg->getMostDerivedObjectRegion();
-    return State->set<IteratorRegionMap>(Reg, Pos);
-  } else if (const auto Sym = Val.getAsSymbol()) {
-    return State->set<IteratorSymbolMap>(Sym, Pos);
-  } else if (const auto LCVal = Val.getAs<nonloc::LazyCompoundVal>()) {
-    return State->set<IteratorRegionMap>(LCVal->getRegion(), Pos);
+    return State->set<IteratorLValRegionMap>(Reg, Pos);
   }
-  return nullptr;
+
+  if (const auto Sym = Val.getAsSymbol()) {
+    return State->set<IteratorLValSymbolMap>(Sym, Pos);
+  }
+
+  llvm_unreachable("Val must be a Region or a Symbol.");
+}
+
+ProgramStateRef setIteratorRValPosition(ProgramStateRef State, const SVal &Val,
+                                    const IteratorPosition &Pos) {
+  const auto Sym = Val.getAsSymbol();
+  assert(Sym && "Must be a Symbol");
+  return State->set<IteratorRValSymbolMap>(Sym, Pos);
 }
 
 ProgramStateRef createIteratorPosition(ProgramStateRef State, const SVal &Val,

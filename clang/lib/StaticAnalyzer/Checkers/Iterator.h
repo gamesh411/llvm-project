@@ -111,28 +111,43 @@ public:
   }
 };
 
-class IteratorSymbolMap {};
-class IteratorRegionMap {};
+// Note that there is no RValue RegionMap. 
+class IteratorLValRegionMap {};
+class IteratorLValSymbolMap {};
+class IteratorRValSymbolMap {};
 class ContainerMap {};
 
-using IteratorSymbolMapTy =
-  CLANG_ENTO_PROGRAMSTATE_MAP(SymbolRef, IteratorPosition);
+// IteratorLValRegionMap and IteratorRValRegionMap have the same map-type
+// IteratorRegionMapTy.
 using IteratorRegionMapTy =
   CLANG_ENTO_PROGRAMSTATE_MAP(const MemRegion *, IteratorPosition);
+using IteratorSymbolMapTy =
+  CLANG_ENTO_PROGRAMSTATE_MAP(SymbolRef, IteratorPosition);
+
+using IteratorLValRegionMapTy = IteratorRegionMapTy;
+using IteratorLValSymbolMapTy = IteratorSymbolMapTy;
+using IteratorRValSymbolMapTy = IteratorSymbolMapTy;
+
 using ContainerMapTy =
   CLANG_ENTO_PROGRAMSTATE_MAP(const MemRegion *, ContainerData);
 
 } // namespace iterator
 
 template<>
-struct ProgramStateTrait<iterator::IteratorSymbolMap>
-  : public ProgramStatePartialTrait<iterator::IteratorSymbolMapTy> {
+struct ProgramStateTrait<iterator::IteratorLValSymbolMap>
+  : public ProgramStatePartialTrait<iterator::IteratorLValSymbolMapTy> {
   static void *GDMIndex() { static int Index; return &Index; }
 };
 
 template<>
-struct ProgramStateTrait<iterator::IteratorRegionMap>
-  : public ProgramStatePartialTrait<iterator::IteratorRegionMapTy> {
+struct ProgramStateTrait<iterator::IteratorRValSymbolMap>
+  : public ProgramStatePartialTrait<iterator::IteratorRValSymbolMapTy> {
+  static void *GDMIndex() { static int Index; return &Index; }
+};
+
+template<>
+struct ProgramStateTrait<iterator::IteratorLValRegionMap>
+  : public ProgramStatePartialTrait<iterator::IteratorLValRegionMapTy> {
   static void *GDMIndex() { static int Index; return &Index; }
 };
 
