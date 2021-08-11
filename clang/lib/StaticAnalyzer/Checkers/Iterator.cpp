@@ -181,12 +181,11 @@ const ContainerData *getContainerData(ProgramStateRef State,
   return State->get<ContainerMap>(Cont);
 }
 
-const IteratorPosition *getLValIteratorPosition(ProgramStateRef State,
+const IteratorPosition *getIteratorLValPosition(ProgramStateRef State,
                                             const SVal &Val) {
 
   if (auto Reg = Val.getAsRegion()) {
-    Reg = Reg->getMostDerivedObjectRegion();
-    return State->get<IteratorLValRegionMap>(Reg);
+    return getIteratorLValPosition(State, Reg);
   }
 
   if (const auto Sym = Val.getAsSymbol()) {
@@ -196,7 +195,13 @@ const IteratorPosition *getLValIteratorPosition(ProgramStateRef State,
   llvm_unreachable("Val must be a Region or a Symbol.");
 }
 
-const IteratorPosition *getRValIteratorPosition(ProgramStateRef State,
+const IteratorPosition *getIteratorLValPosition(ProgramStateRef State,
+                                            const MemRegion* Reg) {
+    Reg = Reg->getMostDerivedObjectRegion();
+    return State->get<IteratorLValRegionMap>(Reg);
+}
+
+const IteratorPosition *getIteratorRValPosition(ProgramStateRef State,
                                             const SVal &Val) {
   const auto Sym = Val.getAsSymbol();
   assert(Sym && "Must be a Symbol");
@@ -225,17 +230,19 @@ ProgramStateRef setIteratorRValPosition(ProgramStateRef State, const SVal &Val,
 }
 
 ProgramStateRef createIteratorPosition(ProgramStateRef State, const SVal &Val,
-                                       const MemRegion *Cont, const Stmt* S,
+                                       const MemRegion *Cont, const Stmt *S,
                                        const LocationContext *LCtx,
-                                       unsigned blockCount) {
+                                       unsigned blockCount, bool LVal) {
   auto &StateMgr = State->getStateManager();
   auto &SymMgr = StateMgr.getSymbolManager();
   auto &ACtx = StateMgr.getContext();
 
   auto Sym = SymMgr.conjureSymbol(S, LCtx, ACtx.LongTy, blockCount);
   State = assumeNoOverflow(State, Sym, 4);
-  return setIteratorPosition(State, Val,
-                             IteratorPosition::getPosition(Cont, Sym));
+  return LVal ? setIteratorLValPosition(
+                    State, Val, IteratorPosition::getPosition(Cont, Sym))
+              : setIteratorRValPosition(
+                    State, Val, IteratorPosition::getPosition(Cont, Sym));
 }
 
 ProgramStateRef advancePosition(ProgramStateRef State, const SVal &Iter,

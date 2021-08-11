@@ -85,9 +85,8 @@ namespace {
 
 class IteratorModeling
     : public Checker<check::PostCall, check::PostStmt<UnaryOperator>,
-                     check::PostStmt<BinaryOperator>,
-                     check::PostStmt<MaterializeTemporaryExpr>,
-                     check::Bind, check::LiveSymbols, check::DeadSymbols> {
+                     check::PostStmt<BinaryOperator>, check::Bind,
+                     check::LiveSymbols, check::DeadSymbols> {
 
   using AdvanceFn = void (IteratorModeling::*)(CheckerContext &, const Expr *,
                                                SVal, SVal, SVal) const;
@@ -120,7 +119,7 @@ class IteratorModeling
   void handleNext(CheckerContext &C, const Expr *CE, SVal RetVal, SVal Iter,
                   SVal Amount) const;
   void assignToContainer(CheckerContext &C, const Expr *CE, const SVal &RetVal,
-                         const MemRegion *Cont) const;
+                         const MemRegion *Cont, bool IsLVal) const;
   bool noChangeInAdvance(CheckerContext &C, SVal Iter, const Expr *CE) const;
   void printState(raw_ostream &Out, ProgramStateRef State, const char *NL,
                   const char *Sep) const override;
@@ -153,16 +152,18 @@ public:
   void checkPostStmt(const BinaryOperator *BO, CheckerContext &C) const;
   void checkPostStmt(const CXXConstructExpr *CCE, CheckerContext &C) const;
   void checkPostStmt(const DeclStmt *DS, CheckerContext &C) const;
-  void checkPostStmt(const MaterializeTemporaryExpr *MTE,
-                     CheckerContext &C) const;
   void checkLiveSymbols(ProgramStateRef State, SymbolReaper &SR) const;
   void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
 };
 
 bool isSimpleComparisonOperator(OverloadedOperatorKind OK);
 bool isSimpleComparisonOperator(BinaryOperatorKind OK);
-ProgramStateRef removeLValIteratorPosition(ProgramStateRef State, const SVal &Val);
-ProgramStateRef removeRValIteratorPosition(ProgramStateRef State, const SVal &Val);
+ProgramStateRef removeIteratorLValPosition(ProgramStateRef State,
+                                           const SVal &Val);
+ProgramStateRef removeIteratorLValPosition(ProgramStateRef State,
+                                           const MemRegion *Reg);
+ProgramStateRef removeIteratorRValPosition(ProgramStateRef State,
+                                           const SVal &Val);
 ProgramStateRef relateSymbols(ProgramStateRef State, SymbolRef Sym1,
                               SymbolRef Sym2, bool Equal);
 bool isBoundThroughLazyCompoundVal(const Environment &Env,
@@ -200,15 +201,28 @@ void IteratorModeling::checkPostCall(const CallEvent &Call,
   auto State = C.getState();
 
   // Already bound to container?
-  if (getIteratorPosition(State, Call.getReturnValue()))
-    return;
+  if (Call.getResultType()->isReferenceType()) {
+    if (getIteratorLValPosition(State, Call.getReturnValue()))
+      return;
+  } else {
+    if (getIteratorRValPosition(State, Call.getReturnValue()))
+      return;
+  }
 
   // Copy-like and move constructors
-  if (isa<CXXConstructorCall>(&Call) && Call.getNumArgs() == 1) {
-    if (const auto *Pos = getIteratorPosition(State, Call.getArgSVal(0))) {
-      State = setIteratorPosition(State, Call.getReturnValue(), *Pos);
+  //
+  // Constructor call with a single reference parameter.
+  if (isa<CXXConstructorCall>(&Call) && Call.getNumArgs() == 1 &&
+      Call.getArgExpr(0)->getType()->isReferenceType()) {
+    const MemRegion *FirstArgReg = Call.getParameterLocation(0, C.blockCount());
+    if (const auto *Pos = getIteratorLValPosition(State, FirstArgReg)) {
+      auto ValueUnderConstruction = Call.getReturnValueUnderConstruction();
+      assert(ValueUnderConstruction &&
+             "A value should exist for CXXConstructorCall");
+      State = setIteratorLValPosition(State, *ValueUnderConstruction, *Pos);
+
       if (cast<CXXConstructorDecl>(Func)->isMoveConstructor()) {
-        State = removeIteratorPosition(State, Call.getArgSVal(0));
+        State = removeIteratorLValPosition(State, FirstArgReg);
       }
       C.addTransition(State);
       return;
@@ -225,26 +239,38 @@ void IteratorModeling::checkPostCall(const CallEvent &Call,
         Call.getArgExpr(i)->getType().getNonReferenceType().getDesugaredType(
             C.getASTContext()).getTypePtr() ==
         Call.getResultType().getDesugaredType(C.getASTContext()).getTypePtr()) {
-      if (const auto *Pos = getIteratorPosition(State, Call.getArgSVal(i))) {
-        assignToContainer(C, OrigExpr, Call.getReturnValue(),
-                          Pos->getContainer());
-        return;
+
+      if (Call.getArgExpr(i)->getType()->isReferenceType()) {
+        if (const auto *Pos = getIteratorLValPosition(
+                State, Call.getParameterLocation(i, C.blockCount()))) {
+          assignToContainer(C, OrigExpr, Call.getReturnValue(),
+                            Pos->getContainer(), /*IsLVal*/ true);
+          return;
+        }
+      } else {
+        if (const auto *Pos =
+                getIteratorRValPosition(State, Call.getArgSVal(i))) {
+          assignToContainer(C, OrigExpr, Call.getReturnValue(),
+                            Pos->getContainer(), /*IsLVal*/ false);
+          return;
+        }
       }
     }
   }
 }
 
+// A value gets assigned to a Loc.
 void IteratorModeling::checkBind(SVal Loc, SVal Val, const Stmt *S,
                                  CheckerContext &C) const {
   auto State = C.getState();
-  const auto *Pos = getIteratorPosition(State, Val);
+  const auto *Pos = getIteratorRValPosition(State, Val);
   if (Pos) {
-    State = setIteratorPosition(State, Loc, *Pos);
+    State = setIteratorLValPosition(State, Loc, *Pos);
     C.addTransition(State);
   } else {
-    const auto *OldPos = getIteratorPosition(State, Loc);
+    const auto *OldPos = getIteratorLValPosition(State, Loc);
     if (OldPos) {
-      State = removeIteratorPosition(State, Loc);
+      State = removeIteratorLValPosition(State, Loc);
       C.addTransition(State);
     }
   }
@@ -291,17 +317,6 @@ void IteratorModeling::checkPostStmt(const BinaryOperator *BO,
   }
 }
 
-void IteratorModeling::checkPostStmt(const MaterializeTemporaryExpr *MTE,
-                                     CheckerContext &C) const {
-  /* Transfer iterator state to temporary objects */
-  auto State = C.getState();
-  const auto *Pos = getIteratorPosition(State, C.getSVal(MTE->getSubExpr()));
-  if (!Pos)
-    return;
-  State = setIteratorPosition(State, C.getSVal(MTE), *Pos);
-  C.addTransition(State);
-}
-
 template <typename T>
 static void keepAbstractPositionsAlive(const T &Map, SymbolReaper &SR) {
   for (const auto &Item : Map) {
@@ -321,7 +336,8 @@ void IteratorModeling::checkLiveSymbols(ProgramStateRef State,
 }
 
 template <typename MapTy>
-static ProgramStateRef removeDeadForMapTy(SymbolReaper SR, ProgramStateRef State) {
+static ProgramStateRef removeDeadForMapTy(SymbolReaper SR,
+                                          ProgramStateRef State) {
   for (const auto &Item : State->get<MapTy>()) {
     if (!SR.isLive(Item.first)) {
       State = State->remove<MapTy>(Item.first);
@@ -382,7 +398,7 @@ IteratorModeling::handleOverloadedOperator(CheckerContext &C,
             SecondType->isIntegralOrEnumerationType()) {
           // In case of operator+ the iterator can be either on the LHS (eg.:
           // it + 1), or on the RHS (eg.: 1 + it). Both cases are modeled.
-          const booleIsIterFirst = FirstType->isStructureOrClassType();
+          const bool IsIterFirst = FirstType->isStructureOrClassType();
           const SVal FirstArg = Call.getArgSVal(0);
           const SVal SecondArg = Call.getArgSVal(1);
           const SVal &Iterator = IsIterFirst ? FirstArg : SecondArg;
@@ -448,7 +464,10 @@ void IteratorModeling::handleComparison(CheckerContext &C, const Expr *CE,
   // evalAssume, if the result is a symbolic expression. If it is a concrete
   // value (only one branch is possible), then transfer the state between
   // the operands according to the operator and the result
-   auto State = C.getState();
+  auto State = C.getState();
+  if (isa<CXXOperatorCallExpr>(CE)) {
+
+  }
   const auto *LPos = getIteratorPosition(State, LVal);
   const auto *RPos = getIteratorPosition(State, RVal);
   const MemRegion *Cont = nullptr;
@@ -682,12 +701,13 @@ void IteratorModeling::handleNext(CheckerContext &C, const Expr *CE,
 
 void IteratorModeling::assignToContainer(CheckerContext &C, const Expr *CE,
                                          const SVal &RetVal,
-                                         const MemRegion *Cont) const {
+                                         const MemRegion *Cont, bool IsLVal) const {
   Cont = Cont->getMostDerivedObjectRegion();
 
   auto State = C.getState();
   const auto *LCtx = C.getLocationContext();
-  State = createIteratorPosition(State, RetVal, Cont, CE, LCtx, C.blockCount());
+  State = createIteratorPosition(State, RetVal, Cont, CE, LCtx, C.blockCount(),
+                                 IsLVal);
 
   C.addTransition(State);
 }
@@ -731,7 +751,7 @@ void IteratorModeling::printState(raw_ostream &Out, ProgramStateRef State,
   // Use a counter to add newlines before every line except the first one.
   unsigned Count = 0;
 
-  auto Print = [&](auto&& Map) {
+  auto Print = [&](auto &&Map) {
     for (const auto &Item : Map) {
       if (Count++)
         Out << NL;
@@ -741,12 +761,13 @@ void IteratorModeling::printState(raw_ostream &Out, ProgramStateRef State,
       const auto Pos = Item.second;
       Out << (Pos.isValid() ? "Valid" : "Invalid") << " ; Container == ";
       Pos.getContainer()->dumpToStream(Out);
-      Out<<" ; Offset == ";
+      Out << " ; Offset == ";
       Pos.getOffset()->dumpToStream(Out);
     }
   };
 
-  if (!SymbolLValMap.isEmpty() || !SymbolRValMap.isEmpty() || !RegionMap.isEmpty()) {
+  if (!SymbolLValMap.isEmpty() || !SymbolRValMap.isEmpty() ||
+      !RegionMap.isEmpty()) {
     Out << Sep << "Iterator Positions :" << NL;
     Print(SymbolLValMap);
     Print(SymbolRValMap);
@@ -764,7 +785,8 @@ bool isSimpleComparisonOperator(BinaryOperatorKind OK) {
   return OK == BO_EQ || OK == BO_NE;
 }
 
-ProgramStateRef removeLValIteratorPosition(ProgramStateRef State, const SVal &Val) {
+ProgramStateRef removeIteratorLValPosition(ProgramStateRef State,
+                                           const SVal &Val) {
   if (auto Reg = Val.getAsRegion()) {
     Reg = Reg->getMostDerivedObjectRegion();
     return State->remove<IteratorLValRegionMap>(Reg);
@@ -773,15 +795,22 @@ ProgramStateRef removeLValIteratorPosition(ProgramStateRef State, const SVal &Va
   if (const auto Sym = Val.getAsSymbol()) {
     return State->remove<IteratorLValSymbolMap>(Sym);
   }
-  
+
   llvm_unreachable("Val must be a Region or a Symbol.");
 }
 
-ProgramStateRef removeRValIteratorPosition(ProgramStateRef State, const SVal &Val) {
+ProgramStateRef removeIteratorLValPosition(ProgramStateRef State,
+                                           const MemRegion *Reg) {
+  Reg = Reg->getMostDerivedObjectRegion();
+  return State->remove<IteratorLValRegionMap>(Reg);
+}
+
+ProgramStateRef removeIteratorRValPosition(ProgramStateRef State,
+                                           const SVal &Val) {
   if (const auto Sym = Val.getAsSymbol()) {
     return State->remove<IteratorRValSymbolMap>(Sym);
   }
-  
+
   llvm_unreachable("Val must be a Region or a Symbol.");
 }
 
