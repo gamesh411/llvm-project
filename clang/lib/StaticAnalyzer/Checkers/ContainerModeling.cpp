@@ -886,35 +886,32 @@ ProgramStateRef setContainerData(ProgramStateRef State, const MemRegion *Cont,
   return State->set<ContainerMap>(Cont, CData);
 }
 
+template <typename MapTy, typename Condition, typename Process>
+static ProgramStateRef processIteratorPositionsForMapTy(ProgramStateRef State, Condition Cond,
+                                         Process Proc) {
+  auto &MapFactory = State->get_context<MapTy>();
+  auto Map = State->get<MapTy>();
+  bool Changed = false;
+  for (const auto &Item : Map) {
+    if (Cond(Item.second)) {
+      Map = MapFactory.add(Map, Item.first, Proc(Item.second));
+      Changed = true;
+    }
+  }
+
+  if (Changed)
+    State = State->set<MapTy>(Map);
+
+  return State;
+}
+
+
 template <typename Condition, typename Process>
 ProgramStateRef processIteratorPositions(ProgramStateRef State, Condition Cond,
                                          Process Proc) {
-  auto &RegionMapFactory = State->get_context<IteratorRegionMap>();
-  auto RegionMap = State->get<IteratorRegionMap>();
-  bool Changed = false;
-  for (const auto &Reg : RegionMap) {
-    if (Cond(Reg.second)) {
-      RegionMap = RegionMapFactory.add(RegionMap, Reg.first, Proc(Reg.second));
-      Changed = true;
-    }
-  }
-
-  if (Changed)
-    State = State->set<IteratorRegionMap>(RegionMap);
-
-  auto &SymbolMapFactory = State->get_context<IteratorSymbolMap>();
-  auto SymbolMap = State->get<IteratorSymbolMap>();
-  Changed = false;
-  for (const auto &Sym : SymbolMap) {
-    if (Cond(Sym.second)) {
-      SymbolMap = SymbolMapFactory.add(SymbolMap, Sym.first, Proc(Sym.second));
-      Changed = true;
-    }
-  }
-
-  if (Changed)
-    State = State->set<IteratorSymbolMap>(SymbolMap);
-
+  State = processIteratorPositionsForMapTy<IteratorLValRegionMap>(State, Cond, Proc);
+  State = processIteratorPositionsForMapTy<IteratorLValSymbolMap>(State, Cond, Proc);
+  State = processIteratorPositionsForMapTy<IteratorRValSymbolMap>(State, Cond, Proc);
   return State;
 }
 
@@ -1032,20 +1029,16 @@ SymbolRef rebaseSymbol(ProgramStateRef State, SValBuilder &SVB,
                          SymMgr.getType(OrigExpr)).getAsSymbol();
 }
 
+template <typename MapTy>
+static bool hasLiveIteratorsForMapTy(ProgramStateRef State, const MemRegion *Cont) {
+  return llvm::any_of(State->get<MapTy>(),
+	   [Cont](auto&& Item){ return Item.second.getContainer() == Cont; });
+}
+
 bool hasLiveIterators(ProgramStateRef State, const MemRegion *Cont) {
-  auto RegionMap = State->get<IteratorRegionMap>();
-  for (const auto &Reg : RegionMap) {
-    if (Reg.second.getContainer() == Cont)
-      return true;
-  }
-
-  auto SymbolMap = State->get<IteratorSymbolMap>();
-  for (const auto &Sym : SymbolMap) {
-    if (Sym.second.getContainer() == Cont)
-      return true;
-  }
-
-  return false;
+  return hasLiveIteratorsForMapTy<IteratorLValRegionMap>(State, Cont) ||
+         hasLiveIteratorsForMapTy<IteratorLValSymbolMap>(State, Cont) ||
+         hasLiveIteratorsForMapTy<IteratorRValSymbolMap>(State, Cont);
 }
 
 } // namespace

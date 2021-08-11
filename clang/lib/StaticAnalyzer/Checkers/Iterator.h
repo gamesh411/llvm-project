@@ -180,9 +180,13 @@ bool isRandomIncrOrDecrOperator(OverloadedOperatorKind OK);
 bool isRandomIncrOrDecrOperator(BinaryOperatorKind OK);
 const ContainerData *getContainerData(ProgramStateRef State,
                                       const MemRegion *Cont);
-const IteratorPosition *getIteratorPosition(ProgramStateRef State,
+const IteratorPosition *getIteratorLValPosition(ProgramStateRef State,
                                             const SVal &Val);
-ProgramStateRef setIteratorPosition(ProgramStateRef State, const SVal &Val,
+const IteratorPosition *getIteratorRValPosition(ProgramStateRef State,
+                                            const SVal &Val);
+ProgramStateRef setIteratorLValPosition(ProgramStateRef State, const SVal &Val,
+                                    const IteratorPosition &Pos);
+ProgramStateRef setIteratorRValPosition(ProgramStateRef State, const SVal &Val,
                                     const IteratorPosition &Pos);
 ProgramStateRef createIteratorPosition(ProgramStateRef State, const SVal &Val,
                                        const MemRegion *Cont, const Stmt* S,

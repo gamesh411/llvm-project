@@ -161,7 +161,8 @@ public:
 
 bool isSimpleComparisonOperator(OverloadedOperatorKind OK);
 bool isSimpleComparisonOperator(BinaryOperatorKind OK);
-ProgramStateRef removeIteratorPosition(ProgramStateRef State, const SVal &Val);
+ProgramStateRef removeLValIteratorPosition(ProgramStateRef State, const SVal &Val);
+ProgramStateRef removeRValIteratorPosition(ProgramStateRef State, const SVal &Val);
 ProgramStateRef relateSymbols(ProgramStateRef State, SymbolRef Sym1,
                               SymbolRef Sym2, bool Equal);
 bool isBoundThroughLazyCompoundVal(const Environment &Env,
@@ -301,25 +302,32 @@ void IteratorModeling::checkPostStmt(const MaterializeTemporaryExpr *MTE,
   C.addTransition(State);
 }
 
+template <typename T>
+static void keepAbstractPositionsAlive(const T &Map, SymbolReaper &SR) {
+  for (const auto &Item : Map) {
+    const auto Offset = Item.second.getOffset();
+    for (auto i = Offset->symbol_begin(); i != Offset->symbol_end(); ++i)
+      if (isa<SymbolData>(*i))
+        SR.markLive(*i);
+  }
+}
+
 void IteratorModeling::checkLiveSymbols(ProgramStateRef State,
                                         SymbolReaper &SR) const {
-  // Keep symbolic expressions of iterator positions alive
-  auto RegionMap = State->get<IteratorRegionMap>();
-  for (const auto &Reg : RegionMap) {
-    const auto Offset = Reg.second.getOffset();
-    for (auto i = Offset->symbol_begin(); i != Offset->symbol_end(); ++i)
-      if (isa<SymbolData>(*i))
-        SR.markLive(*i);
-  }
+  // Keep symbolic expressions of (abstract) iterator positions alive
+  keepAbstractPositionsAlive(State->get<IteratorLValRegionMap>(), SR);
+  keepAbstractPositionsAlive(State->get<IteratorLValSymbolMap>(), SR);
+  keepAbstractPositionsAlive(State->get<IteratorRValSymbolMap>(), SR);
+}
 
-  auto SymbolMap = State->get<IteratorSymbolMap>();
-  for (const auto &Sym : SymbolMap) {
-    const auto Offset = Sym.second.getOffset();
-    for (auto i = Offset->symbol_begin(); i != Offset->symbol_end(); ++i)
-      if (isa<SymbolData>(*i))
-        SR.markLive(*i);
+template <typename MapTy>
+static ProgramStateRef removeDeadForMapTy(SymbolReaper SR, ProgramStateRef State) {
+  for (const auto &Item : State->get<MapTy>()) {
+    if (!SR.isLive(Item.first)) {
+      State = State->remove<MapTy>(Item.first);
+    }
   }
-
+  return State;
 }
 
 void IteratorModeling::checkDeadSymbols(SymbolReaper &SR,
@@ -327,24 +335,9 @@ void IteratorModeling::checkDeadSymbols(SymbolReaper &SR,
   // Cleanup
   auto State = C.getState();
 
-  auto RegionMap = State->get<IteratorRegionMap>();
-  for (const auto &Reg : RegionMap) {
-    if (!SR.isLiveRegion(Reg.first)) {
-      // The region behind the `LazyCompoundVal` is often cleaned up before
-      // the `LazyCompoundVal` itself. If there are iterator positions keyed
-      // by these regions their cleanup must be deferred.
-      if (!isBoundThroughLazyCompoundVal(State->getEnvironment(), Reg.first)) {
-        State = State->remove<IteratorRegionMap>(Reg.first);
-      }
-    }
-  }
-
-  auto SymbolMap = State->get<IteratorSymbolMap>();
-  for (const auto &Sym : SymbolMap) {
-    if (!SR.isLive(Sym.first)) {
-      State = State->remove<IteratorSymbolMap>(Sym.first);
-    }
-  }
+  State = removeDeadForMapTy<IteratorLValRegionMap>(SR, State);
+  State = removeDeadForMapTy<IteratorLValSymbolMap>(SR, State);
+  State = removeDeadForMapTy<IteratorRValSymbolMap>(SR, State);
 
   C.addTransition(State);
 }
@@ -389,7 +382,7 @@ IteratorModeling::handleOverloadedOperator(CheckerContext &C,
             SecondType->isIntegralOrEnumerationType()) {
           // In case of operator+ the iterator can be either on the LHS (eg.:
           // it + 1), or on the RHS (eg.: 1 + it). Both cases are modeled.
-          const bool IsIterFirst = FirstType->isStructureOrClassType();
+          const booleIsIterFirst = FirstType->isStructureOrClassType();
           const SVal FirstArg = Call.getArgSVal(0);
           const SVal SecondArg = Call.getArgSVal(1);
           const SVal &Iterator = IsIterFirst ? FirstArg : SecondArg;
@@ -729,40 +722,35 @@ bool IteratorModeling::noChangeInAdvance(CheckerContext &C, SVal Iter,
   return PosBefore->getOffset() == PosAfter->getOffset();
 }
 
+// TODO: check with BAS
 void IteratorModeling::printState(raw_ostream &Out, ProgramStateRef State,
                                   const char *NL, const char *Sep) const {
-  auto SymbolMap = State->get<IteratorSymbolMap>();
-  auto RegionMap = State->get<IteratorRegionMap>();
+  auto SymbolLValMap = State->get<IteratorLValSymbolMap>();
+  auto SymbolRValMap = State->get<IteratorRValSymbolMap>();
+  auto RegionMap = State->get<IteratorLValRegionMap>();
   // Use a counter to add newlines before every line except the first one.
   unsigned Count = 0;
 
-  if (!SymbolMap.isEmpty() || !RegionMap.isEmpty()) {
+  auto Print = [&](auto&& Map) {
+    for (const auto &Item : Map) {
+      if (Count++)
+        Out << NL;
+
+      Item.first->dumpToStream(Out);
+      Out << " : ";
+      const auto Pos = Item.second;
+      Out << (Pos.isValid() ? "Valid" : "Invalid") << " ; Container == ";
+      Pos.getContainer()->dumpToStream(Out);
+      Out<<" ; Offset == ";
+      Pos.getOffset()->dumpToStream(Out);
+    }
+  };
+
+  if (!SymbolLValMap.isEmpty() || !SymbolRValMap.isEmpty() || !RegionMap.isEmpty()) {
     Out << Sep << "Iterator Positions :" << NL;
-    for (const auto &Sym : SymbolMap) {
-      if (Count++)
-        Out << NL;
-
-      Sym.first->dumpToStream(Out);
-      Out << " : ";
-      const auto Pos = Sym.second;
-      Out << (Pos.isValid() ? "Valid" : "Invalid") << " ; Container == ";
-      Pos.getContainer()->dumpToStream(Out);
-      Out<<" ; Offset == ";
-      Pos.getOffset()->dumpToStream(Out);
-    }
-
-    for (const auto &Reg : RegionMap) {
-      if (Count++)
-        Out << NL;
-
-      Reg.first->dumpToStream(Out);
-      Out << " : ";
-      const auto Pos = Reg.second;
-      Out << (Pos.isValid() ? "Valid" : "Invalid") << " ; Container == ";
-      Pos.getContainer()->dumpToStream(Out);
-      Out<<" ; Offset == ";
-      Pos.getOffset()->dumpToStream(Out);
-    }
+    Print(SymbolLValMap);
+    Print(SymbolRValMap);
+    Print(RegionMap);
   }
 }
 
@@ -776,16 +764,25 @@ bool isSimpleComparisonOperator(BinaryOperatorKind OK) {
   return OK == BO_EQ || OK == BO_NE;
 }
 
-ProgramStateRef removeIteratorPosition(ProgramStateRef State, const SVal &Val) {
+ProgramStateRef removeLValIteratorPosition(ProgramStateRef State, const SVal &Val) {
   if (auto Reg = Val.getAsRegion()) {
     Reg = Reg->getMostDerivedObjectRegion();
-    return State->remove<IteratorRegionMap>(Reg);
-  } else if (const auto Sym = Val.getAsSymbol()) {
-    return State->remove<IteratorSymbolMap>(Sym);
-  } else if (const auto LCVal = Val.getAs<nonloc::LazyCompoundVal>()) {
-    return State->remove<IteratorRegionMap>(LCVal->getRegion());
+    return State->remove<IteratorLValRegionMap>(Reg);
   }
-  return nullptr;
+
+  if (const auto Sym = Val.getAsSymbol()) {
+    return State->remove<IteratorLValSymbolMap>(Sym);
+  }
+  
+  llvm_unreachable("Val must be a Region or a Symbol.");
+}
+
+ProgramStateRef removeRValIteratorPosition(ProgramStateRef State, const SVal &Val) {
+  if (const auto Sym = Val.getAsSymbol()) {
+    return State->remove<IteratorRValSymbolMap>(Sym);
+  }
+  
+  llvm_unreachable("Val must be a Region or a Symbol.");
 }
 
 ProgramStateRef relateSymbols(ProgramStateRef State, SymbolRef Sym1,
