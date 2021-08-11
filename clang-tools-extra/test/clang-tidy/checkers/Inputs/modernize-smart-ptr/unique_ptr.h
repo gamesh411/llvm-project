@@ -25,4 +25,10 @@ private:
   type *ptr;
 };
 
-}  // namespace std
+template <typename T, typename... Args>
+unique_ptr<T> make_unique(Args &&...) { return {}; }
+
+template <typename T>
+unique_ptr<T> make_unique(std::size_t size) { return {}; }
+
+} // namespace std

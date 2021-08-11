@@ -15,7 +15,8 @@ add_clang_library(clangTidyCERTModule
   PostfixOperatorCheck.cpp
   ProperlySeededRandomGeneratorCheck.cpp
   SetLongJmpCheck.cpp
-  StaticObjectExceptionCheck.cpp
+        SmartPointerDeleterCheck.cpp
+        StaticObjectExceptionCheck.cpp
   StrToNumCheck.cpp
   ThrownExceptionTypeCheck.cpp
   VariadicFunctionDefCheck.cpp

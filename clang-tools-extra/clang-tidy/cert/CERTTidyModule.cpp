@@ -34,6 +34,7 @@
 #include "PostfixOperatorCheck.h"
 #include "ProperlySeededRandomGeneratorCheck.h"
 #include "SetLongJmpCheck.h"
+#include "SmartPointerDeleterCheck.h"
 #include "StaticObjectExceptionCheck.h"
 #include "StrToNumCheck.h"
 #include "ThrownExceptionTypeCheck.h"
@@ -123,6 +124,8 @@ public:
     // SIG
     CheckFactories.registerCheck<bugprone::SignalHandlerCheck>("cert-sig30-c");
     // STR
+    CheckFactories.registerCheck<SmartPointerDeleterCheck>(
+        "cert-smart-pointer-deleter");
     CheckFactories.registerCheck<bugprone::SignedCharMisuseCheck>(
         "cert-str34-c");
   }

@@ -21,4 +21,7 @@ private:
   type *ptr;
 };
 
-}  // namespace std
+template <typename T, typename... Args>
+shared_ptr<T> make_shared(Args &&...) { return {}; }
+
+} // namespace std
