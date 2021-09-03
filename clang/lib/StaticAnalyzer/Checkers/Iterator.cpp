@@ -222,8 +222,15 @@ ProgramStateRef setIteratorLValPosition(ProgramStateRef State, const SVal &Val,
   llvm_unreachable("Val must be a Region or a Symbol.");
 }
 
+ProgramStateRef setIteratorLValPosition(ProgramStateRef State,
+                                        const MemRegion *Reg,
+                                        const IteratorPosition &Pos) {
+  Reg = Reg->getMostDerivedObjectRegion();
+  return State->set<IteratorLValRegionMap>(Reg, Pos);
+}
+
 ProgramStateRef setIteratorRValPosition(ProgramStateRef State, const SVal &Val,
-                                    const IteratorPosition &Pos) {
+                                        const IteratorPosition &Pos) {
   const auto Sym = Val.getAsSymbol();
   assert(Sym && "Must be a Symbol");
   return State->set<IteratorRValSymbolMap>(Sym, Pos);
@@ -245,10 +252,63 @@ ProgramStateRef createIteratorPosition(ProgramStateRef State, const SVal &Val,
                     State, Val, IteratorPosition::getPosition(Cont, Sym));
 }
 
-ProgramStateRef advancePosition(ProgramStateRef State, const SVal &Iter,
+IteratorPosition advancePosFor(IteratorPosition Pos, ProgramStateRef State, const SVal &Iter,
                                 OverloadedOperatorKind Op,
                                 const SVal &Distance) {
-  const auto *Pos = getIteratorPosition(State, Iter);
+  auto &SymMgr = State->getStateManager().getSymbolManager();
+  auto &SVB = State->getStateManager().getSValBuilder();
+  auto &BVF = State->getStateManager().getBasicVals();
+
+  assert((Op == OO_Plus || Op == OO_PlusEqual || Op == OO_Minus ||
+          Op == OO_MinusEqual) &&
+         "Advance operator must be one of +, -, += and -=.");
+  auto BinOp = (Op == OO_Plus || Op == OO_PlusEqual) ? BO_Add : BO_Sub;
+  const auto IntDistOp = Distance.getAs<nonloc::ConcreteInt>();
+  if (!IntDistOp)
+    return Pos;
+
+  // For concrete integers we can calculate the new position
+  nonloc::ConcreteInt IntDist = *IntDistOp;
+
+  if (IntDist.getValue().isNegative()) {
+    IntDist = nonloc::ConcreteInt(BVF.getValue(-IntDist.getValue()));
+    BinOp = (BinOp == BO_Add) ? BO_Sub : BO_Add;
+  }
+  return Pos.setTo(SVB.evalBinOp(State, BinOp,
+                                 nonloc::SymbolVal(Pos.getOffset()), IntDist,
+                                 SymMgr.getType(Pos.getOffset()))
+                       .getAsSymbol());
+}
+
+ProgramStateRef advanceLValPosition(ProgramStateRef State, const SVal &Iter,
+                                OverloadedOperatorKind Op,
+                                const SVal &Distance) {
+  const auto *Pos = getIteratorLValPosition(State, Iter);
+  if (!Pos)
+    return nullptr;
+  
+  const auto NewPos = advancePosFor(*Pos, State, Iter, Op, Distance);
+
+  return setIteratorLValPosition(State, Iter, NewPos);
+};
+
+ProgramStateRef advanceRValPosition(ProgramStateRef State, const SVal &Iter,
+                                OverloadedOperatorKind Op,
+                                const SVal &Distance) {
+  const auto *Pos = getIteratorRValPosition(State, Iter);
+  if (!Pos)
+    return nullptr;
+  
+  const auto NewPos = advancePosFor(*Pos, State, Iter, Op, Distance);
+
+  return setIteratorRValPosition(State, Iter, NewPos);
+};
+
+
+ProgramStateRef advancePosition(ProgramStateRef State, const MemRegion *Reg,
+                                OverloadedOperatorKind Op,
+                                const SVal &Distance) {
+  const auto *Pos = getIteratorLValPosition(State, Reg);
   if (!Pos)
     return nullptr;
 
@@ -276,7 +336,7 @@ ProgramStateRef advancePosition(ProgramStateRef State, const SVal &Iter,
                              nonloc::SymbolVal(Pos->getOffset()),
                              IntDist, SymMgr.getType(Pos->getOffset()))
                .getAsSymbol());
-  return setIteratorPosition(State, Iter, NewPos);
+  return setIteratorLValPosition(State, Reg, NewPos);
 }
 
 // This function tells the analyzer's engine that symbols produced by our

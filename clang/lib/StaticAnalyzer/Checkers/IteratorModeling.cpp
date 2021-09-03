@@ -72,6 +72,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/DynamicType.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 
 #include "Iterator.h"
 
@@ -103,10 +104,10 @@ class IteratorModeling
   void processComparison(CheckerContext &C, ProgramStateRef State,
                          SymbolRef Sym1, SymbolRef Sym2, const SVal &RetVal,
                          OverloadedOperatorKind Op) const;
-  void handleIncrement(CheckerContext &C, const SVal &RetVal, const SVal &Iter,
-                       bool Postfix) const;
-  void handleDecrement(CheckerContext &C, const SVal &RetVal, const SVal &Iter,
-                       bool Postfix) const;
+  void handleIncrement(CheckerContext &C, const SVal &RetVal,
+                       const MemRegion *Reg, bool Postfix) const;
+  void handleDecrement(CheckerContext &C, const SVal &RetVal,
+                       const MemRegion *Reg, bool Postfix) const;
   void handleRandomIncrOrDecr(CheckerContext &C, const Expr *CE,
                               OverloadedOperatorKind Op, const SVal &RetVal,
                               const SVal &Iterator, const SVal &Amount) const;
@@ -411,23 +412,45 @@ IteratorModeling::handleOverloadedOperator(CheckerContext &C,
       }
     } else if (isIncrementOperator(Op)) {
       if (const auto *InstCall = dyn_cast<CXXInstanceCall>(&Call)) {
-        handleIncrement(C, Call.getReturnValue(), InstCall->getCXXThisVal(),
+        assert(!InstCall->getCXXThisVal().getAs<LazyCompoundVal>() &&
+               "ThisVal should not be LazyCompoundVal");
+        assert(InstCall->getCXXThisVal().getAs<loc::MemRegionVal>() &&
+               "ThisVal should be a MemRegion");
+
+        const MemRegion *ThisRegion =
+            InstCall->getCXXThisVal().castAs<loc::MemRegionVal>().getRegion();
+        handleIncrement(C, Call.getReturnValue(), ThisRegion,
                         Call.getNumArgs());
         return;
       }
 
-      handleIncrement(C, Call.getReturnValue(), Call.getArgSVal(0),
-                      Call.getNumArgs());
+      // If operator++ defined as a free function, prefix has 1 parameter,
+      // postfix has 2 (1 dummy).
+      const MemRegion *FirstArgLoc =
+          Call.getParameterLocation(0, C.blockCount());
+      handleIncrement(C, Call.getReturnValue(), FirstArgLoc,
+                      Call.getNumArgs() - 1);
       return;
     } else if (isDecrementOperator(Op)) {
       if (const auto *InstCall = dyn_cast<CXXInstanceCall>(&Call)) {
-        handleDecrement(C, Call.getReturnValue(), InstCall->getCXXThisVal(),
+        assert(!InstCall->getCXXThisVal().getAs<LazyCompoundVal>() &&
+               "ThisVal should not be LazyCompoundVal");
+        assert(InstCall->getCXXThisVal().getAs<loc::MemRegionVal>() &&
+               "ThisVal should be a MemRegion");
+
+        const MemRegion *ThisRegion =
+            InstCall->getCXXThisVal().castAs<loc::MemRegionVal>().getRegion();
+        handleDecrement(C, Call.getReturnValue(), ThisRegion,
                         Call.getNumArgs());
         return;
       }
 
-      handleDecrement(C, Call.getReturnValue(), Call.getArgSVal(0),
-                        Call.getNumArgs());
+      // If operator-- defined as a free function, prefix has 1 parameter,
+      // postfix has 2 (1 dummy).
+      const MemRegion *FirstArgLoc =
+          Call.getParameterLocation(0, C.blockCount());
+      handleIncrement(C, Call.getReturnValue(), FirstArgLoc,
+                      Call.getNumArgs() - 1);
       return;
     }
 }
@@ -465,11 +488,15 @@ void IteratorModeling::handleComparison(CheckerContext &C, const Expr *CE,
   // value (only one branch is possible), then transfer the state between
   // the operands according to the operator and the result
   auto State = C.getState();
-  if (isa<CXXOperatorCallExpr>(CE)) {
 
-  }
-  const auto *LPos = getIteratorPosition(State, LVal);
-  const auto *RPos = getIteratorPosition(State, RVal);
+  // TODO: check Expr dump
+  const bool IsFirstArgRef = isa<CXXOperatorCallExpr>(CE) && cast<CXXOperatorCallExpr>(CE)->getArg(0)->getType()->isReferenceType();
+  const bool IsSecondArgRef = isa<CXXOperatorCallExpr>(CE) && cast<CXXOperatorCallExpr>(CE)->getArg(0)->getType()->isReferenceType();
+  const IteratorPosition *LPos = IsFirstArgRef ? getIteratorLValPosition(State, LVal)
+                       : getIteratorRValPosition(State, LVal);
+  const IteratorPosition *RPos = IsSecondArgRef ? getIteratorLValPosition(State, RVal)
+                        : getIteratorRValPosition(State, RVal);
+
   const MemRegion *Cont = nullptr;
   if (LPos) {
     Cont = LPos->getContainer();
@@ -490,13 +517,20 @@ void IteratorModeling::handleComparison(CheckerContext &C, const Expr *CE,
   }
 
   if (!LPos) {
-    State = setIteratorPosition(State, LVal,
-                                IteratorPosition::getPosition(Cont, Sym));
-    LPos = getIteratorPosition(State, LVal);
+    auto NewLValPosition = IteratorPosition::getPosition(Cont, Sym);
+    State = IsFirstArgRef
+                ? setIteratorLValPosition(State, LVal, NewLValPosition)
+                : setIteratorRValPosition(State, LVal, NewLValPosition);
+    LPos = IsFirstArgRef
+                ? getIteratorLValPosition(State, LVal)
+                : getIteratorRValPosition(State, LVal);
   } else if (!RPos) {
-    State = setIteratorPosition(State, RVal,
-                                IteratorPosition::getPosition(Cont, Sym));
-    RPos = getIteratorPosition(State, RVal);
+    auto NewRValPosition = IteratorPosition::getPosition(Cont, Sym);
+    State = IsSecondArgRef
+                ? setIteratorLValPosition(State, RVal, NewRValPosition)
+                : setIteratorRValPosition(State, RVal, NewRValPosition);
+    RPos = IsSecondArgRef ? getIteratorLValPosition(State, RVal)
+                          : getIteratorRValPosition(State, RVal);
   }
 
   // If the value for which we just tried to set a new iterator position is
@@ -548,55 +582,67 @@ void IteratorModeling::processComparison(CheckerContext &C,
   }
 }
 
+// Prefix oprator++ is assumed to always take parameter as reference and return
+// a reference to the the incremented value. Postfix operator++ is assumed to
+// always take parameter as reference and return by value.
 void IteratorModeling::handleIncrement(CheckerContext &C, const SVal &RetVal,
-                                       const SVal &Iter, bool Postfix) const {
+                                       const MemRegion *Reg,
+                                       bool Postfix) const {
   // Increment the symbolic expressions which represents the position of the
   // iterator
   auto State = C.getState();
   auto &BVF = C.getSymbolManager().getBasicVals();
 
-  const auto *Pos = getIteratorPosition(State, Iter);
+  const auto *Pos = getIteratorLValPosition(State, Reg);
   if (!Pos)
     return;
 
   auto NewState =
-    advancePosition(State, Iter, OO_Plus,
+    advancePosition(State, Reg, OO_Plus,
                     nonloc::ConcreteInt(BVF.getValue(llvm::APSInt::get(1))));
   assert(NewState &&
          "Advancing position by concrete int should always be successful");
 
-  const auto *NewPos = getIteratorPosition(NewState, Iter);
+  const auto *NewPos = getIteratorLValPosition(NewState, Reg);
   assert(NewPos &&
          "Iterator should have position after successful advancement");
 
-  State = setIteratorPosition(State, Iter, *NewPos);
-  State = setIteratorPosition(State, RetVal, Postfix ? *Pos : *NewPos);
+  State = setIteratorLValPosition(State, Reg, *NewPos);
+
+  if (Postfix)
+    State = setIteratorRValPosition(State, RetVal, *Pos);
+  else
+    State = setIteratorLValPosition(State, RetVal, *NewPos);
   C.addTransition(State);
 }
 
 void IteratorModeling::handleDecrement(CheckerContext &C, const SVal &RetVal,
-                                       const SVal &Iter, bool Postfix) const {
+                                       const MemRegion *Reg, bool Postfix) const {
   // Decrement the symbolic expressions which represents the position of the
   // iterator
   auto State = C.getState();
   auto &BVF = C.getSymbolManager().getBasicVals();
 
-  const auto *Pos = getIteratorPosition(State, Iter);
+  const auto *Pos = getIteratorLValPosition(State, Reg);
   if (!Pos)
     return;
 
   auto NewState =
-    advancePosition(State, Iter, OO_Minus,
-                    nonloc::ConcreteInt(BVF.getValue(llvm::APSInt::get(1))));
+      advancePosition(State, Reg, OO_Minus,
+                      nonloc::ConcreteInt(BVF.getValue(llvm::APSInt::get(1))));
   assert(NewState &&
          "Advancing position by concrete int should always be successful");
 
-  const auto *NewPos = getIteratorPosition(NewState, Iter);
+  const auto *NewPos = getIteratorLValPosition(NewState, Reg);
   assert(NewPos &&
          "Iterator should have position after successful advancement");
 
-  State = setIteratorPosition(State, Iter, *NewPos);
-  State = setIteratorPosition(State, RetVal, Postfix ? *Pos : *NewPos);
+  State = setIteratorLValPosition(State, Reg, *NewPos);
+
+  if (Postfix)
+    State = setIteratorRValPosition(State, RetVal, *Pos);
+  else
+    State = setIteratorLValPosition(State, RetVal, *NewPos);
   C.addTransition(State);
 }
 

@@ -181,21 +181,26 @@ bool isRandomIncrOrDecrOperator(BinaryOperatorKind OK);
 const ContainerData *getContainerData(ProgramStateRef State,
                                       const MemRegion *Cont);
 const IteratorPosition *getIteratorLValPosition(ProgramStateRef State,
-                                            const SVal &Val);
+                                                const SVal &Val);
 const IteratorPosition *getIteratorLValPosition(ProgramStateRef State,
-                                            const MemRegion* Val);
+                                                const MemRegion *Reg);
 const IteratorPosition *getIteratorRValPosition(ProgramStateRef State,
-                                            const SVal &Val);
+                                                const SVal &Val);
 ProgramStateRef setIteratorLValPosition(ProgramStateRef State, const SVal &Val,
-                                    const IteratorPosition &Pos);
+                                        const IteratorPosition &Pos);
+ProgramStateRef setIteratorLValPosition(ProgramStateRef State,
+                                        const MemRegion *Reg,
+                                        const IteratorPosition &Pos);
 ProgramStateRef setIteratorRValPosition(ProgramStateRef State, const SVal &Val,
-                                    const IteratorPosition &Pos);
+                                        const IteratorPosition &Pos);
 ProgramStateRef createIteratorPosition(ProgramStateRef State, const SVal &Val,
                                        const MemRegion *Cont, const Stmt *S,
                                        const LocationContext *LCtx,
                                        unsigned blockCount, bool IsLVal);
-ProgramStateRef advancePosition(ProgramStateRef State,
-                                const SVal &Iter,
+ProgramStateRef advancePosition(ProgramStateRef State, const SVal &Iter,
+                                OverloadedOperatorKind Op,
+                                const SVal &Distance);
+ProgramStateRef advancePosition(ProgramStateRef State, const MemRegion *Reg,
                                 OverloadedOperatorKind Op,
                                 const SVal &Distance);
 ProgramStateRef assumeNoOverflow(ProgramStateRef State, SymbolRef Sym,
