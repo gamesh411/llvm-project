@@ -352,6 +352,119 @@ int sprintf_propagates_taint(char *buf, char *msg) {
   return 1 / x; // expected-warning {{Division by a tainted value, possibly zero}}
 }
 
+int scanf_s(const char *format, ...);
+int scanf_s_is_source(int *out) {
+  scanf_s("%d", out);
+  return 1 / *out; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+int getopt(int argc, char *const argv[], const char *optstring);
+int getopt_is_source(int argc, char **argv) {
+  int opt = getopt(argc, argv, "nt:");
+  return 1 / opt; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+struct option {
+  const char *name;
+  int has_arg;
+  int *flag;
+  int val;
+};
+int getopt_long(int argc, char *const argv[], const char *optstring, const struct option *longopts, int *longindex);
+int getopt_long_is_source(int argc, char **argv) {
+  int option_index = 0;
+  struct option long_opts[] = {{0, 0, 0, 0}};
+  int opt = getopt_long(argc, argv, "a:b:02", long_opts, &option_index);
+  return 1 / opt; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+int getopt_long_only(int argc, char *const argv[], const char *optstring, const struct option *longopts, int *longindex);
+int getopt_long_only_is_source(int argc, char **argv) {
+  int option_index = 0;
+  struct option long_opts[] = {{0, 0, 0, 0}};
+  int opt = getopt_long_only(argc, argv, "a:b:02", long_opts, &option_index);
+  return 1 / opt; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+#define _IO_FILE FILE
+int _IO_getc(_IO_FILE *__fp);
+int underscore_IO_getc_is_source(_IO_FILE *fp) {
+  char c = _IO_getc(fp);
+  return 1 / c; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+char *getcwd(char *buf, size_t size);
+int getcwd_is_source(char *buf, size_t size) {
+  char *c = getcwd(buf, size);
+  return system(c); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
+char *getwd(char *buf);
+int getwd_is_source(char *buf) {
+  char *c = getwd(buf);
+  return system(c); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
+typedef signed long long ssize_t;
+ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+int readlink_is_source(char *path, char *buf, size_t bufsiz) {
+  ssize_t s = readlink(path, buf, bufsiz);
+  system(buf);  // expected-warning {{Untrusted data is passed to a system call}}
+  return 1 / s; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+char *get_current_dir_name(void);
+int get_current_dir_name_is_source() {
+  char *d = get_current_dir_name();
+  return system(d); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
+int gethostname(char *name, size_t len);
+int gethostname_is_source(char *name, size_t len) {
+  gethostname(name, len);
+  return system(name); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
+struct sockaddr;
+typedef size_t socklen_t;
+int getnameinfo(const struct sockaddr *restrict addr, socklen_t addrlen,
+                       char *restrict host, socklen_t hostlen,
+                       char *restrict serv, socklen_t servlen, int flags);
+int getnameinfo_is_source(const struct sockaddr *restrict addr, socklen_t addrlen,
+                       char *restrict host, socklen_t hostlen,
+                       char *restrict serv, socklen_t servlen, int flags) {
+  getnameinfo(addr, addrlen, host, hostlen, serv, servlen, flags);
+
+  system(host); // expected-warning {{Untrusted data is passed to a system call}}
+  return system(serv); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
+int getseuserbyname(const char *linuxuser, char **selinuxuser, char **level);
+int getseuserbyname_is_source(const char* linuxuser, char **selinuxuser, char**level) {
+  getseuserbyname(linuxuser, selinuxuser, level);
+  system(selinuxuser[0]); // expected-warning {{Untrusted data is passed to a system call}}
+  return system(level[0]);// expected-warning {{Untrusted data is passed to a system call}}
+}
+
+typedef int gid_t;
+int getgroups(int size, gid_t list[]);
+int getgroups_is_source(int size, gid_t list[]) {
+  getgroups(size, list);
+  return 1 / list[0]; // expected-warning {{Division by a tainted value, possibly zero}}
+}
+
+char *getlogin(void);
+int getlogin_is_source() {
+  char* n = getlogin();
+  return system(n); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
+int getlogin_r(char* buf, size_t bufsize);
+int getlogin_r_is_source(char* buf, size_t bufsize) {
+  getlogin_r(buf, bufsize);
+  return system(buf); // expected-warning {{Untrusted data is passed to a system call}}
+}
+
 // Test configuration
 int mySource1(void);
 void mySource2(int*);
