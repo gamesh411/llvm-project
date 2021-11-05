@@ -2308,8 +2308,13 @@ Checkers implementing `taint analysis <https://en.wikipedia.org/wiki/Taint_check
 
 alpha.security.taint.TaintPropagation (C, C++)
 """"""""""""""""""""""""""""""""""""""""""""""
-Generate taint information used by other checkers.
-A data is tainted when it comes from an unreliable source.
+Taint analysis identifies untrusted sources of information (taint sources), rules as to how the untrusted data flows along the execution path (propagation rules), and points of execution where the use of tainted data is risky (taints sinks).
+The most notable examples of taint sources are:
+  - network originating data
+  - environment variables
+  - database originating data
+
+``GenericTaintChecker`` is the main implementation checker for this rule, and it generates taint information used by other checkers.
 
 .. code-block:: c
 
@@ -2334,6 +2339,26 @@ A data is tainted when it comes from an unreliable source.
    int *p = (int *)malloc(ts * sizeof(int));
      // warn: untrusted data as buffer size
  }
+
+Default sources defined by `GenericTaintChecker`:
+``fdopen``, ``fopen``, ``freopen``, ``getch``, ``getchar``, ``getchar_unlocked``, ``gets``, ``scanf``, ``socket``, ``wgetch``
+
+Default propagations defined by `GenericTaintChecker`:
+``atoi``, ``atol``, ``atoll``, ``fgetc``, ``fgetln``, ``fgets``, ``fscanf``, ``sscanf``, ``getc``, ``getc_unlocked``, ``getdelim``, ``getline``, ``getw``, ``pread``, ``read``, ``strchr``, ``strrchr``, ``tolower``, ``toupper``
+
+Default sinks defined in `GenericTaintChecker`:
+``printf``, ``setproctitle``, ``system``, ``popen``, ``execl``, ``execle``, ``execlp``, ``execv``, ``execvp``, ``execvP``, ``execve``, ``dlopen``, ``memcpy``, ``memmove``, ``strncpy``, ``strndup``, ``malloc``, ``calloc``, ``alloca``, ``memccpy``, ``realloc``, ``bcopy``
+
+The user can configure taint sources, sinks, and propagation rules by providing a configuration file via checker option ``alpha.security.taint.TaintPropagation:Config``.
+
+.. code-block:: sh
+
+ clang --analyze ... -Xclang -analyzer-config -Xclang alpha.security.taint.TaintPropagation:Config=taint_config.yaml
+
+External taint configuration is in `YAML <https://yaml.org/>`_ format. The taint-related options defined in the config file extend but do not override the built-in sources, rules, sinks.
+
+
+For a more detailed description of configuration options, please see the :doc:`user-docs/TaintAnalysisConfiguration`. For an example see :ref:`taint-configuration-example`.
 
 alpha.unix
 ^^^^^^^^^^^
