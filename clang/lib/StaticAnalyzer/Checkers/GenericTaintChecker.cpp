@@ -463,6 +463,469 @@ GenericTaintChecker::TaintPropagationRule::getTaintPropagationRule(
           .Case("strrchr", {{0}, {ReturnValueIndex}})
           .Case("tolower", {{0}, {ReturnValueIndex}})
           .Case("toupper", {{0}, {ReturnValueIndex}})
+          /// Migrated from default configuration
+          ///
+          /// *# size_t fread(void *ptr, size_t size, size_t nmemb, FILE *
+          /// stream)
+          /// - Name: fread
+          ///   DstArgs: [0, -1]
+          .Case("fread", {{3}, {0, ReturnValueIndex}})
+          /// # int getopt(int argc, char * const argv[], const char *optstring)
+          /// - Name: getopt
+          ///   DstArgs: [-1]
+          .Case("getopt", {{}, {ReturnValueIndex}})
+          /// # int getopt_long(int argc, char * const argv[], const char
+          /// *optstring, const struct option *longopts, int *longindex)
+          /// - Name: getopt_long
+          ///   DstArgs: [-1]
+          .Case("getopt_long", {{}, {ReturnValueIndex}})
+          /// # int getopt_long_only(int argc, char * const argv[], const char
+          /// *optstring, const struct option *longopts, int *longindex)
+          /// - Name: getopt_long_only
+          ///   DstArgs: [-1]
+          .Case("getopt_long_only", {{}, {ReturnValueIndex}})
+          /// # char *gets(char *s)
+          /// - Name: gets
+          ///   DstArgs: [-1]
+          /// .Case("gets", {{}, {ReturnValueIndex}}) // already mentioned
+          /// # int _IO_getc(_IO_FILE * __fp)
+          /// - Name: _IO_getc
+          ///   DstArgs: [-1]
+          .Case("_IO_getc", {{}, {ReturnValueIndex}})
+          /// # int getc(FILE *stream)
+          /// - Name: getc
+          ///   DstArgs: [-1]
+          /// .Case("getc", {{}, {ReturnValueIndex}}) // already mentioned
+          /// # int fgetc(FILE *stream)
+          /// - Name: fgetc
+          ///   DstArgs: [-1]
+          /// .Case("fgetc", {{}, {ReturnValueIndex}}) // already mentioned
+          /// # int getchar(void)
+          /// - Name: getchar
+          ///   DstArgs: [-1]
+          /// .Case("getchar", {{}, {ReturnValueIndex}}) // already mentioned
+          /// # char *fgets(char *s, int size, FILE *stream)
+          /// - Name: fgets
+          ///   DstArgs: [0, -1]
+          /// .Case("fgets", {{}, {0, ReturnValueIndex}}) // already mentioned
+          /// # char *getcwd(char *buf, size_t size)
+          /// - Name: getcwd
+          ///   DstArgs: [0, -1]
+          .Case("getcwd", {{}, {0, ReturnValueIndex}})
+          /// # char *getwd(char *buf)
+          /// - Name: getwd
+          ///   DstArgs: [0, -1]
+          .Case("getwd", {{}, {0, ReturnValueIndex}})
+          /// # ssize_t readlink(const char *path, char *buf, size_t bufsiz)
+          /// - Name: readlink
+          ///   DstArgs: [1, -1]
+          .Case("readlink", {{}, {1, ReturnValueIndex}})
+          /// # char *get_current_dir_name(void)
+          /// - Name: get_current_dir_name
+          ///   DstArgs: [-1]
+          .Case("get_current_dir_name", {{}, {ReturnValueIndex}})
+          /// # char *getenv(const char *name)
+          /// - Name: getenv
+          ///   DstArgs: [-1]
+          ///
+          /// depends on analyzer option ShouldAssumeControlledEnvironment
+          /// and is handled otherwise
+          ///
+          /// # char *secure_getenv(const char *name)
+          /// - Name: secure_getenv
+          ///   DstArgs: [-1]
+          ///
+          ///   added handling just below getenv
+          ///
+          /// # int gethostname(char *name, size_t len)
+          /// - Name: gethostname
+          ///   DstArgs: [0]
+          ///
+          .Case("gethostname", {{}, {0}})
+          /// # int getnameinfo(const struct sockaddr *sa, socklen_t salen, char
+          /// *host, size_t hostlen, char *serv, size_t servlen, int flags)
+          /// - Name: getnameinfo
+          ///   DstArgs: [2, 4]
+          .Case("getnameinfo", {{}, {2, 4}})
+          /// # int getseuserbyname(const char *linuxuser, char **selinuxuser,
+          /// char **level)
+          /// - Name: getseuserbyname
+          ///   DstArgs: [1, 2]
+          .Case("getseuserbyname", {{}, {1, 2}})
+          /// # hm, might need some way to get rid of the second indirection ?
+          /// # int getgroups(int size, gid_t list[])
+          /// - Name: getgroups
+          ///   DstArgs: [1]
+          .Case("getgroups", {{}, {1}})
+          /// # char *getlogin(void)
+          /// - Name: getlogin
+          ///   DstArgs: [-1]
+          .Case("getlogin", {{}, {ReturnValueIndex}})
+          /// # int getlogin_r(char *buf, size_t bufsize)
+          /// - Name: getlogin_r
+          ///   DstArgs: [0]
+          .Case("getlogin_r", {{}, {0}})
+          /// # ssize_t read(int fd, void *buf, size_t count)
+          /// - Name: read
+          ///   DstArgs: [1, -1]
+          /// already handled
+          ///
+          /// # ssize_t readv(int fd, const struct iovec *iov, int iovcnt)  ?
+          /// iov needs an extra indirection ???
+          /// - Name: readv
+          ///   DstArgs: [1, -1]
+          .Case("readv", {{0}, {1, ReturnValueIndex}})
+          /// # ssize_t recv(int sockfd, void *buf, size_t len, int flags)
+          /// - Name: recv
+          ///   DstArgs: [1, -1]
+          .Case("recv", {{0}, {1, ReturnValueIndex}})
+          /// # ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
+          /// struct sockaddr *src_addr, socklen_t *addrlen)
+          /// - Name: recvfrom
+          ///   DstArgs: [1, -1]
+          .Case("recvfrom", {{0}, {1, ReturnValueIndex}})
+          /// # int scanf(const char *format, ...)
+          /// - Name: scanf
+          ///   VariadicType: Dst
+          ///   VariadicIndex: 1
+          /// already handled
+          ///
+          /// # int scanf_s(const char *format, ...)
+          /// - Name: scanf_s
+          ///   VariadicType: Dst
+          ///   VariadicIndex: 1
+          .Case("scanf_s", {{0}, {}, VariadicType::Dst, 1})
+          /// # int fscanf(FILE *stream, const char *format, ...)
+          /// - Name: fscanf
+          ///   VariadicType: Dst
+          ///   VariadicIndex: 2
+          /// already handled
+          ///
+          /// # int fscanf_s(FILE *stream, const char *format, ...)
+          /// - Name: fscanf_s
+          ///   VariadicType: Dst
+          ///   VariadicIndex: 2
+          .Case("fscanf_s", {{0}, {}, VariadicType::Dst, 2})
+          /// # int vscanf(const char *format, va_list ap)
+          /// - Name: vscanf
+          ///   DstArgs: [1]
+          .Case("vscanf", {{0}, {1}})
+          /// # int vfscanf(FILE *stream, const char *format, va_list ap)
+          /// - Name: vfscanf
+          ///   DstArgs: [1]
+          .Case("vfscanf", {{0}, {1}})
+          /// # int ttyname_r(int fd, char *buf, size_t buflen)
+          /// - Name: ttyname_r
+          ///   DstArgs: [1, -1]
+          .Case("ttyname_r", {{0}, {1, ReturnValueIndex}})
+          /// # int ttyname(int fd)
+          /// - Name: ttyname
+          ///   DstArgs: [-1]
+          .Case("ttyname_r", {{0}, {ReturnValueIndex}})
+          ///  # char *dirname(char *path)
+          ///  - Name: dirname
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("dirname", {{0}, {ReturnValueIndex}})
+          ///  # char *basename(char *path)
+          ///  - Name: basename
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("basename", {{0}, {ReturnValueIndex}})
+          ///  # int fnmatch(const char *pattern, const char *string, int flags)
+          ///  - Name: fnmatch
+          ///    SrcArgs: [1]
+          ///    DstArgs: [-1]
+          .Case("fnmatch", {{0}, {ReturnValueIndex}})
+          ///  # int mbtowc(wchar_t *pwc, const char *s, size_t n)
+          ///  - Name: mbtowc
+          ///    SrcArgs: [1]
+          ///    DstArgs: [0, -1]
+          .Case("mbtowc", {{1}, {0, ReturnValueIndex}})
+          ///  # void *memchr(const void *s, int c, size_t n)
+          ///  - Name: memchr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("memchr", {{0}, {ReturnValueIndex}})
+          ///  # void *memrchr(const void *s, int c, size_t n)
+          ///  - Name: memrchr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("memrchr", {{0}, {ReturnValueIndex}})
+          ///  # void *rawmemchr(const void *s, int c)
+          ///  - Name: rawmemchr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("rawmemchr", {{0}, {ReturnValueIndex}})
+          ///  # int memcmp(const void *s1, const void *s2, size_t n)
+          ///  - Name: memcmp
+          ///    SrcArgs: [0, 1]
+          ///    DstArgs: [-1]
+          .Case("memcmp", {{0, 1}, {ReturnValueIndex}})
+          ///  # void *memcpy(void *dest, const void *src, size_t n)
+          ///  - Name: memcpy
+          ///    SrcArgs: [1]
+          ///    DstArgs: [0, -1]
+          .Case("memcpy", {{1}, {0, ReturnValueIndex}})
+          ///  # void *memmove(void *dest, const void *src, size_t n)
+          ///  - Name: memmove
+          ///    SrcArgs: [1]
+          ///    DstArgs: [0, -1]
+          .Case("memmove", {{1}, {0, ReturnValueIndex}})
+          ///  # void *memmem(const void *haystack, size_t haystacklen, const
+          ///  void *needle, size_t needlelen)
+          ///  - Name: memmem
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("memmem", {{0}, {ReturnValueIndex}})
+          ///  # char *strstr(const char *haystack, const char *needle)     ???
+          ///  - Name: strstr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strstr", {{0}, {ReturnValueIndex}})
+          ///  # char *strcasestr(const char *haystack, const char *needle) ???
+          ///  - Name: strcasestr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strcasestr", {{0}, {ReturnValueIndex}})
+          ///  # char *strchr(const char *s, int c)    ???
+          ///  - Name: strchr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          /// already handled
+          ///
+          ///  # char *strrchr(const char *s, int c)
+          ///  - Name: strrchr
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          /// already handled
+          ///
+          ///  # char *strchrnul(const char *s, int c)
+          ///  - Name: strchrnul
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strchrnul", {{0}, {ReturnValueIndex}})
+          ///  # char *index(const char *s, int c)
+          ///  - Name: index
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("index", {{0}, {ReturnValueIndex}})
+          ///  # char *rindex(const char *s, int c)
+          ///  - Name: rindex
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("rindex", {{0}, {ReturnValueIndex}})
+          ///  # do we need this two? why is this not by default? ???
+          ///  # void qsort(void *base, size_t nmemb, size_t size, int
+          ///  (*compar)(const void *, const void *))
+          ///  - Name: qsort
+          ///    SrcArgs: [0]
+          ///    DstArgs: [0]
+          .Case("qsort", {{0}, {0}})
+          ///  # void qsort_r(void *base, size_t nmemb, size_t size, int
+          ///  (*compar)(const void *, const void *, void *), void *arg)
+          ///  - Name: qsort_r
+          ///    SrcArgs: [0]
+          ///    DstArgs: [0]
+          .Case("qsort_r", {{0}, {0}})
+          ///  # int strcmp(const char *s1, const char *s2)
+          ///  - Name: strcmp
+          ///    SrcArgs: [0, 1]
+          ///    DstArgs: [-1]
+          .Case("strcmp", {{0, 1}, {ReturnValueIndex}})
+          ///  # int strcasecmp(const char *s1, const char *s2)
+          ///  - Name: strcasecmp
+          ///    SrcArgs: [0, 1]
+          ///    DstArgs: [-1]
+          .Case("strcasecmp", {{0, 1}, {ReturnValueIndex}})
+          ///  # int strncmp(const char *s1, const char *s2, size_t n)
+          ///  - Name: strncmp
+          ///    SrcArgs: [0, 1, 2]
+          ///    DstArgs: [-1]
+          .Case("strncmp", {{0, 1, 2}, {ReturnValueIndex}})
+          ///  # int strncasecmp(const char *s1, const char *s2, size_t n)
+          ///  - Name: strncasecmp
+          ///    SrcArgs: [0, 1, 2]
+          ///    DstArgs: [-1]
+          .Case("strncasecmp", {{0, 1, 2}, {ReturnValueIndex}})
+          ///  # size_t strspn(const char *s, const char *accept)  ???
+          ///  - Name: strspn
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strspn", {{0}, {ReturnValueIndex}})
+          ///  # size_t strcspn(const char *s, const char *reject) ???
+          ///  - Name: strcspn
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strcspn", {{0}, {ReturnValueIndex}})
+          ///  # char *strpbrk(const char *s, const char *accept)
+          ///  - Name: strpbrk
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strpbrk", {{0}, {ReturnValueIndex}})
+          ///  # char *strdup(const char *s)
+          ///  - Name: strdup
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          /// handled below
+          ///
+          ///  # char *strndup(const char *s, size_t n)
+          ///  - Name: strndup
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strndup", {{0}, {ReturnValueIndex}})
+          ///  # char *strdupa(const char *s)
+          ///  - Name: strdupa
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          /// handled below
+          ///
+          ///  # char *strndupa(const char *s, size_t n)
+          ///  - Name: strndupa
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strndupa", {{0}, {ReturnValueIndex}})
+          ///  # size_t strlen(const char *s)
+          ///  - Name: strlen
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strlen", {{0}, {ReturnValueIndex}})
+          ///  # size_t strnlen(const char *s, size_t maxlen)
+          ///  - Name: strnlen
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strnlen", {{0}, {ReturnValueIndex}})
+          ///  # hm, might need some way to get rid of the second indirection ?
+          ///  # this has quite complex semantics
+          ///  # char *strsep(char **stringp, const char *delim)
+          ///  - Name: strsep
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("strsep", {{0}, {ReturnValueIndex}})
+          ///  # long int strtol(const char *nptr, char **endptr, int base)
+          ///  - Name: strtol
+          ///    SrcArgs: [0]
+          ///    DstArgs: [1, -1]
+          .Case("strtol", {{0}, {1, ReturnValueIndex}})
+          ///  # long long int strtoll(const char *nptr, char **endptr, int
+          ///  base)
+          ///  - Name: strtoll
+          ///    SrcArgs: [0]
+          ///    DstArgs: [1, -1]
+          .Case("strtoll", {{0}, {1, ReturnValueIndex}})
+          ///  # unsigned long int strtoul(const char *nptr, char **endptr, int
+          ///  base)
+          ///  - Name: strtoul
+          ///    SrcArgs: [0]
+          ///    DstArgs: [1, -1]
+          .Case("strtoul", {{0}, {1, ReturnValueIndex}})
+          ///  # unsigned long long int strtoull(const char *nptr, char
+          ///  **endptr, int base)
+          ///  - Name: strtoull
+          ///    SrcArgs: [0]
+          ///    DstArgs: [1, -1]
+          .Case("strtoull", {{0}, {1, ReturnValueIndex}})
+          ///  # int wctomb(char *s, wchar_t wc)
+          ///  - Name: wctomb
+          ///    SrcArgs: [1]
+          ///    DstArgs: [0]
+          .Case("wctomb", {{1}, {0}})
+          ///  # int wcwidth(wchar_t c)
+          ///  - Name: wcwidth
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("wcwidth", {{0}, {ReturnValueIndex}})
+          ///  # int isalnum(int c)
+          ///  - Name: isalnum
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isalnum", {{0}, {ReturnValueIndex}})
+          ///  # int isalpha(int c)
+          ///  - Name: isalpha
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isalpha", {{0}, {ReturnValueIndex}})
+          ///  # int isascii(int c)
+          ///  - Name: isascii
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isascii", {{0}, {ReturnValueIndex}})
+          ///  # int isblank(int c)
+          ///  - Name: isblank
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isblank", {{0}, {ReturnValueIndex}})
+          ///  # int iscntrl(int c)
+          ///  - Name: iscntrl
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("iscntrl", {{0}, {ReturnValueIndex}})
+          ///  # int isdigit(int c)
+          ///  - Name: isdigit
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isdigit", {{0}, {ReturnValueIndex}})
+          ///  # int isgraph(int c)
+          ///  - Name: isgraph
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isgraph", {{0}, {ReturnValueIndex}})
+          ///  # int islower(int c)
+          ///  - Name: islower
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("islower", {{0}, {ReturnValueIndex}})
+          ///  # int isprint(int c)
+          ///  - Name: isprint
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isprint", {{0}, {ReturnValueIndex}})
+          ///  # int ispunct(int c)
+          ///  - Name: ispunct
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("ispunct", {{0}, {ReturnValueIndex}})
+          ///  # int isspace(int c)
+          ///  - Name: isspace
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isspace", {{0}, {ReturnValueIndex}})
+          ///  # int isupper(int c)
+          ///  - Name: isupper
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isupper", {{0}, {ReturnValueIndex}})
+          ///  # int isxdigit(int c)
+          ///  - Name: isxdigit
+          ///    SrcArgs: [0]
+          ///    DstArgs: [-1]
+          .Case("isxdigit", {{0}, {ReturnValueIndex}})
+          ///  # ZLIB (decompression, aka. inflate)
+          ///  # int inflate(z_streamp strm, int flush)
+          ///  - Name: inflate
+          ///    DstArgs: [0]
+          // If there is no taint generator for z_streamp this being an
+          // unconditional source is best.
+          .Case("inflate", {{0}, {ReturnValueIndex}})
+          ///  # OpenSSL (if the `in` tainted, `out` should be tainted as well)
+          ///  # void AES_encrypt(const unsigned char *in, unsigned char *out,
+          ///  const AES_KEY *key)
+          ///  - Name: AES_encrypt
+          ///    SrcArgs: [0]
+          ///    DstArgs: [1]
+          .Case("AES_encrypt", {{0}, {1}})
+          ///  # void AES_decrypt(const unsigned char *in, unsigned char *out,
+          ///  const AES_KEY *key)
+          ///  - Name: AES_decrypt
+          ///    SrcArgs: [0]
+          ///    DstArgs: [1]
+          .Case("AES_decrypt", {{0}, {1}})
+          ///  # embedthis goahead webserver:
+          ///  # cchar* websGetVar(Webs *wp, cchar *name, cchar *defaultValue)
+          ///  - Name: websGetVar
+          ///    DstArgs: [-1]
+          .Case("websGetVar", {{}, {ReturnValueIndex}})
+
           .Default({});
 
   if (!Rule.isNull())
@@ -470,6 +933,17 @@ GenericTaintChecker::TaintPropagationRule::getTaintPropagationRule(
 
   // `getenv` returns taint only in untrusted environments.
   if (FData.FullName == "getenv") {
+    if (C.getAnalysisManager()
+            .getAnalyzerOptions()
+            .ShouldAssumeControlledEnvironment)
+      return {};
+    return {{}, {ReturnValueIndex}};
+  }
+
+  // `secure_getenv` returns taint only in untrusted environments.
+  // It is debatable whether this can be consiedered "safe enough"
+  // to not taint the value returned at all.
+  if (FData.FullName == "secure_getenv") {
     if (C.getAnalysisManager()
             .getAnalyzerOptions()
             .ShouldAssumeControlledEnvironment)
@@ -914,17 +1388,72 @@ bool GenericTaintChecker::checkTaintedBufferSize(const CallEvent &Call,
 
   if (ArgNum == InvalidArgIndex) {
     using CCtx = CheckerContext;
+        /// # void *malloc(size_t size)
+        /// - Name: malloc
+        ///   Args: [0]
     if (CCtx::isCLibraryFunction(FDecl, "malloc") ||
+        /// # void *calloc(size_t nmemb, size_t size)
+        /// - Name: calloc
+        ///   Args: [0, 1]
         CCtx::isCLibraryFunction(FDecl, "calloc") ||
         CCtx::isCLibraryFunction(FDecl, "alloca"))
       ArgNum = 0;
     else if (CCtx::isCLibraryFunction(FDecl, "memccpy"))
       ArgNum = 3;
+        /// # void *realloc(void *ptr, size_t size)
+        /// - Name: realloc
+        ///   Args: [1]
     else if (CCtx::isCLibraryFunction(FDecl, "realloc"))
       ArgNum = 1;
     else if (CCtx::isCLibraryFunction(FDecl, "bcopy"))
       ArgNum = 2;
   }
+
+
+  /// # int shutdown(int sockfd, int how)
+  /// - Name: shutdown
+  ///   Args: [1]
+
+  /// # void *memset(void *s, int c, size_t n)  ???
+  /// - Name: memset
+  ///   Args: [1, 2]
+
+  /// # https://www.cvedetails.com/cve/CVE-2006-2451
+  /// # int prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
+  /// - Name: prctl
+  ///   Args: [0]
+
+  /// # int system(const char *command)
+  /// - Name: system
+  ///   Args: [0]
+
+  /// # int sprintf(char *str, const char *format, ...)
+  /// - Name: sprintf
+  ///   Args: [1,2,3,4,5,6,7,8]
+
+  /// # int snprintf(char *str, size_t size, const char *format, ...)
+  /// - Name: snprintf
+  ///   Args: [2,3,4,5,6,7,8]
+
+  /// # int vsprintf(char *str, const char *format, va_list ap)
+  /// - Name: vsprintf
+  ///   Args: [1, 2]
+
+  /// # int vsnprintf(char *str, size_t size, const char *format, va_list ap)
+  /// - Name: vsnprintf
+  ///   Args: [2, 3]
+
+  /// # int sscanf(const char *str, const char *format, ...)
+  /// - Name: sscanf
+  ///   Args: [1,2,3,4,5,6,7,8]
+
+  /// # int sscanf_s(const char *restrict str, const char *restrict format, ...)
+  /// - Name: sscanf_s
+  ///   Args: [1,2,3,4,5,6,7,8]
+
+  /// # int vsscanf(const char *str, const char *format, va_list ap)
+  /// - Name: vsscanf
+  ///   Args: [0, 1, 2]
 
   return ArgNum != InvalidArgIndex && Call.getNumArgs() > ArgNum &&
          generateReportIfTainted(Call.getArgExpr(ArgNum), MsgTaintedBufferSize,
