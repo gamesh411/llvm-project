@@ -869,24 +869,26 @@ bool GenericTaintChecker::checkSystemCall(const CallEvent &Call, StringRef Name,
   // TODO: It might make sense to run this check on demand. In some cases,
   // we should check if the environment has been cleansed here. We also might
   // need to know if the user was reset before these calls(seteuid).
-  unsigned ArgNum = llvm::StringSwitch<unsigned>(Name)
-                        .Case("system", 0)
-                        .Case("popen", 0)
-                        .Case("execl", 0)
-                        .Case("execle", 0)
-                        .Case("execlp", 0)
-                        .Case("execv", 0)
-                        .Case("execvp", 0)
-                        .Case("execvP", 0)
-                        .Case("execve", 0)
-                        .Case("dlopen", 0)
-                        .Default(InvalidArgIndex);
+  const ArgVector SensitiveArgs = llvm::StringSwitch<ArgVector>(Name)
+                                      .Case("system", {0})
+                                      .Case("popen", {0})
+                                      .Case("execl", {0, 1})
+                                      .Case("execle", {0, 1})
+                                      .Case("execlp", {0, 1})
+                                      .Case("execv", {0, 1})
+                                      .Case("execvp", {0, 1})
+                                      .Case("execvP", {0})
+                                      .Case("execve", {0, 1, 2})
+                                      .Case("dlopen", {0})
+                                      .Default({});
 
-  if (ArgNum == InvalidArgIndex || Call.getNumArgs() < (ArgNum + 1))
-    return false;
-
-  return generateReportIfTainted(Call.getArgExpr(ArgNum), MsgSanitizeSystemArgs,
-                                 C);
+  // Find the first argument that receives a tainted value.
+  // The report is emitted as a side-effect.
+  return llvm::find_if(SensitiveArgs, [this, &C, &Call](unsigned Idx) {
+           return Idx < Call.getNumArgs() &&
+                  generateReportIfTainted(Call.getArgExpr(Idx),
+                                          MsgSanitizeSystemArgs, C);
+         }) != SensitiveArgs.end();
 }
 
 // TODO: Should this check be a part of the CString checker?
@@ -895,40 +897,45 @@ bool GenericTaintChecker::checkTaintedBufferSize(const CallEvent &Call,
                                                  CheckerContext &C) const {
   const auto *FDecl = Call.getDecl()->getAsFunction();
   // If the function has a buffer size argument, set ArgNum.
-  unsigned ArgNum = InvalidArgIndex;
+  ArgVector SensitiveArgs = {};
   unsigned BId = 0;
   if ((BId = FDecl->getMemoryFunctionKind())) {
     switch (BId) {
     case Builtin::BImemcpy:
     case Builtin::BImemmove:
     case Builtin::BIstrncpy:
-      ArgNum = 2;
+      SensitiveArgs = {2};
       break;
     case Builtin::BIstrndup:
-      ArgNum = 1;
+      SensitiveArgs = {1};
       break;
     default:
       break;
     }
   }
 
-  if (ArgNum == InvalidArgIndex) {
+  if (SensitiveArgs.empty()) {
     using CCtx = CheckerContext;
     if (CCtx::isCLibraryFunction(FDecl, "malloc") ||
-        CCtx::isCLibraryFunction(FDecl, "calloc") ||
         CCtx::isCLibraryFunction(FDecl, "alloca"))
-      ArgNum = 0;
+      SensitiveArgs = {0};
+    else if (CCtx::isCLibraryFunction(FDecl, "calloc"))
+      SensitiveArgs = {0, 1};
     else if (CCtx::isCLibraryFunction(FDecl, "memccpy"))
-      ArgNum = 3;
+      SensitiveArgs = {3};
     else if (CCtx::isCLibraryFunction(FDecl, "realloc"))
-      ArgNum = 1;
+      SensitiveArgs = {1};
     else if (CCtx::isCLibraryFunction(FDecl, "bcopy"))
-      ArgNum = 2;
+      SensitiveArgs = {2};
   }
 
-  return ArgNum != InvalidArgIndex && Call.getNumArgs() > ArgNum &&
-         generateReportIfTainted(Call.getArgExpr(ArgNum), MsgTaintedBufferSize,
-                                 C);
+  // Find the first argument that receives a tainted value.
+  // The report is emitted as a side-effect.
+  return llvm::find_if(SensitiveArgs, [this, &C, &Call](unsigned Idx) {
+           return Idx < Call.getNumArgs() &&
+                  generateReportIfTainted(Call.getArgExpr(Idx),
+                                          MsgTaintedBufferSize, C);
+         }) != SensitiveArgs.end();
 }
 
 bool GenericTaintChecker::checkCustomSinks(const CallEvent &Call,
@@ -939,16 +946,15 @@ bool GenericTaintChecker::checkCustomSinks(const CallEvent &Call,
     return false;
 
   const auto &Value = It->second;
-  const GenericTaintChecker::ArgVector &Args = Value.second;
-  for (unsigned ArgNum : Args) {
-    if (ArgNum >= Call.getNumArgs())
-      continue;
+  const ArgVector &SensitiveArgs = Value.second;
 
-    if (generateReportIfTainted(Call.getArgExpr(ArgNum), MsgCustomSink, C))
-      return true;
-  }
-
-  return false;
+  // Find the first argument that receives a tainted value.
+  // The report is emitted as a side-effect.
+  return llvm::find_if(SensitiveArgs, [this, &C, &Call](unsigned Idx) {
+           return Idx < Call.getNumArgs() &&
+                  generateReportIfTainted(Call.getArgExpr(Idx), MsgCustomSink,
+                                          C);
+         }) != SensitiveArgs.end();
 }
 
 void ento::registerGenericTaintChecker(CheckerManager &Mgr) {

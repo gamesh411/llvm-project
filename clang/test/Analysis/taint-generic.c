@@ -209,6 +209,15 @@ void testTaintedBufferSize() {
   strncat(dst2, dst, ts); // no-warning
 }
 
+void testTaintedBufferSizeNoninitialTaintedArg() {
+  size_t ts;
+  scanf("%zd", &ts);
+
+  const int nontainted_num = 1;
+
+  (void)calloc(nontainted_num, ts); //expected-warning {{Untrusted data is used to specify the buffer size}}
+}
+
 #define AF_UNIX   1   /* local to host (pipes) */
 #define AF_INET   2   /* internetwork: UDP, TCP, etc. */
 #define AF_LOCAL  AF_UNIX   /* backward compatibility */
