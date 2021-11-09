@@ -1343,28 +1343,51 @@ bool GenericTaintChecker::checkSystemCall(const CallEvent &Call, StringRef Name,
   // TODO: It might make sense to run this check on demand. In some cases,
   // we should check if the environment has been cleansed here. We also might
   // need to know if the user was reset before these calls(seteuid).
-  unsigned ArgNum = llvm::StringSwitch<unsigned>(Name)
-                        .Case("system", 0)
-                        .Case("popen", 0)
-                        .Case("execl", 0)
-                        .Case("execle", 0)
-                        .Case("execlp", 0)
-                        .Case("execv", 0)
-                        .Case("execvp", 0)
-                        .Case("execvP", 0)
-                        .Case("execve", 0)
-                        .Case("dlopen", 0)
-                        .Default(InvalidArgIndex);
+  unsigned SensitiveArgs = llvm::StringSwitch<ArgVector>(Name)
+                        .Case("system", {0})
+                        .Case("popen", {0})
+                        /// # int execl(const char *path, const char *arg0, ... , (char *)0)
+                        /// - Name: execl
+                        ///   Args: [0, 1]
+                        .Case("execl", {0, 1})
+                        /// # int execle(const char *path, const char *arg0, ... ,(char *)0, char *const envp[])
+                        /// - Name: execle
+                        ///   Args: [0, 1]
+                        .Case("execle", {0, 1})
+                        /// # int execlp(const char *file, const char *arg0, ... , (char *)0)
+                        /// - Name: execlp
+                        ///   Args: [0, 1]
+                        .Case("execlp", {0, 1})
+                        /// # int execv(const char *path, char *const argv[])
+                        /// - Name: execv
+                        ///   Args: [0, 1]
+                        .Case("execv", {0, 1})
+                        /// # int execvp(const char *file, char *const argv[])
+                        /// - Name: execvp
+                        ///   Args: [0, 1]
+                        .Case("execvp", {0, 1})
+                        .Case("execvP", {0})
+                        /// # int execve(const char *path, char *const argv[], char *const envp[])
+                        /// - Name: execve
+                        ///   Args: [0, 1, 2]
+                        .Case("execve", {0, 1, 2})
+                        .Case("dlopen", {0})
+                        .Default({});
 
-  if (ArgNum == InvalidArgIndex || Call.getNumArgs() < (ArgNum + 1))
-    return false;
-
-  return generateReportIfTainted(Call.getArgExpr(ArgNum), MsgSanitizeSystemArgs,
-                                 C);
+  bool isReported = false;
+  for (const auto &Arg : SensitiveArgs) {
+    /// FIXME: Should we report EVERY arg or just the first?
+    isReported |=
+        (Call.getNumArgs() < (SensitiveArgs + 1)) &&
+        generateReportIfTainted(Call.getArgExpr(Arg), MsgSanitizeSystemArgs, C);
+  }
+  return isReported;
 }
 
 // TODO: Should this check be a part of the CString checker?
 // If yes, should taint be a global setting?
+// Only the first sensitive argument (that is acutally tainted) is relevant, as
+// we may not want to emit warnings multiple times for the same call.
 bool GenericTaintChecker::checkTaintedBufferSize(const CallEvent &Call,
                                                  CheckerContext &C) const {
   const auto *FDecl = Call.getDecl()->getAsFunction();
