@@ -985,8 +985,14 @@ GenericTaintChecker::TaintPropagationRule::getTaintPropagationRule(
           0, (ret |= CheckerContext::isCLibraryFunction(FDecl, Name), 0)...});
       return ret;
     };
+    /// # int snprintf(char *str, size_t size, const char *format, ...)
+    /// - Name: snprintf
+    ///   Args: [2,3,4,5,6,7,8]
     if (OneOf("snprintf"))
       return {{1}, {0, ReturnValueIndex}, VariadicType::Src, 3};
+    /// # int sprintf(char *str, const char *format, ...)
+    /// - Name: sprintf
+    ///   Args: [1,2,3,4,5,6,7,8]
     if (OneOf("sprintf"))
       return {{1}, {0, ReturnValueIndex}, VariadicType::Src, 2};
     if (OneOf("strcpy", "stpcpy", "strcat"))
@@ -1343,7 +1349,10 @@ bool GenericTaintChecker::checkSystemCall(const CallEvent &Call, StringRef Name,
   // TODO: It might make sense to run this check on demand. In some cases,
   // we should check if the environment has been cleansed here. We also might
   // need to know if the user was reset before these calls(seteuid).
-  unsigned SensitiveArgs = llvm::StringSwitch<ArgVector>(Name)
+  const ArgVector SensitiveArgs = llvm::StringSwitch<ArgVector>(Name)
+                        /// # int system(const char *command)
+                        /// - Name: system
+                        ///   Args: [0]
                         .Case("system", {0})
                         .Case("popen", {0})
                         /// # int execl(const char *path, const char *arg0, ... , (char *)0)
@@ -1374,14 +1383,15 @@ bool GenericTaintChecker::checkSystemCall(const CallEvent &Call, StringRef Name,
                         .Case("dlopen", {0})
                         .Default({});
 
-  bool isReported = false;
-  for (const auto &Arg : SensitiveArgs) {
-    /// FIXME: Should we report EVERY arg or just the first?
-    isReported |=
-        (Call.getNumArgs() < (SensitiveArgs + 1)) &&
-        generateReportIfTainted(Call.getArgExpr(Arg), MsgSanitizeSystemArgs, C);
-  }
-  return isReported;
+  // Find the first argument that receives a tainted value.
+  // The report is emitted as a side-effect.
+  const auto *TaintedArg =
+      llvm::find_if(SensitiveArgs, [this, &C, &Call](unsigned Idx) {
+        return Idx < Call.getNumArgs() &&
+               generateReportIfTainted(Call.getArgExpr(Idx),
+                                       MsgSanitizeSystemArgs, C);
+      });
+  return TaintedArg != SensitiveArgs.end();
 }
 
 // TODO: Should this check be a part of the CString checker?
@@ -1392,95 +1402,103 @@ bool GenericTaintChecker::checkTaintedBufferSize(const CallEvent &Call,
                                                  CheckerContext &C) const {
   const auto *FDecl = Call.getDecl()->getAsFunction();
   // If the function has a buffer size argument, set ArgNum.
-  unsigned ArgNum = InvalidArgIndex;
+  ArgVector SensitiveArgs = {};
   unsigned BId = 0;
   if ((BId = FDecl->getMemoryFunctionKind())) {
     switch (BId) {
     case Builtin::BImemcpy:
     case Builtin::BImemmove:
     case Builtin::BIstrncpy:
-      ArgNum = 2;
+      SensitiveArgs = {2};
       break;
     case Builtin::BIstrndup:
-      ArgNum = 1;
+      SensitiveArgs = {1};
       break;
     default:
       break;
     }
   }
 
-  if (ArgNum == InvalidArgIndex) {
+  if (SensitiveArgs.empty()) {
     using CCtx = CheckerContext;
-        /// # void *malloc(size_t size)
-        /// - Name: malloc
-        ///   Args: [0]
+    /// # void *malloc(size_t size)
+    /// - Name: malloc
+    ///   Args: [0]
     if (CCtx::isCLibraryFunction(FDecl, "malloc") ||
-        /// # void *calloc(size_t nmemb, size_t size)
-        /// - Name: calloc
-        ///   Args: [0, 1]
-        CCtx::isCLibraryFunction(FDecl, "calloc") ||
         CCtx::isCLibraryFunction(FDecl, "alloca"))
-      ArgNum = 0;
+      SensitiveArgs = {0};
+    else if (CCtx::isCLibraryFunction(FDecl, "calloc"))
+      /// # void *calloc(size_t nmemb, size_t size)
+      /// - Name: calloc
+      ///   Args: [0, 1]
+      SensitiveArgs = {0, 1};
     else if (CCtx::isCLibraryFunction(FDecl, "memccpy"))
-      ArgNum = 3;
-        /// # void *realloc(void *ptr, size_t size)
-        /// - Name: realloc
-        ///   Args: [1]
+      SensitiveArgs = {3};
+    /// # void *realloc(void *ptr, size_t size)
+    /// - Name: realloc
+    ///   Args: [1]
     else if (CCtx::isCLibraryFunction(FDecl, "realloc"))
-      ArgNum = 1;
+      SensitiveArgs = {1};
     else if (CCtx::isCLibraryFunction(FDecl, "bcopy"))
-      ArgNum = 2;
+      SensitiveArgs = {2};
+    /// # int shutdown(int sockfd, int how)
+    /// - Name: shutdown
+    ///   Args: [1]
+    else if (CCtx::isCLibraryFunction(FDecl, "shutdown"))
+      SensitiveArgs = {1};
+    /// # void *memset(void *s, int c, size_t n)  ???
+    /// - Name: memset
+    ///   Args: [1, 2]
+    else if (CCtx::isCLibraryFunction(FDecl, "memset"))
+      SensitiveArgs = {1, 2};
+    /// # https://www.cvedetails.com/cve/CVE-2006-2451
+    /// # int prctl(int option, unsigned long arg2, unsigned long arg3, unsigned
+    /// long arg4, unsigned long arg5)
+    /// - Name: prctl
+    ///   Args: [0]
+    else if (CCtx::isCLibraryFunction(FDecl, "prctl"))
+      SensitiveArgs = {0};
+
+    /// # int sscanf(const char *str, const char *format, ...)
+    /// - Name: sscanf
+    ///   Args: [1,2,3,4,5,6,7,8]
+    else if (CCtx::isCLibraryFunction(FDecl, "sscanf"))
+      SensitiveArgs = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    /// # int sscanf_s(const char *restrict str, const char *restrict format,
+    /// ...)
+    /// - Name: sscanf_s
+    ///   Args: [1,2,3,4,5,6,7,8]
+    else if (CCtx::isCLibraryFunction(FDecl, "sscanf_s"))
+      SensitiveArgs = {1, 2, 3, 4, 5, 6, 7, 8};
+
+    /// # int vsscanf(const char *str, const char *format, va_list ap)
+    /// - Name: vsscanf
+    ///   Args: [0, 1, 2]
+    else if (CCtx::isCLibraryFunction(FDecl, "vsscanf"))
+      SensitiveArgs = {0, 1, 2};
   }
-
-
-  /// # int shutdown(int sockfd, int how)
-  /// - Name: shutdown
-  ///   Args: [1]
-
-  /// # void *memset(void *s, int c, size_t n)  ???
-  /// - Name: memset
-  ///   Args: [1, 2]
-
-  /// # https://www.cvedetails.com/cve/CVE-2006-2451
-  /// # int prctl(int option, unsigned long arg2, unsigned long arg3, unsigned long arg4, unsigned long arg5)
-  /// - Name: prctl
-  ///   Args: [0]
-
-  /// # int system(const char *command)
-  /// - Name: system
-  ///   Args: [0]
-
-  /// # int sprintf(char *str, const char *format, ...)
-  /// - Name: sprintf
-  ///   Args: [1,2,3,4,5,6,7,8]
-
-  /// # int snprintf(char *str, size_t size, const char *format, ...)
-  /// - Name: snprintf
-  ///   Args: [2,3,4,5,6,7,8]
 
   /// # int vsprintf(char *str, const char *format, va_list ap)
   /// - Name: vsprintf
   ///   Args: [1, 2]
+  /// handled elsewhere
 
   /// # int vsnprintf(char *str, size_t size, const char *format, va_list ap)
   /// - Name: vsnprintf
   ///   Args: [2, 3]
+  /// handled elsewhere
 
-  /// # int sscanf(const char *str, const char *format, ...)
-  /// - Name: sscanf
-  ///   Args: [1,2,3,4,5,6,7,8]
 
-  /// # int sscanf_s(const char *restrict str, const char *restrict format, ...)
-  /// - Name: sscanf_s
-  ///   Args: [1,2,3,4,5,6,7,8]
-
-  /// # int vsscanf(const char *str, const char *format, va_list ap)
-  /// - Name: vsscanf
-  ///   Args: [0, 1, 2]
-
-  return ArgNum != InvalidArgIndex && Call.getNumArgs() > ArgNum &&
-         generateReportIfTainted(Call.getArgExpr(ArgNum), MsgTaintedBufferSize,
-                                 C);
+  // Find the first argument that receives a tainted value.
+  // The report is emitted as a side-effect.
+  const auto *TaintedArg =
+      llvm::find_if(SensitiveArgs, [this, &C, &Call](unsigned Idx) {
+        return Idx < Call.getNumArgs() &&
+               generateReportIfTainted(Call.getArgExpr(Idx),
+                                       MsgTaintedBufferSize, C);
+      });
+  return TaintedArg != SensitiveArgs.end();
 }
 
 bool GenericTaintChecker::checkCustomSinks(const CallEvent &Call,
@@ -1491,16 +1509,16 @@ bool GenericTaintChecker::checkCustomSinks(const CallEvent &Call,
     return false;
 
   const auto &Value = It->second;
-  const GenericTaintChecker::ArgVector &Args = Value.second;
-  for (unsigned ArgNum : Args) {
-    if (ArgNum >= Call.getNumArgs())
-      continue;
+  const ArgVector &SensitiveArgs = Value.second;
 
-    if (generateReportIfTainted(Call.getArgExpr(ArgNum), MsgCustomSink, C))
-      return true;
-  }
-
-  return false;
+  // Find the first argument that receives a tainted value.
+  // The report is emitted as a side-effect.
+  const auto *TaintedArg =
+      llvm::find_if(SensitiveArgs, [this, &C, &Call](unsigned Idx) {
+        return Idx < Call.getNumArgs() &&
+               generateReportIfTainted(Call.getArgExpr(Idx), MsgCustomSink, C);
+      });
+  return TaintedArg != SensitiveArgs.end();
 }
 
 void ento::registerGenericTaintChecker(CheckerManager &Mgr) {
