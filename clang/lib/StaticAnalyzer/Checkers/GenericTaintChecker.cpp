@@ -574,16 +574,16 @@ GenericTaintChecker::TaintPropagationRule::getTaintPropagationRule(
           /// iov needs an extra indirection ???
           /// - Name: readv
           ///   DstArgs: [1, -1]
-          .Case("readv", {{0}, {1, ReturnValueIndex}})
+          .Case("readv", {{}, {1, ReturnValueIndex}})
           /// # ssize_t recv(int sockfd, void *buf, size_t len, int flags)
           /// - Name: recv
           ///   DstArgs: [1, -1]
-          .Case("recv", {{0}, {1, ReturnValueIndex}})
+          .Case("recv", {{}, {1, ReturnValueIndex}})
           /// # ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags,
           /// struct sockaddr *src_addr, socklen_t *addrlen)
           /// - Name: recvfrom
           ///   DstArgs: [1, -1]
-          .Case("recvfrom", {{0}, {1, ReturnValueIndex}})
+          .Case("recvfrom", {{}, {1, ReturnValueIndex}})
           /// # int scanf(const char *format, ...)
           /// - Name: scanf
           ///   VariadicType: Dst
@@ -594,7 +594,7 @@ GenericTaintChecker::TaintPropagationRule::getTaintPropagationRule(
           /// - Name: scanf_s
           ///   VariadicType: Dst
           ///   VariadicIndex: 1
-          .Case("scanf_s", {{0}, {}, VariadicType::Dst, 1})
+          .Case("scanf_s", {{}, {}, VariadicType::Dst, 1})
           /// # int fscanf(FILE *stream, const char *format, ...)
           /// - Name: fscanf
           ///   VariadicType: Dst
@@ -605,23 +605,23 @@ GenericTaintChecker::TaintPropagationRule::getTaintPropagationRule(
           /// - Name: fscanf_s
           ///   VariadicType: Dst
           ///   VariadicIndex: 2
-          .Case("fscanf_s", {{0}, {}, VariadicType::Dst, 2})
+          .Case("fscanf_s", {{}, {}, VariadicType::Dst, 2})
           /// # int vscanf(const char *format, va_list ap)
           /// - Name: vscanf
           ///   DstArgs: [1]
-          .Case("vscanf", {{0}, {1}})
+          .Case("vscanf", {{}, {1}})
           /// # int vfscanf(FILE *stream, const char *format, va_list ap)
           /// - Name: vfscanf
           ///   DstArgs: [1]
-          .Case("vfscanf", {{0}, {1}})
+          .Case("vfscanf", {{}, {1}})
           /// # int ttyname_r(int fd, char *buf, size_t buflen)
           /// - Name: ttyname_r
           ///   DstArgs: [1, -1]
-          .Case("ttyname_r", {{0}, {1, ReturnValueIndex}})
+          .Case("ttyname_r", {{}, {1, ReturnValueIndex}})
           /// # int ttyname(int fd)
           /// - Name: ttyname
           ///   DstArgs: [-1]
-          .Case("ttyname_r", {{0}, {ReturnValueIndex}})
+          .Case("ttyname_r", {{}, {ReturnValueIndex}})
           ///  # char *dirname(char *path)
           ///  - Name: dirname
           ///    SrcArgs: [0]
