@@ -2340,23 +2340,19 @@ The most notable examples of taint sources are:
      // warn: untrusted data as buffer size
  }
 
-Default sources defined by `GenericTaintChecker`:
+Default sources defined by ``GenericTaintChecker``:
 ``fdopen``, ``fopen``, ``freopen``, ``getch``, ``getchar``, ``getchar_unlocked``, ``gets``, ``scanf``, ``socket``, ``wgetch``
 
-Default propagations defined by `GenericTaintChecker`:
+Default propagations defined by ``GenericTaintChecker``:
 ``atoi``, ``atol``, ``atoll``, ``fgetc``, ``fgetln``, ``fgets``, ``fscanf``, ``sscanf``, ``getc``, ``getc_unlocked``, ``getdelim``, ``getline``, ``getw``, ``pread``, ``read``, ``strchr``, ``strrchr``, ``tolower``, ``toupper``
 
-Default sinks defined in `GenericTaintChecker`:
+Default sinks defined in ``GenericTaintChecker``:
 ``printf``, ``setproctitle``, ``system``, ``popen``, ``execl``, ``execle``, ``execlp``, ``execv``, ``execvp``, ``execvP``, ``execve``, ``dlopen``, ``memcpy``, ``memmove``, ``strncpy``, ``strndup``, ``malloc``, ``calloc``, ``alloca``, ``memccpy``, ``realloc``, ``bcopy``
 
 The user can configure taint sources, sinks, and propagation rules by providing a configuration file via checker option ``alpha.security.taint.TaintPropagation:Config``.
 
-.. code-block:: sh
-
- clang --analyze ... -Xclang -analyzer-config -Xclang alpha.security.taint.TaintPropagation:Config=taint_config.yaml
-
 External taint configuration is in `YAML <https://yaml.org/>`_ format. The taint-related options defined in the config file extend but do not override the built-in sources, rules, sinks.
-
+The format of the external taint configuration file is not stable, and could change without any notice even in a non-backward compatible way.
 
 For a more detailed description of configuration options, please see the :doc:`user-docs/TaintAnalysisConfiguration`. For an example see :ref:`taint-configuration-example`.
 
