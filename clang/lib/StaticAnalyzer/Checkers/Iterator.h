@@ -203,6 +203,12 @@ ProgramStateRef advancePosition(ProgramStateRef State, const SVal &Iter,
 ProgramStateRef advancePosition(ProgramStateRef State, const MemRegion *Reg,
                                 OverloadedOperatorKind Op,
                                 const SVal &Distance);
+ProgramStateRef advanceLValPosition(ProgramStateRef State, const MemRegion *Reg,
+                                    OverloadedOperatorKind Op,
+                                    const SVal &Distance);
+ProgramStateRef advanceRValPosition(ProgramStateRef State, const SVal &Iter,
+                                    OverloadedOperatorKind Op,
+                                    const SVal &Distance);
 ProgramStateRef assumeNoOverflow(ProgramStateRef State, SymbolRef Sym,
                                  long Scale);
 bool compare(ProgramStateRef State, SymbolRef Sym1, SymbolRef Sym2,

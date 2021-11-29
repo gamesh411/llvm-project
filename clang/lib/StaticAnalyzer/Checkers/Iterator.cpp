@@ -252,8 +252,7 @@ ProgramStateRef createIteratorPosition(ProgramStateRef State, const SVal &Val,
                     State, Val, IteratorPosition::getPosition(Cont, Sym));
 }
 
-IteratorPosition advancePosFor(IteratorPosition Pos, ProgramStateRef State, const SVal &Iter,
-                                OverloadedOperatorKind Op,
+IteratorPosition advancePosFor(IteratorPosition Pos, ProgramStateRef State, OverloadedOperatorKind Op,
                                 const SVal &Distance) {
   auto &SymMgr = State->getStateManager().getSymbolManager();
   auto &SVB = State->getStateManager().getSValBuilder();
@@ -280,18 +279,24 @@ IteratorPosition advancePosFor(IteratorPosition Pos, ProgramStateRef State, cons
                        .getAsSymbol());
 }
 
-ProgramStateRef advanceLValPosition(ProgramStateRef State, const SVal &Iter,
+// Callsites must provide the information, whether the position's expression is
+// an LValue or RValue by calling advanceLValPosition or advanceRValPosition
+// respectively.
+ProgramStateRef advanceLValPosition(ProgramStateRef State, const MemRegion *Reg,
                                 OverloadedOperatorKind Op,
                                 const SVal &Distance) {
-  const auto *Pos = getIteratorLValPosition(State, Iter);
+  const auto *Pos = getIteratorLValPosition(State, Reg);
   if (!Pos)
     return nullptr;
   
-  const auto NewPos = advancePosFor(*Pos, State, Iter, Op, Distance);
+  const auto NewPos = advancePosFor(*Pos, State, Op, Distance);
 
-  return setIteratorLValPosition(State, Iter, NewPos);
+  return setIteratorLValPosition(State, Reg, NewPos);
 };
 
+// Callsites must provide the information, wheter the positions expression is an
+// LValue or RValue by calling advanceLValPosition or advanceRValPosition
+// respectively.
 ProgramStateRef advanceRValPosition(ProgramStateRef State, const SVal &Iter,
                                 OverloadedOperatorKind Op,
                                 const SVal &Distance) {
@@ -299,7 +304,7 @@ ProgramStateRef advanceRValPosition(ProgramStateRef State, const SVal &Iter,
   if (!Pos)
     return nullptr;
   
-  const auto NewPos = advancePosFor(*Pos, State, Iter, Op, Distance);
+  const auto NewPos = advancePosFor(*Pos, State, Op, Distance);
 
   return setIteratorRValPosition(State, Iter, NewPos);
 };

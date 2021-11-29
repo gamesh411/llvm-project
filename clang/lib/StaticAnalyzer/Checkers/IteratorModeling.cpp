@@ -110,7 +110,8 @@ class IteratorModeling
                        const MemRegion *Reg, bool Postfix) const;
   void handleRandomIncrOrDecr(CheckerContext &C, const Expr *CE,
                               OverloadedOperatorKind Op, const SVal &RetVal,
-                              const SVal &Iterator, const SVal &Amount) const;
+                              const SVal &Iterator, const SVal &Amount,
+                              bool IsLVal) const;
   void handlePtrIncrOrDecr(CheckerContext &C, const Expr *Iterator,
                            OverloadedOperatorKind OK, SVal Offset) const;
   void handleAdvance(CheckerContext &C, const Expr *CE, SVal RetVal, SVal Iter,
@@ -295,12 +296,12 @@ void IteratorModeling::checkPostStmt(const BinaryOperator *BO,
   const BinaryOperatorKind OK = BO->getOpcode();
   const Expr *const LHS = BO->getLHS();
   const Expr *const RHS = BO->getRHS();
-  const SVal LVal = State->getSVal(LHS, C.getLocationContext());
-  const SVal RVal = State->getSVal(RHS, C.getLocationContext());
+  const SVal LHSVal = State->getSVal(LHS, C.getLocationContext());
+  const SVal RHSVal = State->getSVal(RHS, C.getLocationContext());
 
   if (isSimpleComparisonOperator(BO->getOpcode())) {
     SVal Result = State->getSVal(BO, C.getLocationContext());
-    handleComparison(C, BO, Result, LVal, RVal,
+    handleComparison(C, BO, Result, LHSVal, RHSVal,
                      BinaryOperator::getOverloadedOperator(OK));
   } else if (isRandomIncrOrDecrOperator(OK)) {
     // In case of operator+ the iterator can be either on the LHS (eg.: it + 1),
@@ -312,7 +313,7 @@ void IteratorModeling::checkPostStmt(const BinaryOperator *BO,
     // The non-iterator side must have an integral or enumeration type.
     if (!AmountExpr->getType()->isIntegralOrEnumerationType())
       return;
-    const SVal &AmountVal = IsIterOnLHS ? RVal : LVal;
+    const SVal &AmountVal = IsIterOnLHS ? RHSVal : LHSVal;
     handlePtrIncrOrDecr(C, IterExpr, BinaryOperator::getOverloadedOperator(OK),
                         AmountVal);
   }
@@ -386,7 +387,8 @@ IteratorModeling::handleOverloadedOperator(CheckerContext &C,
         if (Call.getNumArgs() >= 1 &&
               Call.getArgExpr(0)->getType()->isIntegralOrEnumerationType()) {
           handleRandomIncrOrDecr(C, OrigExpr, Op, Call.getReturnValue(),
-                                 InstCall->getCXXThisVal(), Call.getArgSVal(0));
+                                 InstCall->getCXXThisVal(), Call.getArgSVal(0),
+                                 false);
           return;
         }
       } else if (Call.getNumArgs() >= 2) {
@@ -406,7 +408,7 @@ IteratorModeling::handleOverloadedOperator(CheckerContext &C,
           const SVal &Amount = IsIterFirst ? SecondArg : FirstArg;
 
           handleRandomIncrOrDecr(C, OrigExpr, Op, Call.getReturnValue(),
-                                 Iterator, Amount);
+                                 Iterator, Amount, false);
           return;
         }
       }
@@ -583,7 +585,7 @@ void IteratorModeling::processComparison(CheckerContext &C,
 }
 
 // Prefix oprator++ is assumed to always take parameter as reference and return
-// a reference to the the incremented value. Postfix operator++ is assumed to
+// a reference to the incremented value. Postfix operator++ is assumed to
 // always take parameter as reference and return by value.
 void IteratorModeling::handleIncrement(CheckerContext &C, const SVal &RetVal,
                                        const MemRegion *Reg,
@@ -598,7 +600,7 @@ void IteratorModeling::handleIncrement(CheckerContext &C, const SVal &RetVal,
     return;
 
   auto NewState =
-    advancePosition(State, Reg, OO_Plus,
+    advanceLValPosition(State, Reg, OO_Plus,
                     nonloc::ConcreteInt(BVF.getValue(llvm::APSInt::get(1))));
   assert(NewState &&
          "Advancing position by concrete int should always be successful");
@@ -628,7 +630,7 @@ void IteratorModeling::handleDecrement(CheckerContext &C, const SVal &RetVal,
     return;
 
   auto NewState =
-      advancePosition(State, Reg, OO_Minus,
+      advanceLValPosition(State, Reg, OO_Minus,
                       nonloc::ConcreteInt(BVF.getValue(llvm::APSInt::get(1))));
   assert(NewState &&
          "Advancing position by concrete int should always be successful");
@@ -650,7 +652,8 @@ void IteratorModeling::handleRandomIncrOrDecr(CheckerContext &C, const Expr *CE,
                                               OverloadedOperatorKind Op,
                                               const SVal &RetVal,
                                               const SVal &Iterator,
-                                              const SVal &Amount) const {
+                                              const SVal &Amount,
+                                              bool IsLVal) const {
   // Increment or decrement the symbolic expressions which represents the
   // position of the iterator
   auto State = C.getState();
@@ -732,17 +735,17 @@ void IteratorModeling::handlePtrIncrOrDecr(CheckerContext &C,
 void IteratorModeling::handleAdvance(CheckerContext &C, const Expr *CE,
                                      SVal RetVal, SVal Iter,
                                      SVal Amount) const {
-  handleRandomIncrOrDecr(C, CE, OO_PlusEqual, RetVal, Iter, Amount);
+  handleRandomIncrOrDecr(C, CE, OO_PlusEqual, RetVal, Iter, Amount, false);
 }
 
 void IteratorModeling::handlePrev(CheckerContext &C, const Expr *CE,
                                   SVal RetVal, SVal Iter, SVal Amount) const {
-  handleRandomIncrOrDecr(C, CE, OO_Minus, RetVal, Iter, Amount);
+  handleRandomIncrOrDecr(C, CE, OO_Minus, RetVal, Iter, Amount, false);
 }
 
 void IteratorModeling::handleNext(CheckerContext &C, const Expr *CE,
                                   SVal RetVal, SVal Iter, SVal Amount) const {
-  handleRandomIncrOrDecr(C, CE, OO_Plus, RetVal, Iter, Amount);
+  handleRandomIncrOrDecr(C, CE, OO_Plus, RetVal, Iter, Amount, false);
 }
 
 void IteratorModeling::assignToContainer(CheckerContext &C, const Expr *CE,
