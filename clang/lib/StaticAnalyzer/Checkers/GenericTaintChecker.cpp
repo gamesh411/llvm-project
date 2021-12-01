@@ -769,7 +769,7 @@ void GenericTaintRule::process(const CallEvent &Call, CheckerContext &C) const {
          "ArgIdxTy is not large enough to represent the number of arguments.");
 
   /// Iterate every call argument, and get their corresponding Expr and SVal.
-  const auto ForEachCallArg = [this, &C, &Call](auto &&F) {
+  const auto ForEachCallArg = [&C, &Call](auto &&F) {
     for (ArgIdxTy I = ReturnValueIndex, N = Call.getNumArgs(); I < N; ++I) {
       const Expr *E = GetArgExpr(I, Call);
       assert(E);
