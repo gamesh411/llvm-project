@@ -162,6 +162,11 @@ private:
   /// Given a pointer argument, return the value it points to.
   static Optional<SVal> getPointeeOf(CheckerContext &C, const Expr *Arg);
 
+  /// Given a pointer, return the SVal of its pointee or if it is tainted,
+  /// otherwise return the pointer's SVal if tainted.
+  static Optional<SVal> getTaintedPointeeOrPointer(CheckerContext &C,
+                                                   const Expr *Arg);
+
   /// Check for CWE-134: Uncontrolled Format String.
   static constexpr llvm::StringLiteral MsgUncontrolledFormatString =
       "Untrusted data is used as a format string "
@@ -824,19 +829,29 @@ static bool getPrintfFormatArgumentNum(const CallEvent &Call,
   return false;
 }
 
+Optional<SVal>
+GenericTaintChecker::getTaintedPointeeOrPointer(CheckerContext &C,
+                                                const Expr *Arg) {
+  assert(Arg);
+  // Check for taint.
+  ProgramStateRef State = C.getState();
+  Optional<SVal> PointedToSVal = getPointeeOf(C, Arg);
+
+  if (PointedToSVal && isTainted(State, *PointedToSVal))
+    return PointedToSVal;
+
+  if (isTainted(State, Arg, C.getLocationContext()))
+    return {C.getSVal(Arg)};
+
+  return {};
+}
+
 bool GenericTaintChecker::generateReportIfTainted(const Expr *E, StringRef Msg,
                                                   CheckerContext &C) const {
   assert(E);
+  Optional<SVal> TaintedSVal{getTaintedPointeeOrPointer(C, E)};
 
-  // Check for taint.
-  ProgramStateRef State = C.getState();
-  Optional<SVal> PointedToSVal = getPointeeOf(C, E);
-  SVal TaintedSVal;
-  if (PointedToSVal && isTainted(State, *PointedToSVal))
-    TaintedSVal = *PointedToSVal;
-  else if (isTainted(State, E, C.getLocationContext()))
-    TaintedSVal = C.getSVal(E);
-  else
+  if (!TaintedSVal)
     return false;
 
   // Generate diagnostic.
@@ -844,7 +859,7 @@ bool GenericTaintChecker::generateReportIfTainted(const Expr *E, StringRef Msg,
     initBugType();
     auto report = std::make_unique<PathSensitiveBugReport>(*BT, Msg, N);
     report->addRange(E->getSourceRange());
-    report->addVisitor(std::make_unique<TaintBugVisitor>(TaintedSVal));
+    report->addVisitor(std::make_unique<TaintBugVisitor>(*TaintedSVal));
     C.emitReport(std::move(report));
     return true;
   }
