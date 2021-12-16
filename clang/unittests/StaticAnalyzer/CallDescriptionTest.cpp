@@ -19,6 +19,36 @@ namespace clang {
 namespace ento {
 namespace {
 
+struct MoveTracker {
+  MoveTracker(int* moveCounter): moveCounter{moveCounter} {};
+  MoveTracker(const MoveTracker&) = default;
+  MoveTracker& operator=(const MoveTracker&) = default;
+  MoveTracker(MoveTracker&& other): moveCounter{(++(*other.moveCounter), other.moveCounter)} {};
+  MoveTracker& operator=(MoveTracker&& other) {
+    moveCounter = other.moveCounter;
+    ++(*moveCounter);
+    return *this;
+  };
+
+  int* moveCounter;
+};
+
+TEST(CallDescription, CallDescriptionMapIsMovable) {
+  int MC {0};
+
+  CallDescriptionMap<MoveTracker> CDM{{{"a"}, {&MC}}};
+
+  EXPECT_TRUE(MC == 1);
+
+  CallDescriptionMap<MoveTracker> CDM2 {std::move(CDM)};
+
+  EXPECT_TRUE(MC == 2);
+
+  CDM = std::move(CDM2);
+
+  EXPECT_TRUE(MC == 3);
+}
+
 // A wrapper around CallDescriptionMap<bool> that allows verifying that
 // all functions have been found. This is needed because CallDescriptionMap
 // isn't supposed to support iteration.
