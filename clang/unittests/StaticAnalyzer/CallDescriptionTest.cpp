@@ -19,6 +19,10 @@ namespace clang {
 namespace ento {
 namespace {
 
+static_assert(std::is_move_constructible<CallDescriptionMap<bool>>() &&
+                  std::is_move_assignable<CallDescriptionMap<bool>>(),
+              "CallDescriptionMap should support move semantics");
+
 // A wrapper around CallDescriptionMap<bool> that allows verifying that
 // all functions have been found. This is needed because CallDescriptionMap
 // isn't supposed to support iteration.
