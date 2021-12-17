@@ -23,6 +23,14 @@ static_assert(std::is_move_constructible<CallDescriptionMap<bool>>() &&
                   std::is_move_assignable<CallDescriptionMap<bool>>(),
               "CallDescriptionMap should support move semantics");
 
+using ArgsContainer = std::vector<std::pair<CallDescription, bool>>;
+
+static_assert(
+    std::is_constructible<CallDescriptionMap<bool>,
+                          decltype(std::declval<ArgsContainer>().begin()),
+                          decltype(std::declval<ArgsContainer>().end())>(),
+    "should be range constructible");
+
 // A wrapper around CallDescriptionMap<bool> that allows verifying that
 // all functions have been found. This is needed because CallDescriptionMap
 // isn't supposed to support iteration.
