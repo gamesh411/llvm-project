@@ -2261,6 +2261,12 @@ void PathSensitiveBugReport::markInteresting(SymbolRef sym,
   // How to handle multiple metadata for the same region?
   if (const auto *meta = dyn_cast<SymbolMetadata>(sym))
     markInteresting(meta->getRegion(), TKind);
+
+  auto SubSyms = llvm::make_range(sym->symbol_begin(), sym->symbol_end());
+  for (SymbolRef SubSym : SubSyms) {
+    if (SymbolData::classof(SubSym))
+      insertToInterestingnessMap(InterestingSymbols, SubSym, TKind);
+  }
 }
 
 void PathSensitiveBugReport::markNotInteresting(SymbolRef sym) {
@@ -2341,10 +2347,25 @@ PathSensitiveBugReport::getInterestingnessKind(SymbolRef sym) const {
     return None;
   // We don't currently consider metadata symbols to be interesting
   // even if we know their region is interesting. Is that correct behavior?
-  auto It = InterestingSymbols.find(sym);
-  if (It == InterestingSymbols.end())
-    return None;
-  return It->getSecond();
+  auto TryToLookupTrackingKind =
+      [this](SymbolRef Sym) -> Optional<bugreporter::TrackingKind> {
+    auto It = InterestingSymbols.find(Sym);
+    if (It == InterestingSymbols.end())
+      return None;
+    return It->getSecond();
+  };
+
+  if (auto MaybeTK = TryToLookupTrackingKind(sym))
+    return MaybeTK;
+
+  auto SubSyms = llvm::make_range(sym->symbol_begin(), sym->symbol_end());
+  for (SymbolRef SubSym : SubSyms) {
+    if (SymbolData::classof(SubSym)) {
+      if (auto MaybeTK = TryToLookupTrackingKind(SubSym))
+        return MaybeTK;
+    }
+  }
+  return None;
 }
 
 Optional<bugreporter::TrackingKind>
