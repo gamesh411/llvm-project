@@ -39,42 +39,63 @@ static cl::OptionCategory
 struct CallInfo {
   const CallExpr* Expr;
   std::string Name;
+  std::string Location;
 };
 
 struct ThrowInfo {
   const CXXThrowExpr* Expr;
+  std::string Location;
 };
 
 struct CatchInfo {
   const CXXCatchStmt* Stmt;
+  std::string Location;
+};
+
+struct TryInfo {
+  const CXXTryStmt* Stmt;
+  std::string Location;
 };
 
 struct ExceptionInfo {
   llvm::SmallVector<ThrowInfo> Throws;
   llvm::SmallVector<CatchInfo> Catches;
   llvm::SmallVector<CallInfo> Calls;
+  llvm::SmallVector<TryInfo> Tries;
 };
 
 StatementMatcher CallMatcher = findAll(callExpr().bind("call"));
 StatementMatcher ThrowMatcher = findAll(cxxThrowExpr().bind("throw"));
 StatementMatcher CatchMatcher = findAll(cxxCatchStmt().bind("catch"));
+StatementMatcher TryMatcher = findAll(cxxTryStmt().bind("try"));
+
+Optional<bool> isInside(Stmt* Candidate, Stmt* Container) {
+  SourceRange CandidateRange = Candidate->getSourceRange();
+  SourceRange ContainerRange = Container->getSourceRange();
+
+  if (CandidateRange.isInvalid() || ContainerRange.isInvalid())
+      return None;
+
+  return ContainerRange.fullyContains(CandidateRange);
+}
 
 class ExceptionInfoConsumer {
 public:
-  ExceptionInfoConsumer(ExceptionInfo& EI): EI(EI) {}
+  ExceptionInfoConsumer(ExceptionInfo& EI, SourceManager& SM): EI(EI), SM(SM) {}
 protected:
   ExceptionInfo& EI;
+  SourceManager& SM;
 };
 
 class CalledFunctions : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
 public :
-  CalledFunctions(ExceptionInfo& EI): ExceptionInfoConsumer(EI) {}
+  CalledFunctions(ExceptionInfo& EI, SourceManager &SM): ExceptionInfoConsumer(EI, SM) {}
   virtual void run(const MatchFinder::MatchResult &Result) override {
     if (const CallExpr *Call = Result.Nodes.getNodeAs<clang::CallExpr>("call")) {
       llvm::errs() << "call\n";
-      if (const auto* ND = dyn_cast<NamedDecl>(Call->getCalleeDecl()) ) {
+      if (const auto* ND = dyn_cast_or_null<NamedDecl>(Call->getCalleeDecl()) ) {
         if (const Optional<std::string> Name = CrossTranslationUnitContext::getLookupName(ND))
-          EI.Calls.push_back({Call, *Name});
+          EI.Calls.push_back({Call, *Name, Call->getSourceRange().printToString(SM)});
       }
     }
   }
@@ -82,22 +103,33 @@ public :
 
 class ThrownExceptions : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
 public :
-  ThrownExceptions(ExceptionInfo& EI): ExceptionInfoConsumer(EI) {}
+  ThrownExceptions(ExceptionInfo& EI, SourceManager &SM): ExceptionInfoConsumer(EI, SM) {}
   virtual void run(const MatchFinder::MatchResult &Result) override {
     if (const CXXThrowExpr *Throw = Result.Nodes.getNodeAs<clang::CXXThrowExpr>("throw")) {
       llvm::errs() << "throw\n";
-      EI.Throws.push_back({Throw});
+      EI.Throws.push_back({Throw, Throw->getSourceRange().printToString(SM)});
     }
   }
 };
 
 class CaughtExceptions : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
 public :
-  CaughtExceptions(ExceptionInfo& EI): ExceptionInfoConsumer(EI) {}
+  CaughtExceptions(ExceptionInfo& EI, SourceManager& SM): ExceptionInfoConsumer(EI, SM) {}
   virtual void run(const MatchFinder::MatchResult &Result) override {
     if (const CXXCatchStmt *Catch = Result.Nodes.getNodeAs<clang::CXXCatchStmt>("catch")) {
       llvm::errs() << "catch\n";
-      EI.Catches.push_back({Catch});
+      EI.Catches.push_back({Catch, Catch->getSourceRange().printToString(SM)});
+    }
+  }
+};
+
+class TryBlocks : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
+public :
+  TryBlocks(ExceptionInfo& EI, SourceManager &SM): ExceptionInfoConsumer(EI, SM) {}
+  virtual void run(const MatchFinder::MatchResult &Result) override {
+    if (const CXXTryStmt *Try = Result.Nodes.getNodeAs<clang::CXXTryStmt>("try")) {
+      llvm::errs() << "try\n";
+      EI.Tries.push_back({Try, Try->getSourceRange().printToString(SM)});
     }
   }
 };
@@ -120,12 +152,14 @@ private:
   void handleFunctionBody(std::string CallerName, const Stmt* Body) {
     MatchFinder MF;
     ExceptionInfo EI;
-    auto CallAction = std::make_unique<CalledFunctions>(EI);
-    auto ThrowAction = std::make_unique<ThrownExceptions>(EI);
-    auto CatchAction = std::make_unique<CaughtExceptions>(EI);
+    auto CallAction = std::make_unique<CalledFunctions>(EI, SM);
+    auto ThrowAction = std::make_unique<ThrownExceptions>(EI, SM);
+    auto CatchAction = std::make_unique<CaughtExceptions>(EI, SM);
+    auto TryAction = std::make_unique<TryBlocks>(EI, SM);
     MF.addMatcher(CallMatcher, CallAction.get());
     MF.addMatcher(ThrowMatcher, ThrowAction.get());
     MF.addMatcher(CatchMatcher, CatchAction.get());
+    MF.addMatcher(TryMatcher, TryAction.get());
     MF.match(*Body, AC);
     Index[CallerName] = EI;
   }
@@ -137,12 +171,13 @@ private:
     if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
       if (FD->isThisDeclarationADefinition()) {
         if (const Stmt *Body = FD->getBody()) {
-          if (SM.isInMainFile(Body->getBeginLoc())) {
+          // We analyze all functions not just the ones in the main file.
+          //if (SM.isInMainFile(Body->getBeginLoc())) {
             llvm::Optional<std::string> LookupName =
               CrossTranslationUnitContext::getLookupName(FD);
             if (LookupName)
               handleFunctionBody(*LookupName, Body);
-          }
+          //}
         }
       }
     }
@@ -222,15 +257,19 @@ int main(int argc, const char **argv) {
     llvm::errs() << Function.first() << ":\n";
     llvm::errs() << "  calls:\n";
     for (const CallInfo& Call: Function.second.Calls) {
-      llvm::errs() << "    - " << Call.Name << "\n";
+      llvm::errs() << "    - " << Call.Name << "@" << Call.Location << "\n";
+    }
+    llvm::errs() << "  tries:\n";
+    for (const TryInfo& Try: Function.second.Tries) {
+      llvm::errs() << "    - " << Try.Stmt << "@" << Try.Location << "\n";
     }
     llvm::errs() << "  throws:\n";
     for (const ThrowInfo& Throw: Function.second.Throws) {
-      llvm::errs() << "    - " << Throw.Expr->getType().getAsString() << "\n";
+      llvm::errs() << "    - " << Throw.Expr->getType().getAsString() << "@" << Throw.Location << "\n";
     }
     llvm::errs() << "  catches:\n";
     for (const CatchInfo& Catch: Function.second.Catches) {
-      llvm::errs() << "    - " << Catch.Stmt->getCaughtType().getAsString() << "\n";
+      llvm::errs() << "    - " << Catch.Stmt->getCaughtType().getAsString() << "@" << Catch.Location << "\n";
     }
   }
 
