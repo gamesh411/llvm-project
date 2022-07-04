@@ -24,8 +24,10 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
+#include <queue>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 using namespace llvm;
 using namespace clang;
@@ -37,23 +39,28 @@ static cl::OptionCategory
     ClangExtDefMapGenCategory("clang-extdefmapgen options");
 
 struct CallInfo {
-  const CallExpr* Expr;
+  const Expr *CallOrCtorInvocation;
+  const FunctionDecl *Callee;
   std::string Name;
   std::string Location;
 };
 
 struct ThrowInfo {
-  const CXXThrowExpr* Expr;
+  const CXXThrowExpr *Expr;
+  bool isRethrow;
+  std::string Description;
   std::string Location;
 };
 
 struct CatchInfo {
-  const CXXCatchStmt* Stmt;
+  const CXXCatchStmt *Stmt;
+  bool isCatchAll;
+  std::string Description;
   std::string Location;
 };
 
 struct TryInfo {
-  const CXXTryStmt* Stmt;
+  const CXXTryStmt *Stmt;
   std::string Location;
 };
 
@@ -64,71 +71,140 @@ struct ExceptionInfo {
   llvm::SmallVector<TryInfo> Tries;
 };
 
-StatementMatcher CallMatcher = findAll(callExpr().bind("call"));
+struct ExceptionContext {
+  std::set<const FunctionDecl *> FunctionsVisited;
+  std::unordered_map<const FunctionDecl *, std::string> NameIndex;
+  std::unordered_map<const FunctionDecl *, std::string> ShortNameIndex;
+  std::unordered_map<const FunctionDecl *, const Stmt *> BodyIndex;
+
+  std::unordered_map<const FunctionDecl *, bool> IsInMainFileIndex;
+  std::unordered_map<const FunctionDecl *, ExceptionInfo> ExInfoIndex;
+
+  std::unordered_map<const FunctionDecl *, const FunctionDecl *> CalleeIndex;
+
+  // std::set<const FunctionDecl *> AlreadyVisitedFunctions;
+  // std::set<std::pair<const FunctionDecl *, const FunctionDecl *>>
+  //    AlreadyVisitedPairs;
+  // std::queue<const FunctionDecl *> FunctionWorklist;
+};
+
+StatementMatcher CallMatcher = findAll(invocation().bind("invocation"));
 StatementMatcher ThrowMatcher = findAll(cxxThrowExpr().bind("throw"));
 StatementMatcher CatchMatcher = findAll(cxxCatchStmt().bind("catch"));
 StatementMatcher TryMatcher = findAll(cxxTryStmt().bind("try"));
 
-Optional<bool> isInside(Stmt* Candidate, Stmt* Container) {
+Optional<bool> isInside(Stmt *Candidate, Stmt *Container) {
   SourceRange CandidateRange = Candidate->getSourceRange();
   SourceRange ContainerRange = Container->getSourceRange();
 
   if (CandidateRange.isInvalid() || ContainerRange.isInvalid())
-      return None;
+    return None;
 
   return ContainerRange.fullyContains(CandidateRange);
 }
 
 class ExceptionInfoConsumer {
 public:
-  ExceptionInfoConsumer(ExceptionInfo& EI, SourceManager& SM): EI(EI), SM(SM) {}
+  ExceptionInfoConsumer(ExceptionInfo &EI, SourceManager &SM)
+      : EI(EI), SM(SM) {}
+
 protected:
-  ExceptionInfo& EI;
-  SourceManager& SM;
+  ExceptionInfo &EI;
+  SourceManager &SM;
 };
 
-class CalledFunctions : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
-public :
-  CalledFunctions(ExceptionInfo& EI, SourceManager &SM): ExceptionInfoConsumer(EI, SM) {}
+class CalledFunctions : public ExceptionInfoConsumer,
+                        public MatchFinder::MatchCallback {
+public:
+  CalledFunctions(ExceptionInfo &EI, SourceManager &SM)
+      : ExceptionInfoConsumer(EI, SM) {}
   virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CallExpr *Call = Result.Nodes.getNodeAs<clang::CallExpr>("call")) {
-      llvm::errs() << "call\n";
-      if (const auto* ND = dyn_cast_or_null<NamedDecl>(Call->getCalleeDecl()) ) {
-        if (const Optional<std::string> Name = CrossTranslationUnitContext::getLookupName(ND))
-          EI.Calls.push_back({Call, *Name, Call->getSourceRange().printToString(SM)});
+    const Expr *Expr = nullptr;
+    const FunctionDecl *Callee = nullptr;
+
+    if (const CallExpr *Call =
+            Result.Nodes.getNodeAs<clang::CallExpr>("invocation")) {
+      Expr = Call;
+      Callee = Call->getDirectCallee();
+    } else if (const CXXConstructExpr *CTOR =
+                   Result.Nodes.getNodeAs<clang::CXXConstructExpr>(
+                       "invocation")) {
+      Expr = CTOR;
+      Callee = CTOR->getConstructor();
+    }
+
+    if (!Expr || !Callee) {
+      return;
+    }
+
+    std::string Name =
+        CrossTranslationUnitContext::getLookupName(Callee).getValueOr(
+            "<no-lookup-name>");
+    EI.Calls.push_back(
+        {Expr, Callee, Name, Expr->getSourceRange().printToString(SM)});
+  }
+};
+
+class ThrownExceptions : public ExceptionInfoConsumer,
+                         public MatchFinder::MatchCallback {
+public:
+  ThrownExceptions(ExceptionInfo &EI, SourceManager &SM)
+      : ExceptionInfoConsumer(EI, SM) {}
+  virtual void run(const MatchFinder::MatchResult &Result) override {
+    if (const CXXThrowExpr *Throw =
+            Result.Nodes.getNodeAs<clang::CXXThrowExpr>("throw")) {
+      bool IsRethrow = Throw->getSubExpr() == nullptr;
+      std::string Description;
+      if (IsRethrow)
+        Description = "rethrow";
+      else {
+        const QualType CT = Throw->getSubExpr()->getType();
+        if (CT.isNull()) {
+          Description = "nulltype";
+        } else {
+          Description = CT.getAsString();
+        }
       }
+      EI.Throws.push_back({Throw, IsRethrow, Description,
+                           Throw->getSourceRange().printToString(SM)});
     }
   }
 };
 
-class ThrownExceptions : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
-public :
-  ThrownExceptions(ExceptionInfo& EI, SourceManager &SM): ExceptionInfoConsumer(EI, SM) {}
+class CaughtExceptions : public ExceptionInfoConsumer,
+                         public MatchFinder::MatchCallback {
+public:
+  CaughtExceptions(ExceptionInfo &EI, SourceManager &SM)
+      : ExceptionInfoConsumer(EI, SM) {}
   virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CXXThrowExpr *Throw = Result.Nodes.getNodeAs<clang::CXXThrowExpr>("throw")) {
-      llvm::errs() << "throw\n";
-      EI.Throws.push_back({Throw, Throw->getSourceRange().printToString(SM)});
+    if (const CXXCatchStmt *Catch =
+            Result.Nodes.getNodeAs<clang::CXXCatchStmt>("catch")) {
+      bool IsCatchAll = Catch->getExceptionDecl() == nullptr;
+      std::string Description;
+      if (IsCatchAll)
+        Description = "...";
+      else {
+        const QualType CT = Catch->getExceptionDecl()->getType();
+        if (CT.isNull()) {
+          Description = "nulltype";
+        } else {
+          Description = CT.getAsString();
+        }
+      }
+      EI.Catches.push_back({Catch, IsCatchAll, Description,
+                            Catch->getSourceRange().printToString(SM)});
     }
   }
 };
 
-class CaughtExceptions : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
-public :
-  CaughtExceptions(ExceptionInfo& EI, SourceManager& SM): ExceptionInfoConsumer(EI, SM) {}
+class TryBlocks : public ExceptionInfoConsumer,
+                  public MatchFinder::MatchCallback {
+public:
+  TryBlocks(ExceptionInfo &EI, SourceManager &SM)
+      : ExceptionInfoConsumer(EI, SM) {}
   virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CXXCatchStmt *Catch = Result.Nodes.getNodeAs<clang::CXXCatchStmt>("catch")) {
-      llvm::errs() << "catch\n";
-      EI.Catches.push_back({Catch, Catch->getSourceRange().printToString(SM)});
-    }
-  }
-};
-
-class TryBlocks : public ExceptionInfoConsumer, public MatchFinder::MatchCallback {
-public :
-  TryBlocks(ExceptionInfo& EI, SourceManager &SM): ExceptionInfoConsumer(EI, SM) {}
-  virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CXXTryStmt *Try = Result.Nodes.getNodeAs<clang::CXXTryStmt>("try")) {
-      llvm::errs() << "try\n";
+    if (const CXXTryStmt *Try =
+            Result.Nodes.getNodeAs<clang::CXXTryStmt>("try")) {
       EI.Tries.push_back({Try, Try->getSourceRange().printToString(SM)});
     }
   }
@@ -136,8 +212,8 @@ public :
 
 class FunctionMapConsumer : public ASTConsumer {
 public:
-  FunctionMapConsumer(ASTContext &Context, llvm::StringMap<ExceptionInfo> &Index)
-      : AC(Context), SM(Context.getSourceManager()), Index(Index) {}
+  FunctionMapConsumer(ASTContext &Context, ExceptionContext &EC)
+      : AC(Context), SM(Context.getSourceManager()), EC(EC) {}
 
   ~FunctionMapConsumer() {
     // Flush results to standard output.
@@ -149,7 +225,20 @@ public:
   }
 
 private:
-  void handleFunctionBody(std::string CallerName, const Stmt* Body) {
+  void handleFunction(const FunctionDecl *FD) {
+    EC.FunctionsVisited.insert(FD);
+
+    llvm::Optional<std::string> LookupName =
+        CrossTranslationUnitContext::getLookupName(FD);
+    std::string CallerName = LookupName.getValueOr("<no-name>");
+    EC.NameIndex[FD] = CallerName;
+    EC.ShortNameIndex[FD] = FD->getNameAsString();
+    const Stmt *Body = FD->getBody();
+    if (!Body)
+      return;
+    EC.BodyIndex[FD] = Body;
+    EC.IsInMainFileIndex[FD] = SM.isInMainFile(FD->getLocation());
+
     MatchFinder MF;
     ExceptionInfo EI;
     auto CallAction = std::make_unique<CalledFunctions>(EI, SM);
@@ -161,7 +250,16 @@ private:
     MF.addMatcher(CatchMatcher, CatchAction.get());
     MF.addMatcher(TryMatcher, TryAction.get());
     MF.match(*Body, AC);
-    Index[CallerName] = EI;
+
+    EC.ExInfoIndex[FD] = EI;
+
+    for (const CallInfo &CI : EI.Calls) {
+      const FunctionDecl *Callee = CI.Callee;
+      if (!SeenFunctions.count(Callee)) {
+        SeenFunctions.insert(Callee);
+        ExplorationWorklist.push(Callee);
+      }
+    }
   }
 
   void handleDecl(const Decl *D) {
@@ -169,36 +267,32 @@ private:
       return;
 
     if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-      if (FD->isThisDeclarationADefinition()) {
-        if (const Stmt *Body = FD->getBody()) {
-          // We analyze all functions not just the ones in the main file.
-          //if (SM.isInMainFile(Body->getBeginLoc())) {
-            llvm::Optional<std::string> LookupName =
-              CrossTranslationUnitContext::getLookupName(FD);
-            if (LookupName)
-              handleFunctionBody(*LookupName, Body);
-          //}
-        }
+      handleFunction(FD);
+    }
+
+    if (const DeclContext *DC = dyn_cast<DeclContext>(D)) {
+      for (const Decl *SubDecl : DC->decls()) {
+        handleDecl(SubDecl);
       }
     }
 
-    if (const DeclContext* DC = dyn_cast<DeclContext>(D)) {
-      for (const Decl* SubDecl: DC->decls()) {
-        handleDecl(SubDecl);
-      }
+    while (!ExplorationWorklist.empty()) {
+      const FunctionDecl *FD = ExplorationWorklist.front();
+      handleFunction(FD);
+      ExplorationWorklist.pop();
     }
   }
 
   ASTContext &AC;
   SourceManager &SM;
-  llvm::StringMap<ExceptionInfo> &Index;
-  std::string CurrentFileName;
+  ExceptionContext &EC;
+  std::set<const FunctionDecl *> SeenFunctions;
+  std::queue<const FunctionDecl *> ExplorationWorklist;
 };
 
 class CollectFunctionDeclsAction : public ASTFrontendAction {
 public:
-  CollectFunctionDeclsAction(llvm::StringMap<ExceptionInfo> &Index)
-      : Index(Index) {}
+  CollectFunctionDeclsAction(ExceptionContext &Index) : Index(Index) {}
 
 protected:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
@@ -207,25 +301,24 @@ protected:
   }
 
 private:
-  llvm::StringMap<ExceptionInfo> &Index;
+  ExceptionContext &Index;
 };
 
 std::unique_ptr<FrontendActionFactory>
-newCollectFunctionDeclsFactory(llvm::StringMap<ExceptionInfo> &Index) {
+newCollectFunctionDeclsFactory(ExceptionContext &EC) {
   class CollectFunctionDecslActionFactory : public FrontendActionFactory {
   public:
-    CollectFunctionDecslActionFactory(llvm::StringMap<ExceptionInfo> &Index)
-        : Index(Index) {}
+    CollectFunctionDecslActionFactory(ExceptionContext &EC) : EC(EC) {}
     std::unique_ptr<FrontendAction> create() override {
-      return std::make_unique<CollectFunctionDeclsAction>(Index);
+      return std::make_unique<CollectFunctionDeclsAction>(EC);
     }
 
   private:
-    llvm::StringMap<ExceptionInfo> &Index;
+    ExceptionContext &EC;
   };
 
   return std::unique_ptr<FrontendActionFactory>(
-      new CollectFunctionDecslActionFactory(Index));
+      new CollectFunctionDecslActionFactory(EC));
 }
 
 static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
@@ -247,30 +340,83 @@ int main(int argc, const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
 
-  llvm::StringMap<ExceptionInfo> Index;
-  auto FunctionCollector = std::make_unique<CollectFunctionDeclsAction>(Index);
+  ExceptionContext EC;
+  auto FunctionCollector = std::make_unique<CollectFunctionDeclsAction>(EC);
 
-  int result = Tool.run(newCollectFunctionDeclsFactory(Index).get());
+  int result = Tool.run(newCollectFunctionDeclsFactory(EC).get());
+
+  bool ShowLocation = true;
 
   llvm::errs() << '\n';
-  for (const auto& Function: Index) {
-    llvm::errs() << Function.first() << ":\n";
-    llvm::errs() << "  calls:\n";
-    for (const CallInfo& Call: Function.second.Calls) {
-      llvm::errs() << "    - " << Call.Name << "@" << Call.Location << "\n";
-    }
-    llvm::errs() << "  tries:\n";
-    for (const TryInfo& Try: Function.second.Tries) {
-      llvm::errs() << "    - " << Try.Stmt << "@" << Try.Location << "\n";
-    }
-    llvm::errs() << "  throws:\n";
-    for (const ThrowInfo& Throw: Function.second.Throws) {
-      llvm::errs() << "    - " << Throw.Expr->getType().getAsString() << "@" << Throw.Location << "\n";
-    }
-    llvm::errs() << "  catches:\n";
-    for (const CatchInfo& Catch: Function.second.Catches) {
-      llvm::errs() << "    - " << Catch.Stmt->getCaughtType().getAsString() << "@" << Catch.Location << "\n";
-    }
+  for (const auto &FD : EC.FunctionsVisited) {
+
+    if (!EC.IsInMainFileIndex[FD])
+      continue;
+
+    std::set<const FunctionDecl *> Seen;
+    auto rec_print_ei = [&](const FunctionDecl *FD, int level = 0) {
+      auto rec_print_ei_impl = [&](const FunctionDecl *FD, int level,
+                                   auto &rec_ref) -> void {
+        // if (Seen.count(FD))
+        //   return;
+        // Seen.insert(FD);
+
+        std::string indent(2 * level, ' ');
+
+        if (level == 0) {
+          llvm::errs() << indent << "Name:\n";
+          llvm::errs() << indent << EC.ShortNameIndex[FD] << "\n";
+        }
+
+        const ExceptionInfo &EI = EC.ExInfoIndex[FD];
+        if (!EI.Tries.empty()) {
+          llvm::errs() << indent << "tries:\n";
+
+          for (const TryInfo &Try : EI.Tries) {
+            llvm::errs() << indent << "  - " << Try.Stmt;
+            if (ShowLocation)
+              llvm::errs() << "@" << Try.Location;
+            llvm::errs() << "\n";
+          }
+        }
+
+        if (!EI.Throws.empty()) {
+          llvm::errs() << indent << "throws:\n";
+          for (const ThrowInfo &Throw : EI.Throws) {
+            llvm::errs() << indent << "  - " << Throw.Description;
+            if (ShowLocation)
+              llvm::errs() << "@" << Throw.Location;
+            llvm::errs() << "\n";
+          }
+        }
+
+        if (!EI.Catches.empty()) {
+          llvm::errs() << indent << "catches:\n";
+          for (const CatchInfo &Catch : EI.Catches) {
+            llvm::errs() << indent << "  - " << Catch.Description;
+
+            if (ShowLocation)
+              llvm::errs() << "@" << Catch.Location;
+            llvm::errs() << "\n";
+          }
+        }
+
+        if (!EI.Calls.empty()) {
+          llvm::errs() << indent << "calls:\n";
+          for (const CallInfo &Call : EI.Calls) {
+            llvm::errs() << indent << "  - " << EC.ShortNameIndex[Call.Callee];
+            if (ShowLocation)
+              llvm::errs() << "@" << Call.Location;
+            llvm::errs() << "\n";
+
+            rec_ref(Call.Callee, level + 1, rec_ref);
+          }
+        }
+      };
+      rec_print_ei_impl(FD, level, rec_print_ei_impl);
+    };
+
+    rec_print_ei(FD);
   }
 
   return result;
