@@ -21,6 +21,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/JSONCompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
@@ -327,6 +328,39 @@ int main(int argc, const char **argv) {
   // Print a stack trace if we signal out.
   sys::PrintStackTraceOnErrorSignal(argv[0], false);
   PrettyStackTraceProgram X(argc, argv);
+
+  if (argc != 2) {
+    llvm::errs() << "Usage: clang-exception-scan <compdb>";
+    return 1;
+  }
+
+  const char *CompDBPath = argv[1];
+  std::string ErrorMessage;
+  std::unique_ptr<JSONCompilationDatabase> CompDB =
+      JSONCompilationDatabase::loadFromFile(CompDBPath, ErrorMessage,
+                                            JSONCommandLineSyntax::AutoDetect);
+
+  if (!CompDB) {
+    llvm::errs() << ErrorMessage;
+    return 2;
+  }
+
+  const auto &Files = CompDB->getAllFiles();
+  const std::set UniqueFiles{Files};
+
+  if (Files.size() != UniqueFiles.size()) {
+    llvm::errs() << "Files list in compilation database is not unique!";
+    return 3;
+  }
+
+  llvm::outs() << "Files to process:\n";
+
+  for (const auto &F : Files)
+    llvm::outs() << F << '\n';
+
+  llvm::outs() << "\n";
+
+  return 0;
 
   const char *Overview = "\nThis tool exception information from a project.\n";
   auto ExpectedParser = CommonOptionsParser::create(
