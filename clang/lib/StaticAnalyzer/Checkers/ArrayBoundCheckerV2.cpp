@@ -204,10 +204,9 @@ void ArrayBoundCheckerV2::checkLocation(SVal location, bool isLoad,
 
     // If we are under constrained and the index variables are tainted, report.
     if (state_exceedsUpperBound && state_withinUpperBound) {
-      SVal ByteOffset = rawOffset.getByteOffset();
-      if (isTainted(state, ByteOffset)) {
+      if (isTainted(state, *upperboundToCheck)) {
         reportOOB(checkerContext, state_exceedsUpperBound, OOB_Tainted,
-                  std::make_unique<TaintBugVisitor>(ByteOffset));
+                  std::make_unique<TaintBugVisitor>(*upperboundToCheck));
         return;
       }
     } else if (state_exceedsUpperBound) {
