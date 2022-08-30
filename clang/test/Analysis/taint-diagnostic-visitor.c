@@ -4,6 +4,9 @@
 
 int scanf(const char *restrict format, ...);
 int system(const char *command);
+typedef __typeof(sizeof(int)) size_t;
+void *malloc(size_t size);
+void free(void *ptr);
 
 void taintDiagnostic(void)
 {
@@ -34,3 +37,19 @@ void taintDiagnosticVLA(void) {
   int vla[x]; // expected-warning {{Declared variable-length array (VLA) has tainted size}}
               // expected-note@-1 {{Declared variable-length array (VLA) has tainted size}}
 }
+
+void taintDiagnosticMalloc(int conj) {
+   int x;
+   scanf("%d", &x);
+   // expected-note@-1 2 {{Taint originated here}} Once for malloc(tainted), once for BoundsV2.
+
+   int *p = (int *)malloc(x + conj); // Generic taint checker forbids tainted allocation.
+   // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
+   // expected-note@-2    {{Untrusted data is used to specify the buffer size}}
+   // expected-note@-3    {{Allocating tainted amount of memory}}
+
+   p[1] = 1; // BoundsV2 checker can not prove that the access is safe.
+   // expected-warning@-1 {{Out of bound memory access (index is tainted)}}
+   // expected-note@-2    {{Out of bound memory access (index is tainted)}}
+   free(p);
+ }
