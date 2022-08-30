@@ -19,6 +19,7 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Checkers/Taint.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -26,6 +27,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/YAMLTraits.h"
 
 #include <limits>
@@ -38,7 +40,7 @@ using namespace clang;
 using namespace ento;
 using namespace taint;
 
-using llvm::ImmutableSet;
+using llvm::ImmutableMap;
 
 namespace {
 
@@ -416,13 +418,17 @@ template <> struct ScalarEnumerationTraits<TaintConfiguration::VariadicType> {
 } // namespace yaml
 } // namespace llvm
 
-/// A set which is used to pass information from call pre-visit instruction
-/// to the call post-visit. The values are signed integers, which are either
+
+using ArgIdxSValMap = ImmutableMap<ArgIdxTy, SVal>;
+/// A map from argument indexes to the symbolic values.
+/// It is used to pass information from call pre-visit instruction
+/// to the call post-visit. The keys are signed integers, which are either
 /// ReturnValueIndex, or indexes of the pointer/reference argument, which
-/// points to data, which should be tainted on return.
-REGISTER_MAP_WITH_PROGRAMSTATE(TaintArgsOnPostVisit, const LocationContext *,
-                               ImmutableSet<ArgIdxTy>)
-REGISTER_SET_FACTORY_WITH_PROGRAMSTATE(ArgIdxFactory, ArgIdxTy)
+/// points to data, which should be tainted on return. The values of the map are
+/// the symbolic values of the corresponding arguments *before* the call-event.
+REGISTER_MAP_WITH_PROGRAMSTATE(TaintArgsOnPostVisit, const LocationContext *, ArgIdxSValMap)
+
+REGISTER_MAP_FACTORY_WITH_PROGRAMSTATE(ArgIdxSValFactory, ArgIdxTy, SVal)
 
 void GenericTaintRuleParser::validateArgVector(const std::string &Option,
                                                const ArgVecTy &Args) const {
@@ -767,40 +773,88 @@ void GenericTaintChecker::checkPostCall(const CallEvent &Call,
   // checkPostStmt.
   ProgramStateRef State = C.getState();
   const StackFrameContext *CurrentFrame = C.getStackFrame();
+  ExplodedNode *Pred = C.getPredecessor();
 
   // Depending on what was tainted at pre-visit, we determined a set of
   // arguments which should be tainted after the function returns. These are
   // stored in the state as TaintArgsOnPostVisit set.
   TaintArgsOnPostVisitTy TaintArgsMap = State->get<TaintArgsOnPostVisit>();
 
-  const ImmutableSet<ArgIdxTy> *TaintArgs = TaintArgsMap.lookup(CurrentFrame);
+  const ArgIdxSValMap *TaintArgs = TaintArgsMap.lookup(CurrentFrame);
   if (!TaintArgs)
     return;
   assert(!TaintArgs->isEmpty());
 
-  LLVM_DEBUG(for (ArgIdxTy I
-                  : *TaintArgs) {
+  LLVM_DEBUG(for (const auto& [ArgNum, PreCallSVal] : *TaintArgs) {
     llvm::dbgs() << "PostCall<";
     Call.dump(llvm::dbgs());
-    llvm::dbgs() << "> actually wants to taint arg index: " << I << '\n';
+    llvm::dbgs() << "> actually wants to taint arg index: " << ArgNum << '\n';
   });
 
-  for (ArgIdxTy ArgNum : *TaintArgs) {
+  struct Pack {
+    SVal PreValue;
+    SVal PostValue;
+    ArgIdxTy Index;
+  };
+
+  SmallVector<Pack, 6> ActualTaintedParams;
+
+  for (const auto& [ArgNum, PreCallSVal] : *TaintArgs) {
     // Special handling for the tainted return value.
     if (ArgNum == ReturnValueIndex) {
       State = addTaint(State, Call.getReturnValue());
+      const NoteTag *Note =
+          C.getNoteTag([RetVal = Call.getReturnValue()](
+                           PathSensitiveBugReport &BR) -> std::string {
+            return BR.isInteresting(RetVal) ? "Returned tainted value" : "";
+          });
+      Pred = C.addTransition(State, Pred, Note);
       continue;
     }
 
     // The arguments are pointer arguments. The data they are pointing at is
     // tainted after the call.
-    if (auto V = getPointeeOf(C, Call.getArgSVal(ArgNum)))
+    const SVal PostCallSVal = Call.getArgSVal(ArgNum);
+    if (auto V = getPointeeOf(C, PostCallSVal)) {
+      ActualTaintedParams.push_back({PreCallSVal, V.value(), ArgNum});
       State = addTaint(State, *V);
+    }
   }
 
   // Clear up the taint info from the state.
   State = State->remove<TaintArgsOnPostVisit>(CurrentFrame);
-  C.addTransition(State);
+  const NoteTag *Note = [&]() -> const NoteTag * {
+    if (ActualTaintedParams.empty())
+      return nullptr;
+    return C.getNoteTag(
+        [ActualTaintedParams](PathSensitiveBugReport &BR) -> std::string {
+          const auto IsInteresting = [&BR](const auto &Param) -> bool {
+            return BR.isInteresting(Param.PostValue);
+          };
+
+          auto InterestingTaintedParams =
+              llvm::make_filter_range(ActualTaintedParams, IsInteresting);
+
+          if (InterestingTaintedParams.empty())
+            return "";
+
+          SmallVector<std::string, 6> MsgParts;
+          for (const auto &Param : InterestingTaintedParams) {
+            BR.markInteresting(Param.PreValue);
+            const auto ParamOrdinal = Param.Index + 1;
+            MsgParts.emplace_back((Twine(std::to_string(ParamOrdinal)) +
+                                   llvm::getOrdinalSuffix(ParamOrdinal))
+                                      .str());
+          }
+
+          return (Twine("Propagated taint to the ") +
+                  llvm::join(std::move(MsgParts), ", ") +
+                  (MsgParts.size() == 1 ? " parameter" : " parameters"))
+              .str();
+        });
+  }();
+
+  C.addTransition(State, Pred, Note);
 }
 
 void GenericTaintChecker::printState(raw_ostream &Out, ProgramStateRef State,
@@ -861,15 +915,15 @@ void GenericTaintRule::process(const GenericTaintChecker &Checker,
   };
 
   /// Propagate taint where it is necessary.
-  auto &F = State->getStateManager().get_context<ArgIdxFactory>();
-  ImmutableSet<ArgIdxTy> Result = F.getEmptySet();
+  auto &F = State->getStateManager().get_context<ArgIdxSValFactory>();
+  ArgIdxSValMap Result = F.getEmptyMap();
   ForEachCallArg(
       [&](ArgIdxTy I, const Expr *E, SVal V) {
         if (PropDstArgs.contains(I)) {
           LLVM_DEBUG(llvm::dbgs() << "PreCall<"; Call.dump(llvm::dbgs());
                      llvm::dbgs()
                      << "> prepares tainting arg index: " << I << '\n';);
-          Result = F.add(Result, I);
+          Result = F.add(Result, I, V);
         }
 
         // TODO: We should traverse all reachable memory regions via the
@@ -881,7 +935,7 @@ void GenericTaintRule::process(const GenericTaintChecker &Checker,
             Call.dump(llvm::dbgs());
             llvm::dbgs() << "> prepares tainting arg index: " << I << '\n';
           });
-          Result = F.add(Result, I);
+          Result = F.add(Result, I, V);
         }
       });
 
@@ -908,7 +962,7 @@ bool GenericTaintChecker::generateReportIfTainted(const Expr *E, StringRef Msg,
   if (ExplodedNode *N = C.generateNonFatalErrorNode()) {
     auto report = std::make_unique<PathSensitiveBugReport>(BT, Msg, N);
     report->addRange(E->getSourceRange());
-    report->addVisitor(std::make_unique<TaintBugVisitor>(*TaintedSVal));
+    report->markInteresting(*TaintedSVal);
     C.emitReport(std::move(report));
     return true;
   }
@@ -978,8 +1032,9 @@ void GenericTaintChecker::taintUnsafeSocketProtocol(const CallEvent &Call,
     return;
 
   ProgramStateRef State = C.getState();
-  auto &F = State->getStateManager().get_context<ArgIdxFactory>();
-  ImmutableSet<ArgIdxTy> Result = F.add(F.getEmptySet(), ReturnValueIndex);
+  auto &F = State->getStateManager().get_context<ArgIdxSValFactory>();
+  ArgIdxSValMap Result =
+      F.add(F.getEmptyMap(), ReturnValueIndex, Call.getReturnValue());
   State = State->set<TaintArgsOnPostVisit>(C.getStackFrame(), Result);
   C.addTransition(State);
 }
