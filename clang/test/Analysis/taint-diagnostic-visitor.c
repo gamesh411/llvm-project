@@ -46,6 +46,7 @@ void taintDiagnosticMalloc(int conj) {
   int *p = (int *)malloc(x + conj); // Generic taint checker forbids tainted allocation.
   // expected-warning@-1 {{Untrusted data is used to specify the buffer size}}
   // expected-note@-2    {{Untrusted data is used to specify the buffer size}}
+  // expected-note@-3    {{Allocating tainted amount of memory}}
 
   p[1] = 1; // BoundsV2 checker can not prove that the access is safe.
   // expected-warning@-1 {{Out of bound memory access (index is tainted)}}
