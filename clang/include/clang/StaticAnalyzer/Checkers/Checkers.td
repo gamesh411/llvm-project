@@ -471,6 +471,16 @@ let ParentPackage = CStringAlpha in {
 def CStringOutOfBounds : Checker<"OutOfBounds">,
   HelpText<"Check for out-of-bounds access in string functions">,
   Dependencies<[CStringModeling]>,
+  CheckerOptions<[
+    CmdLineOption<Boolean,
+                  "ConsiderTaint",
+                  "If set to true and the access under test depends on tainted "
+                  "value we will emit a warning even if we can not ensure that "
+                  "we encountered a bug",
+                  "false",
+                  Released,
+                  Hide>
+  ]>,
   Documentation<HasDocumentation>;
 
 def CStringBufferOverlap : Checker<"BufferOverlap">,
