@@ -27,6 +27,7 @@
 #include <queue>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
 using namespace llvm;
@@ -138,9 +139,9 @@ public:
     }
 
     // push functions with USR names to the exploration stack
-    if (auto Name = CrossTranslationUnitContext::getLookupName(Callee))
-      EI.Calls.push_back({Expr, Callee, Name.value(),
-                          Expr->getSourceRange().printToString(SM)});
+    auto Name = CrossTranslationUnitContext::getLookupName(Callee);
+    EI.Calls.push_back({Expr, Callee, Name.value_or("<no-lookup-name>"),
+                        Expr->getSourceRange().printToString(SM)});
   }
 };
 
@@ -225,7 +226,9 @@ public:
 
 private:
   void handleFunction(const FunctionDecl *FD) {
-    EC.FunctionsVisited.insert(FD);
+    // only handle each function once
+    if (!EC.FunctionsVisited.insert(FD).second)
+      return;
 
     llvm::Optional<std::string> LookupName =
         CrossTranslationUnitContext::getLookupName(FD);
@@ -254,8 +257,7 @@ private:
 
     for (const CallInfo &CI : EI.Calls) {
       const FunctionDecl *Callee = CI.Callee;
-      if (!SeenFunctions.count(Callee)) {
-        SeenFunctions.insert(Callee);
+      if (SeenFunctions.insert(Callee).second) {
         ExplorationWorklist.push(Callee);
       }
     }
@@ -352,14 +354,9 @@ int main(int argc, const char **argv) {
     if (!EC.IsInMainFileIndex[FD])
       continue;
 
-    std::set<const FunctionDecl *> Seen;
     auto rec_print_ei = [&](const FunctionDecl *FD, int level = 0) {
       auto rec_print_ei_impl = [&](const FunctionDecl *FD, int level,
                                    auto &rec_ref) -> void {
-        // if (Seen.count(FD))
-        //   return;
-        // Seen.insert(FD);
-
         std::string indent(2 * level, ' ');
 
         if (level == 0) {
@@ -409,7 +406,7 @@ int main(int argc, const char **argv) {
               llvm::errs() << "@" << Call.Location;
             llvm::errs() << "\n";
 
-            rec_ref(Call.Callee, level + 1, rec_ref);
+            //rec_ref(Call.Callee, level + 1, rec_ref);
           }
         }
       };
