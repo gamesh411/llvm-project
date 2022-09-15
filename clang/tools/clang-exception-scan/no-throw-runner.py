@@ -18,6 +18,7 @@ class ExceptionScan:
 
     def new_repo_scan(self, repo_uris):
         for repo_uri in repo_uris:
+            print(f"Repo: {repo_uri}")
             self._git_clone(repo_uri=repo_uri)
             new_repo_name = self._get_new_repository_name(repo_uri=repo_uri)
 
@@ -83,6 +84,7 @@ class ExceptionScan:
 repo_uris = [
     "https://github.com/leethomason/tinyxml2.git",
     "https://github.com/webmproject/libwebm.git",
+    "https://github.com/bitcoin/bitcoin.git",
 ]
 
 x_scan = ExceptionScan(sys.argv[1])
