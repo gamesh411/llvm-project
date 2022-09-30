@@ -23,18 +23,11 @@ class CodeCheckerRunner:
         )
 
     def build(self):
-        sp.run(["make", "package"], cwd=self.cc_dir)
-
-    def run_in_venv(self, command):
-        sp.run(
-            shlex.split(
-                f"bash -c 'source {self.cc_dir / 'bin' / 'activate'} && {command}'"
-            )
-        )
+        sp.run(["make", "standalone_package"], cwd=self.cc_dir)
 
     def log_build(self, build_command):
         comp_db = Path("compile_commands.json")
-        self.run_in_venv(f'CodeChecker log -b "{build_command}" -o {comp_db}')
+        sp.run(shlex.split(f'codechecker/build/CodeChecker/bin/CodeChecker log -b "{build_command}" -o {comp_db}'))
         return comp_db
 
 
@@ -57,10 +50,8 @@ class ExceptionScan:
 
             new_repo_name = self._get_new_repository_name(repo_uri=repo["uri"])
             repo_path = Path(new_repo_name)
-            repo_path.unlink(missing_ok=True)
-
+            # shutil.rmtree(repo_path)
             self._git_clone(repo_uri=repo["uri"])
-
 
             if ('configure_command' in repo):
                 build_dir = repo_path
@@ -119,16 +110,20 @@ class ExceptionScan:
 
 
 repos = [
-    {
-        "name": "bitcoin",
-        "uri": "https://github.com/bitcoin/bitcoin.git",
-        "configure_command": "./autogen.sh && ./configure --disable-wallet --disable-static --disable-tests --without-gui",
-    },
+#     {
+#         "name": "FRUT",
+#         "uri": "https://github.com/McMartin/FRUT.git",
+#     },
+     {
+         "name": "bitcoin",
+         "uri": "https://github.com/bitcoin/bitcoin.git",
+         "configure_command": "./autogen.sh && ./configure --disable-wallet --disable-static --disable-tests --without-gui",
+     },
 ]
 
 cc_runner = CodeCheckerRunner(cc_dir=Path("codechecker"))
-cc_runner.download()
-cc_runner.build()
+# cc_runner.download()
+# cc_runner.build()
 
 x_scan = ExceptionScan(scanner_binary=Path(sys.argv[1]))
 x_scan.new_repo_scan(cc_runner=cc_runner, repos=repos)
