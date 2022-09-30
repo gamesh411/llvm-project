@@ -54,10 +54,13 @@ class ExceptionScan:
     def new_repo_scan(self, cc_runner: CodeCheckerRunner, repos):
         for repo in repos:
             print(f"Repo: {repo['name']}")
-            self._git_clone(repo_uri=repo["uri"])
-            new_repo_name = self._get_new_repository_name(repo_uri=repo["uri"])
 
+            new_repo_name = self._get_new_repository_name(repo_uri=repo["uri"])
             repo_path = Path(new_repo_name)
+            repo_path.unlink(missing_ok=True)
+
+            self._git_clone(repo_uri=repo["uri"])
+
 
             if ('configure_command' in repo):
                 build_dir = repo_path
@@ -116,14 +119,6 @@ class ExceptionScan:
 
 
 repos = [
-    {
-        "name": "tinyxml2",
-        "uri": "https://github.com/leethomason/tinyxml2.git",
-    },
-    {
-        "name": "libwebm",
-        "uri": "https://github.com/webmproject/libwebm.git",
-    },
     {
         "name": "bitcoin",
         "uri": "https://github.com/bitcoin/bitcoin.git",
