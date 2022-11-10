@@ -2,6 +2,7 @@
 // RUN: %clang_analyze_cc1 %s \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=apiModeling.StdCLibraryFunctions \
+// RUN:   -analyzer-config apiModeling.StdCLibraryFunctions:SummaryConfigPath="%S/Inputs/fread-summary.yaml" \
 // RUN:   -analyzer-checker=alpha.unix.StdCLibraryFunctionArgs \
 // RUN:   -analyzer-checker=debug.StdCLibraryFunctionsTester \
 // RUN:   -analyzer-checker=debug.ExprInspection \
@@ -12,6 +13,7 @@
 // RUN: %clang_analyze_cc1 %s \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=apiModeling.StdCLibraryFunctions \
+// RUN:   -analyzer-config apiModeling.StdCLibraryFunctions:SummaryConfigPath="%S/Inputs/fread-summary.yaml" \
 // RUN:   -analyzer-checker=alpha.unix.StdCLibraryFunctionArgs \
 // RUN:   -analyzer-checker=debug.StdCLibraryFunctionsTester \
 // RUN:   -analyzer-checker=debug.ExprInspection \

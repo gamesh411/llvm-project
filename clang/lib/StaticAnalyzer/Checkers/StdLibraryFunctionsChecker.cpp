@@ -774,6 +774,7 @@ public:
   bool DisplayLoadedSummaries = false;
   bool ModelPOSIX = false;
   bool ShouldAssumeControlledEnvironment = false;
+  std::string SummaryConfigPath;
 
 private:
   Optional<Summary> findFunctionSummary(const FunctionDecl *FD,
@@ -1452,12 +1453,10 @@ void StdLibraryFunctionsChecker::initFunctionSummaries(
 
 // User-provided summary configuration.
 CheckerManager *Mgr = C.getAnalysisManager().getCheckerManager();
-std::string Option{"Config"};
-/*StringRef ConfigFile =
-      Mgr->getAnalyzerOptions().getCheckerStringOption(this, Option);*/
-StringRef ConfigFile = "/local/workspace/llvm-project/clang/test/Analysis/Inputs/fread-summary.yaml";
+std::string Option{"SummaryConfigPath"};
+      Mgr->getAnalyzerOptions().getCheckerStringOption(this, Option);
 llvm::Optional<SummaryConfiguration> Config =
-    getConfiguration<SummaryConfiguration>(*Mgr, this, Option, ConfigFile);
+    getConfiguration<SummaryConfiguration>(*Mgr, this, Option, SummaryConfigPath);
 llvm::errs() << "Config :" << Config.has_value() << "\n";
 
 auto GetTypeFromStr = [&](StringRef TypeName) {
@@ -3178,6 +3177,8 @@ void ento::registerStdCLibraryFunctionsChecker(CheckerManager &mgr) {
   Checker->ModelPOSIX = Opts.getCheckerBooleanOption(Checker, "ModelPOSIX");
   Checker->ShouldAssumeControlledEnvironment =
       Opts.ShouldAssumeControlledEnvironment;
+  Checker->SummaryConfigPath =
+      Opts.getCheckerStringOption(Checker, "SummaryConfigPath");
 }
 
 bool ento::shouldRegisterStdCLibraryFunctionsChecker(
