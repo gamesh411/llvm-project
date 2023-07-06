@@ -1,6 +1,11 @@
 // RUN: %clang_analyze_cc1 \
 // RUN:  -analyzer-checker=alpha.security.cert.env.InvalidPtr\
+// RUN:  -analyzer-config alpha.security.cert.env.InvalidPtr:InvalidatingGetEnv=true \
 // RUN:  -analyzer-output=text -verify -Wno-unused %s
+//
+// TODO: write test cases that follow the pattern:
+//       "getenv -> store pointer -> setenv -> use stored pointer"
+//       and not rely solely on getenv as an invalidating function
 
 #include "../Inputs/system-header-simulator.h"
 char *getenv(const char *name);
