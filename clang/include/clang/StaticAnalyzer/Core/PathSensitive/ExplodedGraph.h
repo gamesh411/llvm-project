@@ -27,6 +27,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/GraphTraits.h"
@@ -247,6 +248,11 @@ public:
   }
   const_pred_range preds() const { return {Preds.begin(), Preds.end()}; }
 
+  llvm::iterator_range<pred_iterator> predecessors() { return Preds; }
+  llvm::iterator_range<const_pred_iterator> predecessors() const {
+    return Preds;
+  }
+
   succ_iterator succ_begin() { return Succs.begin(); }
   succ_iterator succ_end() { return Succs.end(); }
   succ_range succs() { return {Succs.begin(), Succs.end()}; }
@@ -260,6 +266,19 @@ public:
   const_succ_range succs() const { return {Succs.begin(), Succs.end()}; }
 
   int64_t getID() const { return Id; }
+
+  llvm::iterator_range<succ_iterator> successors() { return Succs; }
+  llvm::iterator_range<const_succ_iterator> successors() const { return Succs; }
+
+  // For debugging.
+
+public:
+  class Auditor {
+  public:
+    virtual ~Auditor();
+
+    virtual void AddEdge(ExplodedNode *Src, ExplodedNode *Dst) = 0;
+  };
 
   /// The node is trivial if it has only one successor, only one predecessor,
   /// it's predecessor has only one successor,
@@ -397,8 +416,17 @@ public:
   using const_node_iterator = AllNodesTy::const_iterator;
 
   llvm::iterator_range<node_iterator> nodes() { return Nodes; }
+  llvm::iterator_range<const_node_iterator> nodes() const { return Nodes; }
+
+  node_iterator nodes_begin() { return Nodes.begin(); }
+  node_iterator nodes_end() { return Nodes.end(); }
+
+  const_node_iterator nodes_begin() const { return Nodes.begin(); }
 
   llvm::iterator_range<const_node_iterator> nodes() const { return Nodes; }
+
+  llvm::iterator_range<roots_iterator> roots() { return Roots; }
+  llvm::iterator_range<const_roots_iterator> roots() const { return Roots; }
 
   roots_iterator roots_begin() { return Roots.begin(); }
 
