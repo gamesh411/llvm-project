@@ -603,7 +603,6 @@ def PthreadLockChecker : Checker<"PthreadLock">,
 
 def PthreadLockCheckerV2 : Checker<"PthreadLockV2">,
   HelpText<"Matcher-based prototype of lock -> unlock checker">,
-  DescFile<"PthreadLockCheckerV2.cpp">,
   Documentation<NotDocumented>;
 
 def StreamChecker : Checker<"Stream">,
