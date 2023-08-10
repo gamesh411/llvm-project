@@ -99,6 +99,7 @@ add_clang_library(clangStaticAnalyzerCheckers
   cert/PutenvWithAutoChecker.cpp
   RetainCountChecker/RetainCountChecker.cpp
   RetainCountChecker/RetainCountDiagnostics.cpp
+  PthreadLockCheckerV2.cpp
   ReturnPointerRangeChecker.cpp
   ReturnUndefChecker.cpp
   ReturnValueChecker.cpp
