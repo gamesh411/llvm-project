@@ -270,16 +270,6 @@ public:
   llvm::iterator_range<succ_iterator> successors() { return Succs; }
   llvm::iterator_range<const_succ_iterator> successors() const { return Succs; }
 
-  // For debugging.
-
-public:
-  class Auditor {
-  public:
-    virtual ~Auditor();
-
-    virtual void AddEdge(ExplodedNode *Src, ExplodedNode *Dst) = 0;
-  };
-
   /// The node is trivial if it has only one successor, only one predecessor,
   /// it's predecessor has only one successor,
   /// and its program state is the same as the program state of the previous
@@ -416,16 +406,19 @@ public:
   using const_node_iterator = AllNodesTy::const_iterator;
 
   llvm::iterator_range<node_iterator> nodes() { return Nodes; }
+
   llvm::iterator_range<const_node_iterator> nodes() const { return Nodes; }
 
   node_iterator nodes_begin() { return Nodes.begin(); }
-  node_iterator nodes_end() { return Nodes.end(); }
 
   const_node_iterator nodes_begin() const { return Nodes.begin(); }
 
-  llvm::iterator_range<const_node_iterator> nodes() const { return Nodes; }
+  node_iterator nodes_end() { return Nodes.end(); }
+
+  const_node_iterator nodes_end() const { return Nodes.end(); }
 
   llvm::iterator_range<roots_iterator> roots() { return Roots; }
+
   llvm::iterator_range<const_roots_iterator> roots() const { return Roots; }
 
   roots_iterator roots_begin() { return Roots.begin(); }

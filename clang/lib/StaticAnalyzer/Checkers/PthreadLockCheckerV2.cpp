@@ -12,7 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ClangSACheckers.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
@@ -69,8 +68,6 @@ public:
 
   void Profile(llvm::FoldingSetNodeID &ID) const { ID.AddInteger(K); }
 };
-
-using namespace ast_type_traits;
 
 class ASTGraphNode {
   enum NodeKindId { NKI_ASTType, NKI_ExplodedNode, NKI_SVal };
@@ -508,7 +505,7 @@ template <typename MatcherTy>
 bool StatementNodeMatcher<MatcherTy>::matches(
     const ExplodedNode *Node, GraphMatchFinder *Finder,
     GraphBoundNodesTreeBuilder *Builder) const {
-  if (const Stmt *S = PathDiagnosticLocation::getStmt(Node)) {
+  if (const Stmt *S = Node->getStmtForDiagnostics()) {
     MatchFinder ASTFinder;
     PSMatchesCallback BindCollector;
     ASTFinder.addMatcher(InnerMatcher, &BindCollector);
@@ -680,6 +677,12 @@ void PthreadLockCheckerV2::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR,
   Finder.match(G, BR, Eng);
 }
 
-void ento::registerPthreadLockCheckerV2(CheckerManager &Mgr) {
-  Mgr.registerChecker<PthreadLockCheckerV2>();
+namespace clang::ento {
+void registerPthreadLockCheckerV2(CheckerManager &mgr) {
+  mgr.registerChecker<PthreadLockCheckerV2>();
+}
+
+bool shouldRegisterPthreadLockCheckerV2(const CheckerManager &mgr) {
+  return true;
+}
 }
