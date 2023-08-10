@@ -668,11 +668,11 @@ void PthreadLockCheckerV2::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR,
   auto Callback = createProxyCallback(
       [&FuncName]() -> void { llvm::errs() << FuncName << " matches!\n"; });
   Finder.addMatcher(
-      {statementNode(callExpr(callee(functionDecl(hasName("::chroot"))))),
+      {statementNode(callExpr(callee(functionDecl(hasName("::pthread_mutex_lock"))))),
        unlessPS(
-           statementNode(callExpr(callee(functionDecl(hasName("::chdir")))))),
+           statementNode(callExpr(callee(functionDecl(hasName("::pthread_mutex_unlock")))))),
        statementNode(
-           callExpr(unless(callee(functionDecl(hasName("::chdir"))))))},
+           callExpr(unless(callee(functionDecl(hasName("::pthread_mutex_lock"))))))},
       &Callback);
   Finder.match(G, BR, Eng);
 }
