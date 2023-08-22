@@ -112,9 +112,11 @@ void InvalidPtrChecker::EnvpInvalidatingCall(const CallEvent &Call,
                                         StringRef Message, ExplodedNode *Pred) {
     State = State->add<InvalidMemoryRegions>(Region);
 
+    // Make copy of string data for the time when notes are *actually* created.
     const NoteTag *Note =
-        C.getNoteTag([Region, FunctionName, Message](PathSensitiveBugReport &BR,
-                                                     llvm::raw_ostream &Out) {
+        C.getNoteTag([Region, FunctionName = SmallString<64>{FunctionName},
+                      Message = SmallString<256>{Message}](
+                         PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
           if (!BR.isInteresting(Region))
             return;
           Out << '\'' << FunctionName << "' " << Message;
