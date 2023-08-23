@@ -174,8 +174,7 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
 
   // Remember to this region.
   const auto *SymRegOfRetVal = cast<SymbolicRegion>(RetVal.getAsRegion());
-  const MemRegion *MR =
-      const_cast<MemRegion *>(SymRegOfRetVal->getBaseRegion());
+  const MemRegion *MR = SymRegOfRetVal->getBaseRegion();
   State = State->set<PreviousCallResultMap>(FD, MR);
 
   ExplodedNode *Node = C.addTransition(State, Note);
