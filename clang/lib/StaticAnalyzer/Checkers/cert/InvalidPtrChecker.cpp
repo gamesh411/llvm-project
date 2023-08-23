@@ -218,9 +218,11 @@ void InvalidPtrChecker::checkPostCall(const CallEvent &Call,
 
   // Model 'getenv' calls
   if (GetEnvCall.matches(Call)) {
-    State =
-        State->add<GetenvEnvPtrRegions>(Call.getReturnValue().getAsRegion());
-    C.addTransition(State);
+    const MemRegion *Region = Call.getReturnValue().getAsRegion();
+    if (Region) {
+      State = State->add<GetenvEnvPtrRegions>(Region);
+      C.addTransition(State);
+    }
   }
 
   // Check if function invalidates 'envp' argument of 'main'
