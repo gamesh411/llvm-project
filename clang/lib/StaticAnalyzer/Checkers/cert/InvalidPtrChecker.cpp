@@ -104,7 +104,8 @@ void InvalidPtrChecker::EnvpInvalidatingCall(const CallEvent &Call,
   const NoteTag *Note =
       C.getNoteTag([SymbolicEnvPtrRegion, FunctionName](
                        PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
-        if (!BR.isInteresting(SymbolicEnvPtrRegion))
+        if (!BR.isInteresting(SymbolicEnvPtrRegion) ||
+            BR.getBugType().getCategory() != categories::MemoryError)
           return;
         Out << '\'' << FunctionName
             << "' call may invalidate the environment parameter of 'main'";
@@ -126,7 +127,8 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
     State = State->add<InvalidMemoryRegions>(PrevReg);
     Note = C.getNoteTag([PrevReg, FD](PathSensitiveBugReport &BR,
                                       llvm::raw_ostream &Out) {
-      if (!BR.isInteresting(PrevReg))
+      if (!BR.isInteresting(PrevReg) ||
+          BR.getBugType().getCategory() != categories::MemoryError)
         return;
       Out << '\'';
       FD->getNameForDiagnostic(Out, FD->getASTContext().getLangOpts(), true);
@@ -153,7 +155,8 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
   ExplodedNode *Node = C.addTransition(State, Note);
   const NoteTag *PreviousCallNote =
       C.getNoteTag([MR](PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
-        if (!BR.isInteresting(MR))
+        if (!BR.isInteresting(MR) ||
+            BR.getBugType().getCategory() != categories::MemoryError)
           return;
         Out << '\'' << "'previous function call was here" << '\'';
       });
