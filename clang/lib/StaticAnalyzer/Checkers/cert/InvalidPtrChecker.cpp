@@ -30,7 +30,8 @@ namespace {
 class InvalidPtrChecker
     : public Checker<check::Location, check::BeginFunction, check::PostCall> {
 private:
-  BugType BT{this, "Use of invalidated pointer", categories::MemoryError};
+  BugType InvalidPtrBug{this, "Use of invalidated pointer",
+                        categories::MemoryError};
 
   void EnvpInvalidatingCall(const CallEvent &Call, CheckerContext &C) const;
 
@@ -121,7 +122,8 @@ void InvalidPtrChecker::EnvpInvalidatingCall(const CallEvent &Call,
         C.getNoteTag([Region, FunctionName = SmallString<64>{FunctionName},
                       Message = SmallString<256>{Message}](
                          PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
-          if (!BR.isInteresting(Region))
+          if (!BR.isInteresting(Region) ||
+              BR.getBugType().getCategory() != categories::MemoryError)
             return;
           Out << '\'' << FunctionName << "' " << Message;
         });
@@ -154,7 +156,8 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
     State = State->add<InvalidMemoryRegions>(PrevReg);
     Note = C.getNoteTag([PrevReg, FD](PathSensitiveBugReport &BR,
                                       llvm::raw_ostream &Out) {
-      if (!BR.isInteresting(PrevReg))
+      if (!BR.isInteresting(PrevReg) ||
+          BR.getBugType().getCategory() != categories::MemoryError)
         return;
       Out << '\'';
       FD->getNameForDiagnostic(Out, FD->getASTContext().getLangOpts(), true);
@@ -180,7 +183,8 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
   ExplodedNode *Node = C.addTransition(State, Note);
   const NoteTag *PreviousCallNote =
       C.getNoteTag([MR](PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
-        if (!BR.isInteresting(MR))
+        if (!BR.isInteresting(MR) ||
+            BR.getBugType().getCategory() != categories::MemoryError)
           return;
         Out << '\'' << "'previous function call was here" << '\'';
       });
@@ -259,8 +263,8 @@ void InvalidPtrChecker::checkPostCall(const CallEvent &Call,
                                         C.getASTContext().getPrintingPolicy());
         Out << "' in a function call";
 
-        auto Report =
-            std::make_unique<PathSensitiveBugReport>(BT, Out.str(), ErrorNode);
+        auto Report = std::make_unique<PathSensitiveBugReport>(
+            InvalidPtrBug, Out.str(), ErrorNode);
         Report->markInteresting(InvalidatedSymbolicBase);
         Report->addRange(Call.getArgSourceRange(I));
         C.emitReport(std::move(Report));
@@ -303,7 +307,7 @@ void InvalidPtrChecker::checkLocation(SVal Loc, bool isLoad, const Stmt *S,
     return;
 
   auto Report = std::make_unique<PathSensitiveBugReport>(
-      BT, "dereferencing an invalid pointer", ErrorNode);
+      InvalidPtrBug, "dereferencing an invalid pointer", ErrorNode);
   Report->markInteresting(InvalidatedSymbolicBase);
   C.emitReport(std::move(Report));
 }
