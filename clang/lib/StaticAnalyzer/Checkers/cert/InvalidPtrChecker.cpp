@@ -38,6 +38,15 @@ private:
                                                 CheckerContext &C) const;
 
   // SEI CERT ENV31-C
+
+  // If set to true, consider getenv calls as invalidating operations on the
+  // environment variable buffer. This is implied in the standard, but in
+  // practice does not cause problems (in the commonly used environments).
+  bool InvalidatingGetEnv = false;
+
+  // GetEnv can be treated invalidating and non-invalidating as well.
+  const CallDescription GetEnvCall{{"getenv"}, 1};
+
   const CallDescriptionMap<HandlerFn> EnvpInvalidatingFunctions = {
       {{{"setenv"}, 3}, &InvalidPtrChecker::EnvpInvalidatingCall},
       {{{"unsetenv"}, 1}, &InvalidPtrChecker::EnvpInvalidatingCall},
@@ -60,11 +69,6 @@ private:
       {{{"asctime"}, 1},
        &InvalidPtrChecker::postPreviousReturnInvalidatingCall},
   };
-
-  // If set to true, consider getenv calls as invalidating operations on the
-  // environment variable buffer. This is implied in the standard, but can lead
-  // to practical false positives.
-  bool InvalidatingGetEnv = false;
 
   // The private members of this checker corresponding to commandline options
   // are set in this function.
@@ -213,7 +217,6 @@ void InvalidPtrChecker::checkPostCall(const CallEvent &Call,
   ProgramStateRef State = C.getState();
 
   // Model 'getenv' calls
-  CallDescription GetEnvCall{{"getenv"}, 1};
   if (GetEnvCall.matches(Call)) {
     State =
         State->add<GetenvEnvPtrRegions>(Call.getReturnValue().getAsRegion());
