@@ -128,7 +128,7 @@ void InvalidPtrChecker::EnvpInvalidatingCall(const CallEvent &Call,
     return C.addTransition(State, Pred, Note);
   };
 
-  ExplodedNode *CurrentChainEnd = nullptr;
+  ExplodedNode *CurrentChainEnd = C.getPredecessor();
 
   if (const MemRegion *MainEnvPtr = State->get<MainEnvPtrRegion>())
     CurrentChainEnd = PlaceInvalidationNote(
