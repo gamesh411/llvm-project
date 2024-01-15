@@ -60,6 +60,7 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <algorithm>
@@ -9263,6 +9264,16 @@ Error ASTImporter::ImportAttrs(Decl *ToD, Decl *FromD) {
 Expected<Decl *> ASTImporter::Import(Decl *FromD) {
   if (!FromD)
     return nullptr;
+
+  #ifndef NDEBUG
+  auto &SM = FromContext.getSourceManager();
+  llvm::dbgs() << "Calling Import(Decl* From), From: " << FromD << " @" << FromD->getSourceRange().printToString(SM);
+  if (auto *NamedFromD = llvm::dyn_cast_if_present<NamedDecl>(FromD)) {
+    llvm::dbgs() << " (named: '" << NamedFromD->getName() << "')";
+  }
+  llvm::dbgs() << "\n";
+  FromD->dump(llvm::dbgs());
+  #endif
 
   // Push FromD to the stack, and remove that when we return.
   ImportPath.push(FromD);
