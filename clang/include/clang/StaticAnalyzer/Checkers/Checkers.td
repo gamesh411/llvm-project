@@ -123,6 +123,8 @@ def FuchsiaAlpha : Package<"fuchsia">, ParentPackage<Alpha>;
 def WebKit : Package<"webkit">;
 def WebKitAlpha : Package<"webkit">, ParentPackage<Alpha>;
 
+def Experimental : Package<"experimental">;
+
 //===----------------------------------------------------------------------===//
 // Core Checkers.
 //===----------------------------------------------------------------------===//
@@ -1775,3 +1777,12 @@ def UncountedLocalVarsChecker : Checker<"UncountedLocalVarsChecker">,
   Documentation<HasDocumentation>;
 
 } // end alpha.webkit
+
+let ParentPackage = Experimental in {
+
+def LTLFormulaChecker : Checker<"LTLFormulaChecker">,
+  HelpText<"Check for violations of LTL formulae">,
+  Documentation<NotDocumented>;
+
+} // end experimental
+
