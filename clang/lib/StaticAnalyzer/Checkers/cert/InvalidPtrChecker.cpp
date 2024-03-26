@@ -124,7 +124,7 @@ const NoteTag *InvalidPtrChecker::createEnvInvalidationNote(
                        FunctionName = std::string{FunctionName}](
                           PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
     // Only handle the BugType of this checker.
-    if (&BR.getBugType() != &InvalidPtrBugType)
+    if (BR.getBugType() != InvalidPtrBugType)
       return;
 
     // Mark all regions that were interesting before as NOT interesting now
@@ -187,7 +187,7 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
     State = State->add<InvalidMemoryRegions>(PrevReg);
     Note = C.getNoteTag([this, PrevReg, FD](PathSensitiveBugReport &BR,
                                             llvm::raw_ostream &Out) {
-      if (!BR.isInteresting(PrevReg) || &BR.getBugType() != &InvalidPtrBugType)
+      if (!BR.isInteresting(PrevReg) || BR.getBugType() != InvalidPtrBugType)
         return;
       Out << '\'';
       FD->getNameForDiagnostic(Out, FD->getASTContext().getLangOpts(), true);
@@ -213,7 +213,7 @@ void InvalidPtrChecker::postPreviousReturnInvalidatingCall(
   ExplodedNode *Node = C.addTransition(State, Note);
   const NoteTag *PreviousCallNote = C.getNoteTag(
       [this, MR](PathSensitiveBugReport &BR, llvm::raw_ostream &Out) {
-        if (!BR.isInteresting(MR) || &BR.getBugType() != &InvalidPtrBugType)
+        if (!BR.isInteresting(MR) || BR.getBugType() != InvalidPtrBugType)
           return;
         Out << "previous function call was here";
       });

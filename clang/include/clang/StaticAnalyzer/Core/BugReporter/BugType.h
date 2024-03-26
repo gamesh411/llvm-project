@@ -62,6 +62,14 @@ public:
   ///  type should be suppressed if the end node of the report is post-dominated
   ///  by a sink node.
   bool isSuppressOnSink() const { return SuppressOnSink; }
+
+  [[nodiscard]] constexpr bool operator==(const BugType &RHS) const {
+    return Checker == RHS.Checker && Description == RHS.Description &&
+           Category == RHS.Category && SuppressOnSink == RHS.SuppressOnSink;
+  }
+  [[nodiscard]] constexpr bool operator!=(const BugType &RHS) const {
+    return !(*this == RHS);
+  }
 };
 
 } // namespace ento

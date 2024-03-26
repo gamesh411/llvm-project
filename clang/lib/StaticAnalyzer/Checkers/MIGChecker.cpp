@@ -213,8 +213,8 @@ void MIGChecker::checkPostCall(const CallEvent &Call, CheckerContext &C) const {
     return;
 
   const NoteTag *T =
-    C.getNoteTag([this, PVD](PathSensitiveBugReport &BR) -> std::string {
-        if (&BR.getBugType() != &BT)
+      C.getNoteTag([this, PVD](PathSensitiveBugReport &BR) -> std::string {
+        if (BR.getBugType() != BT)
           return "";
         SmallString<64> Str;
         llvm::raw_svector_ostream OS(Str);

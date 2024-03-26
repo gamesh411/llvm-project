@@ -329,10 +329,9 @@ void BlockInCriticalSectionChecker::reportBlockInCritSection(
 const NoteTag *
 BlockInCriticalSectionChecker::createCritSectionNote(CritSectionMarker M,
                                                      CheckerContext &C) const {
-  const BugType *BT = &this->BlockInCritSectionBugType;
-  return C.getNoteTag([M, BT](PathSensitiveBugReport &BR,
-                              llvm::raw_ostream &OS) {
-    if (&BR.getBugType() != BT)
+  return C.getNoteTag([this, M](PathSensitiveBugReport &BR,
+                                llvm::raw_ostream &OS) {
+    if (BR.getBugType() != BlockInCritSectionBugType)
       return;
 
     // Get the lock events for the mutex of the current line's lock event.

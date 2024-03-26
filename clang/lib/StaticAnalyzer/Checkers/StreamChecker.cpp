@@ -244,16 +244,10 @@ public:
                                      const CallEvent *Call,
                                      PointerEscapeKind Kind) const;
 
-  const BugType *getBT_StreamEof() const { return &BT_StreamEof; }
-  const BugType *getBT_IndeterminatePosition() const {
-    return &BT_IndeterminatePosition;
-  }
-
   const NoteTag *constructSetEofNoteTag(CheckerContext &C,
                                         SymbolRef StreamSym) const {
     return C.getNoteTag([this, StreamSym](PathSensitiveBugReport &BR) {
-      if (!BR.isInteresting(StreamSym) ||
-          &BR.getBugType() != this->getBT_StreamEof())
+      if (!BR.isInteresting(StreamSym) || BR.getBugType() != BT_StreamEof)
         return "";
 
       BR.markNotInteresting(StreamSym);
@@ -266,7 +260,7 @@ public:
                                           SymbolRef StreamSym) const {
     return C.getNoteTag([this, StreamSym](PathSensitiveBugReport &BR) {
       if (!BR.isInteresting(StreamSym) ||
-          &BR.getBugType() != this->getBT_IndeterminatePosition())
+          BR.getBugType() != BT_IndeterminatePosition)
         return "";
 
       BR.markNotInteresting(StreamSym);
@@ -281,11 +275,11 @@ public:
       if (!BR.isInteresting(StreamSym))
         return "";
 
-      if (&BR.getBugType() == this->getBT_StreamEof()) {
+      if (BR.getBugType() == BT_StreamEof) {
         BR.markNotInteresting(StreamSym);
         return FeofNote;
       }
-      if (&BR.getBugType() == this->getBT_IndeterminatePosition()) {
+      if (BR.getBugType() == BT_IndeterminatePosition) {
         BR.markNotInteresting(StreamSym);
         return FerrorNote;
       }
@@ -553,12 +547,12 @@ private:
   /// marked as interesting by the actual bug report.
   const NoteTag *constructLeakNoteTag(CheckerContext &C, SymbolRef StreamSym,
                                       const std::string &Message) const {
-    return C.getNoteTag([this, StreamSym,
-                         Message](PathSensitiveBugReport &BR) -> std::string {
-      if (BR.isInteresting(StreamSym) && &BR.getBugType() == &BT_ResourceLeak)
-        return Message;
-      return "";
-    });
+    return C.getNoteTag(
+        [this, StreamSym, Message](PathSensitiveBugReport &BR) -> std::string {
+          if (BR.isInteresting(StreamSym) && BR.getBugType() == BT_ResourceLeak)
+            return Message;
+          return "";
+        });
   }
 
   void initMacroValues(CheckerContext &C) const {
