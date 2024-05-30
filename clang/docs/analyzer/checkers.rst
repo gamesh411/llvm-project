@@ -3162,6 +3162,17 @@ Critical section handling functions modelled by this checker: ``lock, unlock, pt
 * The ``trylock`` and ``timedlock`` versions of acquiring locks are currently handled as if they always succeeded.
   This can lead to false positives.
 
+  .. code-block:: c
+
+   void trylock_example(pthread_mutex_t *m) {
+	 if (pthread_mutex_trylock(m) == 0) { // assume trylock always succeeds
+	   sleep(10); // warn: Call to blocking function 'sleep' inside of critical section
+	   pthread_mutex_unlock(m);
+	 } else {
+       sleep(10); // false positive: Incorrectly warns about blocking function inside critical section
+     }
+   }
+
 .. _alpha-unix-Chroot:
 
 alpha.unix.Chroot (C)
