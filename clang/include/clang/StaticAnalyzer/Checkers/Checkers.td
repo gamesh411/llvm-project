@@ -509,8 +509,14 @@ def UnixAPIMisuseChecker : Checker<"API">,
   HelpText<"Check calls to various UNIX/Posix functions">,
   Documentation<HasDocumentation>;
 
+def MutexModeling : Checker<"MutexModeling">,
+  HelpText<"Model mutexes lock and unlock events">,
+  Documentation<NotDocumented>,
+  Hidden;
+
 def BlockInCriticalSectionChecker : Checker<"BlockInCriticalSection">,
   HelpText<"Check for calls to blocking functions inside a critical section">,
+  Dependencies<[MutexModeling]>,
   Documentation<HasDocumentation>;
 
 def DynamicMemoryModeling: Checker<"DynamicMemoryModeling">,
