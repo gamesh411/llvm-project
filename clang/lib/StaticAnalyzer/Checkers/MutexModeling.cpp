@@ -163,7 +163,7 @@ void MutexModeling::handleLock(const MutexDescriptor &LockDescriptor,
   const CritSectionMarker MarkToAdd{Call.getOriginExpr(), MutexRegion};
   ProgramStateRef StateWithLockEvent =
       C.getState()->add<ActiveCritSections>(MarkToAdd);
-  C.addTransition(StateWithLockEvent, createCritSectionNote(MarkToAdd, C));
+  C.addTransition(StateWithLockEvent, CreateMutexCritSectionNote(MarkToAdd, C));
 }
 
 void MutexModeling::handleUnlock(const MutexDescriptor &UnlockDescriptor,

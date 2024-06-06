@@ -54,8 +54,7 @@ public:
 
 bool BlockInCriticalSectionChecker::isBlockingInCritSection(
     const CallEvent &Call, CheckerContext &C) const {
-  return BlockingFunctions.contains(Call) &&
-         !C.getState()->get<ActiveCritSections>().isEmpty();
+  return BlockingFunctions.contains(Call) && AreAnyCritsectionsActive(C);
 }
 
 void BlockInCriticalSectionChecker::reportBlockInCritSection(
