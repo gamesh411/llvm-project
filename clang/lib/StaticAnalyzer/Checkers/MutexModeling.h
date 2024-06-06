@@ -14,18 +14,39 @@
 #ifndef LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELING_H
 #define LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELING_H
 
+#include "MutexModelingGDM.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 
-#include "MutexModelingGDM.h"
-
 namespace clang {
+
 namespace ento {
+class BugType;
 namespace mutex_modeling {
-inline const NoteTag *createCritSectionNote(CritSectionMarker M,
-                                            CheckerContext &C) {
+
+inline llvm::SmallSet<const BugType *, 8> RegisteredCheckers{};
+
+inline void RegisterCheckerForMutexModeling(const BugType *BT) {
+  RegisteredCheckers.insert(BT);
+}
+
+inline bool IsCheckerRegisteredForMutexModeling(const BugType *BT) {
+  return RegisteredCheckers.contains(BT);
+}
+
+inline bool AreAnyCritsectionsActive(CheckerContext &C) {
+  return !C.getState()->get<ActiveCritSections>().isEmpty();
+}
+
+inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
+                                                 CheckerContext &C) {
   return C.getNoteTag([M](const PathSensitiveBugReport &BR,
                           llvm::raw_ostream &OS) {
+    if (!IsCheckerRegisteredForMutexModeling(&BR.getBugType()))
+      return;
     const auto CritSectionBegins =
         BR.getErrorNode()->getState()->get<ActiveCritSections>();
     llvm::SmallVector<CritSectionMarker, 4> LocksForMutex;
