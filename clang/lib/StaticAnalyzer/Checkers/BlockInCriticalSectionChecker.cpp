@@ -22,7 +22,6 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallDescription.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
 #include <utility>
 
 using namespace clang;
@@ -47,10 +46,15 @@ private:
   void reportBlockInCritSection(const CallEvent &call, CheckerContext &C) const;
 
 public:
+  BlockInCriticalSectionChecker();
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
 };
 
 } // end anonymous namespace
+
+BlockInCriticalSectionChecker::BlockInCriticalSectionChecker() {
+  RegisterCheckerForMutexModeling(&BlockInCritSectionBugType);
+}
 
 bool BlockInCriticalSectionChecker::isBlockingInCritSection(
     const CallEvent &Call, CheckerContext &C) const {
