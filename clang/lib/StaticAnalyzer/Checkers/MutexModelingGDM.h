@@ -26,6 +26,57 @@ namespace ento {
 class MemRegion;
 
 namespace mutex_modeling {
+
+/// Control dependecy factors
+
+enum LockingSemantics { NotApplicable = 0, PthreadSemantics, XNUSemantics };
+
+enum CheckerKind {
+  CK_BlockInCriticalSectionChecker,
+  CK_PthreadLockChecker,
+  CK_FuchsiaLockChecker,
+  CK_C11LockChecker,
+  CK_NumCheckKinds
+};
+
+struct LockState {
+  enum Kind {
+    Destroyed,
+    Locked,
+    Unlocked,
+    UntouchedAndPossiblyDestroyed,
+    UnlockedAndPossiblyDestroyed
+  } K;
+
+private:
+  LockState(Kind K) : K(K) {}
+
+public:
+  static LockState getLocked() { return LockState(Locked); }
+  static LockState getUnlocked() { return LockState(Unlocked); }
+  static LockState getDestroyed() { return LockState(Destroyed); }
+  static LockState getUntouchedAndPossiblyDestroyed() {
+    return LockState(UntouchedAndPossiblyDestroyed);
+  }
+  static LockState getUnlockedAndPossiblyDestroyed() {
+    return LockState(UnlockedAndPossiblyDestroyed);
+  }
+
+  bool operator==(const LockState &X) const { return K == X.K; }
+
+  bool isLocked() const { return K == Locked; }
+  bool isUnlocked() const { return K == Unlocked; }
+  bool isDestroyed() const { return K == Destroyed; }
+  bool isUntouchedAndPossiblyDestroyed() const {
+    return K == UntouchedAndPossiblyDestroyed;
+  }
+  bool isUnlockedAndPossiblyDestroyed() const {
+    return K == UnlockedAndPossiblyDestroyed;
+  }
+
+  void Profile(llvm::FoldingSetNodeID &ID) const { ID.AddInteger(K); }
+};
+
 struct CritSectionMarker {
   const clang::Expr *LockExpr{};
   const clang::ento::MemRegion *LockReg{};
