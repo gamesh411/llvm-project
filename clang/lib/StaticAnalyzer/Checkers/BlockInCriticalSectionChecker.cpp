@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "MutexModeling.h"
+#include "MutexModeling/MutexModelingAPI.h"
 
 #include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"

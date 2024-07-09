@@ -1,4 +1,4 @@
-//===--- MutexModeling.h - Modeling of mutexes ----------------------------===//
+//===--- MutexModelingAPI.h - API for modeling mutexes --------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,9 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELING_H
-#define LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELING_H
+#ifndef LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGAPI_H
+#define LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGAPI_H
 
+#include "MutexModelingDomain.h"
 #include "MutexModelingGDM.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
@@ -38,7 +39,7 @@ inline bool IsCheckerRegisteredForMutexModeling(const BugType *BT) {
 }
 
 inline bool AreAnyCritsectionsActive(CheckerContext &C) {
-  return !C.getState()->get<ActiveCritSections>().isEmpty();
+  return !C.getState()->get<CritSections>().isEmpty();
 }
 
 inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
@@ -48,11 +49,11 @@ inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
     if (!IsCheckerRegisteredForMutexModeling(&BR.getBugType()))
       return;
     const auto CritSectionBegins =
-        BR.getErrorNode()->getState()->get<ActiveCritSections>();
+        BR.getErrorNode()->getState()->get<CritSections>();
     llvm::SmallVector<CritSectionMarker, 4> LocksForMutex;
     llvm::copy_if(
         CritSectionBegins, std::back_inserter(LocksForMutex),
-        [M](const auto &Marker) { return Marker.LockReg == M.LockReg; });
+        [M](const auto &Marker) { return Marker.MutexRegion == M.MutexRegion; });
     if (LocksForMutex.empty())
       return;
 
@@ -64,7 +65,7 @@ inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
     // given mutex (in acquisition order).
     const CritSectionMarker *const Position =
         llvm::find_if(std::as_const(LocksForMutex), [M](const auto &Marker) {
-          return Marker.LockExpr == M.LockExpr;
+          return Marker.BeginExpr == M.BeginExpr;
         });
     if (Position == LocksForMutex.end())
       return;

@@ -10,10 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "MutexModeling.h"
+#include "MutexModeling/MutexModelingAPI.h"
+#include "MutexModeling/MutexModelingDomain.h"
 
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallDescription.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Frontend/CheckerRegistry.h"
 
 #include <variant>
@@ -96,15 +98,15 @@ public:
   }
   [[nodiscard]] const MemRegion *getRegion(const CallEvent &Call,
                                            bool IsLock) const {
-    const MemRegion *LockRegion = nullptr;
+    const MemRegion *MutexRegion = nullptr;
     if (IsLock) {
       if (std::optional<SVal> Object = Call.getReturnValueUnderConstruction()) {
-        LockRegion = Object->getAsRegion();
+        MutexRegion = Object->getAsRegion();
       }
     } else {
-      LockRegion = cast<CXXDestructorCall>(Call).getCXXThisVal().getAsRegion();
+      MutexRegion = cast<CXXDestructorCall>(Call).getCXXThisVal().getAsRegion();
     }
-    return LockRegion;
+    return MutexRegion;
   }
 };
 
@@ -162,7 +164,7 @@ void MutexModeling::handleLock(const MutexDescriptor &LockDescriptor,
 
   const CritSectionMarker MarkToAdd{Call.getOriginExpr(), MutexRegion};
   ProgramStateRef StateWithLockEvent =
-      C.getState()->add<ActiveCritSections>(MarkToAdd);
+      C.getState()->add<CritSections>(MarkToAdd);
   C.addTransition(StateWithLockEvent, CreateMutexCritSectionNote(MarkToAdd, C));
 }
 
@@ -175,16 +177,16 @@ void MutexModeling::handleUnlock(const MutexDescriptor &UnlockDescriptor,
     return;
 
   ProgramStateRef State = C.getState();
-  const auto ActiveSections = State->get<ActiveCritSections>();
+  const auto ActiveSections = State->get<CritSections>();
   const auto MostRecentLock =
       llvm::find_if(ActiveSections, [MutexRegion](auto &&Marker) {
-        return Marker.LockReg == MutexRegion;
+        return Marker.MutexRegion == MutexRegion;
       });
   if (MostRecentLock == ActiveSections.end())
     return;
 
   // Build a new ImmutableList without this element.
-  auto &Factory = State->get_context<ActiveCritSections>();
+  auto &Factory = State->get_context<CritSections>();
   llvm::ImmutableList<CritSectionMarker> NewList = Factory.getEmptyList();
   for (auto It = ActiveSections.begin(), End = ActiveSections.end(); It != End;
        ++It) {
@@ -192,7 +194,7 @@ void MutexModeling::handleUnlock(const MutexDescriptor &UnlockDescriptor,
       NewList = Factory.add(*It, NewList);
   }
 
-  State = State->set<ActiveCritSections>(NewList);
+  State = State->set<CritSections>(NewList);
   C.addTransition(State);
 }
 

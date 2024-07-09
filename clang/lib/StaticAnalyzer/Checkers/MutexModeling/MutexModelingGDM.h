@@ -1,5 +1,4 @@
-//===--- MutexModelingGDM.h - Modeling of mutexes -------------------------===//
-//----------------------------===//
+//===--- MutexModelingGDM.h - Modeling of mutexes in GDM ------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -14,116 +13,93 @@
 #ifndef LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGGDM_H
 #define LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGGDM_H
 
+#include "MutexModelingDomain.h"
+
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-
-namespace clang {
-
-class Expr;
-
-namespace ento {
-
-class MemRegion;
-
-namespace mutex_modeling {
-
-enum class EventKind { Init, Acquire, TryAcquire, Release, Destroy };
-
-enum class SyntaxKind { FirstArg, Member, RAII };
-
-enum class LockingSemanticsKind { PthreadSemantics, XNUSemantics };
-
-enum class LockStateKind {
-  Unlocked,
-  Locked,
-  Destroyed,
-  UntouchedAndPossiblyDestroyed,
-  UnlockedAndPossiblyDestroyed
-};
-
-struct EventDescriptor {
-  EventKind Event;
-  SyntaxKind Syntax;
-  LockingSemanticsKind Semantics;
-
-  [[nodiscard]] constexpr bool
-  operator==(const EventDescriptor &Other) const noexcept {
-    return Event == Other.Event && Syntax == Other.Syntax &&
-           Semantics == Other.Semantics;
-  }
-
-  void Profile(llvm::FoldingSetNodeID &ID) const {
-    ID.Add(Event);
-    ID.Add(Syntax);
-    ID.Add(Semantics);
-  }
-};
-
-struct EventMarker {
-  EventDescriptor Descriptor;
-  LockStateKind LockState;
-  clang::Expr *LockExpr{};
-  clang::ento::MemRegion *LockReg{};
-
-  void Profile(llvm::FoldingSetNodeID &ID) const {
-    ID.Add(Descriptor);
-    ID.Add(LockState);
-    ID.Add(LockExpr);
-    ID.Add(LockReg);
-  }
-
-  [[nodiscard]] constexpr bool
-  operator==(const EventMarker &Other) const noexcept {
-    return Descriptor == Other.Descriptor && LockState == Other.LockState &&
-           LockExpr == Other.LockExpr && LockReg == Other.LockReg;
-  }
-  [[nodiscard]] constexpr bool
-  operator!=(const EventMarker &Other) const noexcept {
-    return !(*this == Other);
-  }
-};
-
-struct CritSectionMarker {};
+#include "llvm/ADT/FoldingSet.h"
 
 // GDM-related handle-types for tracking mutex states.
-class ActiveCritSections {};
-using ActiveCritSectionsTy = llvm ::ImmutableList<EventMarker>;
+namespace clang {
+namespace ento {
+namespace mutex_modeling {
+
+class MutexEvents {};
+using MutexEventsTy = llvm::ImmutableList<EventMarker>;
+
+class CritSections {};
+using CritSectionsTy = llvm::ImmutableList<CritSectionMarker>;
 
 } // namespace mutex_modeling
 } // namespace ento
 } // namespace clang
 
-// shorthand for the type of the GDM handle.
-namespace {
-using MutexModelingCritSectionMarker =
-    clang::ento::mutex_modeling::CritSectionMarker;
-} // namespace
+// Enable usage of mutex modeling data structures in llvm::FoldingSet.
+namespace llvm {
+template <> struct FoldingSetTrait<clang::ento::mutex_modeling::EventMarker> {
+  static void Profile(const clang::ento::mutex_modeling::EventMarker &EM,
+               llvm::FoldingSetNodeID &ID) {
+    ID.Add(EM.Event.Kind);
+    ID.Add(EM.Event.Syntax);
+    ID.Add(EM.Event.Semantics);
+    ID.Add(EM.LockState);
+    ID.Add(EM.EventExpr);
+    ID.Add(EM.MutexRegion);
+  }
+};
+
+template <>
+struct FoldingSetTrait<clang::ento::mutex_modeling::CritSectionMarker> {
+  static void Profile(const clang::ento::mutex_modeling::CritSectionMarker &CSM,
+               llvm::FoldingSetNodeID &ID) {
+    ID.Add(CSM.BeginExpr);
+    ID.Add(CSM.MutexRegion);
+  }
+};
+} // namespace llvm
 
 // Iterator traits for ImmutableList data structure
 // that enable the use of STL algorithms.
 namespace std {
 // TODO: Move these to llvm::ImmutableList when overhauling immutable data
 // structures for proper iterator concept support.
-
 template <>
-struct iterator_traits<
-    typename llvm::ImmutableList<MutexModelingCritSectionMarker>::iterator> {
+struct iterator_traits<typename llvm::ImmutableList<
+    clang::ento::mutex_modeling::EventMarker>::iterator> {
   using iterator_category = std::forward_iterator_tag;
-  using value_type = MutexModelingCritSectionMarker;
+  using value_type = clang::ento::mutex_modeling::EventMarker;
   using difference_type = std::ptrdiff_t;
-  using reference = MutexModelingCritSectionMarker &;
-  using pointer = MutexModelingCritSectionMarker *;
+  using reference = clang::ento::mutex_modeling::EventMarker &;
+  using pointer = clang::ento::mutex_modeling::EventMarker *;
+};
+template <>
+struct iterator_traits<typename llvm::ImmutableList<
+    clang::ento::mutex_modeling::CritSectionMarker>::iterator> {
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = clang::ento::mutex_modeling::CritSectionMarker;
+  using difference_type = std::ptrdiff_t;
+  using reference = clang::ento::mutex_modeling::CritSectionMarker &;
+  using pointer = clang::ento::mutex_modeling::CritSectionMarker *;
 };
 } // namespace std
 
-// FIXME: ProgramState macros are not used here, because the visibility of these
+// NOTE: ProgramState macros are not used here, because the visibility of these
 // GDM entries must span multiple translation units (multiple checkers).
 namespace clang {
 namespace ento {
 template <>
-struct ProgramStateTrait<clang::ento::mutex_modeling::ActiveCritSections>
+struct ProgramStateTrait<clang::ento::mutex_modeling::MutexEvents>
     : public ProgramStatePartialTrait<
-          clang::ento::mutex_modeling::ActiveCritSectionsTy> {
+          clang::ento::mutex_modeling::MutexEventsTy> {
+  static void *GDMIndex() {
+    static int Index;
+    return &Index;
+  }
+};
+template <>
+struct ProgramStateTrait<clang::ento::mutex_modeling::CritSections>
+    : public ProgramStatePartialTrait<
+          clang::ento::mutex_modeling::CritSectionsTy> {
   static void *GDMIndex() {
     static int Index;
     return &Index;
