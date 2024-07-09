@@ -26,28 +26,68 @@ namespace ento {
 class MemRegion;
 
 namespace mutex_modeling {
-struct CritSectionMarker {
-  const clang::Expr *LockExpr{};
-  const clang::ento::MemRegion *LockReg{};
+
+enum class EventKind { Init, Acquire, TryAcquire, Release, Destroy };
+
+enum class SyntaxKind { FirstArg, Member, RAII };
+
+enum class LockingSemanticsKind { PthreadSemantics, XNUSemantics };
+
+enum class LockStateKind {
+  Unlocked,
+  Locked,
+  Destroyed,
+  UntouchedAndPossiblyDestroyed,
+  UnlockedAndPossiblyDestroyed
+};
+
+struct EventDescriptor {
+  EventKind Event;
+  SyntaxKind Syntax;
+  LockingSemanticsKind Semantics;
+
+  [[nodiscard]] constexpr bool
+  operator==(const EventDescriptor &Other) const noexcept {
+    return Event == Other.Event && Syntax == Other.Syntax &&
+           Semantics == Other.Semantics;
+  }
 
   void Profile(llvm::FoldingSetNodeID &ID) const {
+    ID.Add(Event);
+    ID.Add(Syntax);
+    ID.Add(Semantics);
+  }
+};
+
+struct EventMarker {
+  EventDescriptor Descriptor;
+  LockStateKind LockState;
+  clang::Expr *LockExpr{};
+  clang::ento::MemRegion *LockReg{};
+
+  void Profile(llvm::FoldingSetNodeID &ID) const {
+    ID.Add(Descriptor);
+    ID.Add(LockState);
     ID.Add(LockExpr);
     ID.Add(LockReg);
   }
 
   [[nodiscard]] constexpr bool
-  operator==(const CritSectionMarker &Other) const noexcept {
-    return LockExpr == Other.LockExpr && LockReg == Other.LockReg;
+  operator==(const EventMarker &Other) const noexcept {
+    return Descriptor == Other.Descriptor && LockState == Other.LockState &&
+           LockExpr == Other.LockExpr && LockReg == Other.LockReg;
   }
   [[nodiscard]] constexpr bool
-  operator!=(const CritSectionMarker &Other) const noexcept {
+  operator!=(const EventMarker &Other) const noexcept {
     return !(*this == Other);
   }
 };
 
+struct CritSectionMarker {};
+
 // GDM-related handle-types for tracking mutex states.
 class ActiveCritSections {};
-using ActiveCritSectionsTy = llvm ::ImmutableList<CritSectionMarker>;
+using ActiveCritSectionsTy = llvm ::ImmutableList<EventMarker>;
 
 } // namespace mutex_modeling
 } // namespace ento
