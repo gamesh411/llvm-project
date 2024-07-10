@@ -30,6 +30,12 @@ using MutexEventsTy = llvm::ImmutableList<EventMarker>;
 class CritSections {};
 using CritSectionsTy = llvm::ImmutableList<CritSectionMarker>;
 
+class LockStates {};
+using LockStatesTy = llvm::ImmutableMap<const MemRegion*, LockState>;
+
+class DestroyedRetVals {};
+using DestroyedRetValsTy = llvm::ImmutableMap<const MemRegion*, SymbolRef>;
+
 } // namespace mutex_modeling
 } // namespace ento
 } // namespace clang

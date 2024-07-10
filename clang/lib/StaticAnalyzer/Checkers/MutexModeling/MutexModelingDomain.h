@@ -13,6 +13,8 @@
 #ifndef LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGDOMAIN_H
 #define LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGDOMAIN_H
 
+#include "clang/StaticAnalyzer/Core/PathSensitive/CallDescription.h"
+
 namespace clang {
 
 class Expr;
@@ -23,13 +25,17 @@ class MemRegion;
 
 namespace mutex_modeling {
 
-enum class EventKind { Init, Acquire, TryAcquire, Release, Destroy };
+enum class Event { Init, Acquire, TryAcquire, Release, Destroy };
 
-enum class SyntaxKind { FirstArg, Member, RAII };
+enum class Syntax { FirstArg, Member, RAII };
 
-enum class LockingSemanticsKind { PthreadSemantics, XNUSemantics };
+enum class LockingSemantics {
+  NotApplicable = 0,
+  PthreadSemantics,
+  XNUSemantics
+};
 
-enum class LockStateKind {
+enum class LockState {
   Unlocked,
   Locked,
   Destroyed,
@@ -38,35 +44,36 @@ enum class LockStateKind {
 };
 
 struct EventDescriptor {
-  EventKind Kind{};
-  SyntaxKind Syntax{};
-  LockingSemanticsKind Semantics{};
+  CallDescription Trigger;
+  Event Kind{};
+  Syntax Syntax{};
+  LockingSemantics Semantics{};
 
   [[nodiscard]] constexpr bool
-  operator==(const EventDescriptor &Other) const noexcept {
-    return Kind == Other.Kind && Syntax == Other.Syntax &&
-           Semantics == Other.Semantics;
+  operator!=(const EventDescriptor &Other) const noexcept {
+    return Trigger != Other.Trigger || Kind != Other.Kind ||
+           Syntax != Other.Syntax || Semantics != Other.Semantics;
   }
   [[nodiscard]] constexpr bool
-  operator!=(const EventDescriptor &Other) const noexcept {
-    return !(*this == Other);
+  operator==(const EventDescriptor &Other) const noexcept {
+    return !(*this != Other);
   }
 };
 
 struct EventMarker {
   EventDescriptor Event{};
-  LockStateKind LockState{};
+  LockState LockState{};
   const clang::Expr *EventExpr{};
   const clang::ento::MemRegion *MutexRegion{};
 
   [[nodiscard]] constexpr bool
-  operator==(const EventMarker &Other) const noexcept {
-    return Event == Other.Event && LockState == Other.LockState &&
-           EventExpr == Other.EventExpr && MutexRegion == Other.MutexRegion;
+  operator!=(const EventMarker &Other) const noexcept {
+    return Event != Other.Event || LockState != Other.LockState ||
+           EventExpr != Other.EventExpr || MutexRegion != Other.MutexRegion;
   }
   [[nodiscard]] constexpr bool
-  operator!=(const EventMarker &Other) const noexcept {
-    return !(*this == Other);
+  operator==(const EventMarker &Other) const noexcept {
+    return !(*this != Other);
   }
 };
 
@@ -75,12 +82,12 @@ struct CritSectionMarker {
   const clang::ento::MemRegion *MutexRegion;
 
   [[nodiscard]] constexpr bool
-  operator==(const CritSectionMarker &Other) const noexcept {
-    return BeginExpr == Other.BeginExpr && MutexRegion == Other.MutexRegion;
+  operator!=(const CritSectionMarker &Other) const noexcept {
+    return BeginExpr != Other.BeginExpr || MutexRegion != Other.MutexRegion;
   }
   [[nodiscard]] constexpr bool
-  operator!=(const CritSectionMarker &Other) const noexcept {
-    return !(*this == Other);
+  operator==(const CritSectionMarker &Other) const noexcept {
+    return !(*this != Other);
   }
 };
 
