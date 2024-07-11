@@ -14,8 +14,10 @@
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTDumper.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "clang/Analysis/CFG.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -25,6 +27,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
+#include <optional>
 #include <queue>
 #include <sstream>
 #include <string>
@@ -94,12 +97,12 @@ StatementMatcher ThrowMatcher = findAll(cxxThrowExpr().bind("throw"));
 StatementMatcher CatchMatcher = findAll(cxxCatchStmt().bind("catch"));
 StatementMatcher TryMatcher = findAll(cxxTryStmt().bind("try"));
 
-Optional<bool> isInside(Stmt *Candidate, Stmt *Container) {
+std::optional<bool> isInside(const Stmt *Candidate, const Stmt *Container) {
   SourceRange CandidateRange = Candidate->getSourceRange();
   SourceRange ContainerRange = Container->getSourceRange();
 
   if (CandidateRange.isInvalid() || ContainerRange.isInvalid())
-    return None;
+    return std::nullopt;
 
   return ContainerRange.fullyContains(CandidateRange);
 }
@@ -139,7 +142,7 @@ public:
     }
 
     std::string Name =
-        CrossTranslationUnitContext::getLookupName(Callee).getValueOr(
+        CrossTranslationUnitContext::getLookupName(Callee).value_or(
             "<no-lookup-name>");
     EI.Calls.push_back(
         {Expr, Callee, Name, Expr->getSourceRange().printToString(SM)});
@@ -218,7 +221,7 @@ public:
 
   ~FunctionMapConsumer() {
     // Flush results to standard output.
-    // llvm::errs() << createCrossTUIndexString(Index);
+    // llvm::outs() << createCrossTUIndexString(Index);
   }
 
   void HandleTranslationUnit(ASTContext &Context) override {
@@ -229,14 +232,25 @@ private:
   void handleFunction(const FunctionDecl *FD) {
     EC.FunctionsVisited.insert(FD);
 
-    llvm::Optional<std::string> LookupName =
+    std::optional<std::string> LookupName =
         CrossTranslationUnitContext::getLookupName(FD);
-    std::string CallerName = LookupName.getValueOr("<no-name>");
+    std::string CallerName = LookupName.value_or("<no-name>");
     EC.NameIndex[FD] = CallerName;
     EC.ShortNameIndex[FD] = FD->getNameAsString();
-    const Stmt *Body = FD->getBody();
+    Stmt *Body = FD->getBody();
     if (!Body)
       return;
+
+    auto BO = clang::CFG::BuildOptions{};
+    BO.AddEHEdges = true;
+    // BO.setAllAlwaysAdd();
+
+    std::unique_ptr<CFG> FDCFG = clang::CFG::buildCFG(FD, Body, &AC, BO);
+
+    if (!FDCFG) {
+      return;
+    }
+
     EC.BodyIndex[FD] = Body;
     EC.IsInMainFileIndex[FD] = SM.isInMainFile(FD->getLocation());
 
@@ -256,8 +270,9 @@ private:
 
     for (const CallInfo &CI : EI.Calls) {
       const FunctionDecl *Callee = CI.Callee;
-      if (!SeenFunctions.count(Callee)) {
-        SeenFunctions.insert(Callee);
+
+      auto [_, emplaced] = SeenFunctions.insert(Callee);
+      if (emplaced) {
         ExplorationWorklist.push(Callee);
       }
     }
@@ -322,11 +337,9 @@ newCollectFunctionDeclsFactory(ExceptionContext &EC) {
       new CollectFunctionDecslActionFactory(EC));
 }
 
-static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
-
 int main(int argc, const char **argv) {
   // Print a stack trace if we signal out.
-  sys::PrintStackTraceOnErrorSignal(argv[0], false);
+  sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
 
   if (argc != 2) {
@@ -334,19 +347,22 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  const char *CompDBPath = argv[1];
-  std::string ErrorMessage;
-  std::unique_ptr<JSONCompilationDatabase> CompDB =
-      JSONCompilationDatabase::loadFromFile(CompDBPath, ErrorMessage,
-                                            JSONCommandLineSyntax::AutoDetect);
+  const auto *CompDBPath = argv[1];
+  auto ErrorMessage = std::string{};
+  auto CompDB = JSONCompilationDatabase::loadFromFile(
+      CompDBPath, ErrorMessage, JSONCommandLineSyntax::AutoDetect);
+
+  llvm::outs() << "Loading compilation database " << CompDBPath << "...\n";
 
   if (!CompDB) {
     llvm::errs() << ErrorMessage;
     return 2;
   }
 
+  llvm::outs() << "Compilation database " << argv[1] << " loaded.\n";
+
   const auto &Files = CompDB->getAllFiles();
-  const std::set UniqueFiles{Files};
+  const auto UniqueFiles = std::set<std::string>{Files.begin(), Files.end()};
 
   if (Files.size() != UniqueFiles.size()) {
     llvm::errs() << "Files list in compilation database is not unique!";
@@ -360,19 +376,7 @@ int main(int argc, const char **argv) {
 
   llvm::outs() << "\n";
 
-  return 0;
-
-  const char *Overview = "\nThis tool exception information from a project.\n";
-  auto ExpectedParser = CommonOptionsParser::create(
-      argc, argv, ClangExtDefMapGenCategory, cl::ZeroOrMore, Overview);
-  if (!ExpectedParser) {
-    llvm::errs() << ExpectedParser.takeError();
-    return 1;
-  }
-  CommonOptionsParser &OptionsParser = ExpectedParser.get();
-
-  ClangTool Tool(OptionsParser.getCompilations(),
-                 OptionsParser.getSourcePathList());
+  ClangTool Tool(*CompDB, CompDB->getAllFiles());
 
   ExceptionContext EC;
   auto FunctionCollector = std::make_unique<CollectFunctionDeclsAction>(EC);
@@ -381,69 +385,97 @@ int main(int argc, const char **argv) {
 
   bool ShowLocation = true;
 
-  llvm::errs() << '\n';
+  llvm::outs() << '\n';
   for (const auto &FD : EC.FunctionsVisited) {
 
     if (!EC.IsInMainFileIndex[FD])
       continue;
 
-    std::set<const FunctionDecl *> Seen;
+    const ExceptionInfo &EI = EC.ExInfoIndex[FD];
+
+    auto UncaughtThrows = EI.Throws;
+
     auto rec_print_ei = [&](const FunctionDecl *FD, int level = 0) {
+      llvm::outs() << "Function:\n";
+
+      // ASTDumper P(llvm::outs(), /*ShowColors=*/false);
+      // P.Visit(FD->getBody());
+
       auto rec_print_ei_impl = [&](const FunctionDecl *FD, int level,
                                    auto &rec_ref) -> void {
-        // if (Seen.count(FD))
-        //   return;
-        // Seen.insert(FD);
-
         std::string indent(2 * level, ' ');
 
         if (level == 0) {
-          llvm::errs() << indent << "Name:\n";
-          llvm::errs() << indent << EC.ShortNameIndex[FD] << "\n";
+          llvm::outs() << indent << "Name:\n";
+          llvm::outs() << indent << EC.ShortNameIndex[FD] << "\n";
         }
 
-        const ExceptionInfo &EI = EC.ExInfoIndex[FD];
         if (!EI.Tries.empty()) {
-          llvm::errs() << indent << "tries:\n";
+          llvm::outs() << indent << "tries:\n";
 
           for (const TryInfo &Try : EI.Tries) {
-            llvm::errs() << indent << "  - " << Try.Stmt;
+            llvm::outs() << indent << "  - " << Try.Stmt;
             if (ShowLocation)
-              llvm::errs() << "@" << Try.Location;
-            llvm::errs() << "\n";
+              llvm::outs() << "@" << Try.Location;
+            llvm::outs() << "\n";
           }
         }
 
         if (!EI.Throws.empty()) {
-          llvm::errs() << indent << "throws:\n";
           for (const ThrowInfo &Throw : EI.Throws) {
-            llvm::errs() << indent << "  - " << Throw.Description;
+            // if a throw statement is inside a try statement, then
+            // lets examine all the catch statements, and if a catch statement
+            // matches the throw type, then lets remove the throw statement
+            // from the list of throws.
+            // FIXME: this is ugly
+            for (const TryInfo &Try : EI.Tries) {
+              if (isInside(Throw.Expr, Try.Stmt)) {
+                for (const CatchInfo &Catch : EI.Catches) {
+                  if (isInside(Catch.Stmt, Try.Stmt)) {
+                    if (Catch.Stmt->getCaughtType() ==
+                        Throw.Expr->getSubExpr()->getType()) {
+                      const auto &AsConst = std::as_const(UncaughtThrows);
+                      UncaughtThrows.erase(
+                          std::find_if(AsConst.begin(), AsConst.end(),
+                                       [TE = Throw.Expr](const ThrowInfo &TI) {
+                                         return TE == TI.Expr;
+                                       }));
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          llvm::outs() << indent << "uncaught throws:\n";
+          for (const ThrowInfo &Throw : UncaughtThrows) {
+            llvm::outs() << indent << "  - " << Throw.Description;
             if (ShowLocation)
-              llvm::errs() << "@" << Throw.Location;
-            llvm::errs() << "\n";
+              llvm::outs() << "@" << Throw.Location;
+            llvm::outs() << "\n";
           }
         }
 
         if (!EI.Catches.empty()) {
-          llvm::errs() << indent << "catches:\n";
+          llvm::outs() << indent << "catches:\n";
           for (const CatchInfo &Catch : EI.Catches) {
-            llvm::errs() << indent << "  - " << Catch.Description;
+            llvm::outs() << indent << "  - " << Catch.Description;
 
             if (ShowLocation)
-              llvm::errs() << "@" << Catch.Location;
-            llvm::errs() << "\n";
+              llvm::outs() << "@" << Catch.Location;
+            llvm::outs() << "\n";
           }
         }
 
         if (!EI.Calls.empty()) {
-          llvm::errs() << indent << "calls:\n";
+          llvm::outs() << indent << "calls:\n";
           for (const CallInfo &Call : EI.Calls) {
-            llvm::errs() << indent << "  - " << EC.ShortNameIndex[Call.Callee];
+            llvm::outs() << indent << "  - " << EC.ShortNameIndex[Call.Callee];
             if (ShowLocation)
-              llvm::errs() << "@" << Call.Location;
-            llvm::errs() << "\n";
+              llvm::outs() << "@" << Call.Location;
+            llvm::outs() << "\n";
 
-            rec_ref(Call.Callee, level + 1, rec_ref);
+            //rec_ref(Call.Callee, level + 1, rec_ref);
           }
         }
       };
@@ -451,6 +483,41 @@ int main(int argc, const char **argv) {
     };
 
     rec_print_ei(FD);
+
+    // exception specification if noexcept false if there are any uncaught
+    // throws, otherwise it is the and-combined noexcept specification of the
+    // called functions
+    llvm::outs() << "Exception specification:\n";
+
+    llvm::outs() << "  noexcept";
+    if (FD->getExceptionSpecType() == clang::EST_BasicNoexcept ||
+        FD->getExceptionSpecType() == clang::EST_NoexceptTrue) {
+      continue;
+    }
+
+    auto PotentiallyThrowingCalls = llvm::SmallVector<const FunctionDecl *>();
+    for (const auto &Call : EI.Calls) {
+      if (Call.Callee->getExceptionSpecType() == clang::EST_BasicNoexcept ||
+          Call.Callee->getExceptionSpecType() == clang::EST_NoexceptTrue) {
+        continue;
+      }
+      PotentiallyThrowingCalls.push_back(Call.Callee);
+    }
+    if (PotentiallyThrowingCalls.empty()) {
+      continue;
+    }
+    llvm::outs() << "(";
+    bool first = true;
+    for (const auto &Call : PotentiallyThrowingCalls) {
+      if (!first) {
+        llvm::outs() << " && ";
+      }
+      first = false;
+      llvm::outs() << "noexcept(";
+      llvm::outs() << EC.ShortNameIndex[Call] << "()";
+      llvm::outs() << ")";
+    }
+    llvm::outs() << ")";
   }
 
   return result;
