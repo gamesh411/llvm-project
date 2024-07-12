@@ -51,9 +51,10 @@ inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
     const auto CritSectionBegins =
         BR.getErrorNode()->getState()->get<CritSections>();
     llvm::SmallVector<CritSectionMarker, 4> LocksForMutex;
-    llvm::copy_if(
-        CritSectionBegins, std::back_inserter(LocksForMutex),
-        [M](const auto &Marker) { return Marker.MutexRegion == M.MutexRegion; });
+    llvm::copy_if(CritSectionBegins, std::back_inserter(LocksForMutex),
+                  [M](const auto &Marker) {
+                    return Marker.MutexRegion == M.MutexRegion;
+                  });
     if (LocksForMutex.empty())
       return;
 

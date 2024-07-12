@@ -24,17 +24,20 @@ namespace clang {
 namespace ento {
 namespace mutex_modeling {
 
+// Raw data of the mutex events.
 class MutexEvents {};
 using MutexEventsTy = llvm::ImmutableList<EventMarker>;
 
+// Aggregated data structures for tracking critical sections.
 class CritSections {};
 using CritSectionsTy = llvm::ImmutableList<CritSectionMarker>;
 
+// Aggregated data structures for tracking mutex states.
 class LockStates {};
-using LockStatesTy = llvm::ImmutableMap<const MemRegion*, LockState>;
+using LockStatesTy = llvm::ImmutableMap<const MemRegion *, LockStateKind>;
 
 class DestroyedRetVals {};
-using DestroyedRetValsTy = llvm::ImmutableMap<const MemRegion*, SymbolRef>;
+using DestroyedRetValsTy = llvm::ImmutableMap<const MemRegion *, SymbolRef>;
 
 } // namespace mutex_modeling
 } // namespace ento
@@ -44,10 +47,10 @@ using DestroyedRetValsTy = llvm::ImmutableMap<const MemRegion*, SymbolRef>;
 namespace llvm {
 template <> struct FoldingSetTrait<clang::ento::mutex_modeling::EventMarker> {
   static void Profile(const clang::ento::mutex_modeling::EventMarker &EM,
-               llvm::FoldingSetNodeID &ID) {
-    ID.Add(EM.Event.Kind);
-    ID.Add(EM.Event.Syntax);
-    ID.Add(EM.Event.Semantics);
+                      llvm::FoldingSetNodeID &ID) {
+    ID.Add(EM.Event);
+    ID.Add(EM.Kind);
+    ID.Add(EM.Semantics);
     ID.Add(EM.LockState);
     ID.Add(EM.EventExpr);
     ID.Add(EM.MutexRegion);
@@ -57,14 +60,14 @@ template <> struct FoldingSetTrait<clang::ento::mutex_modeling::EventMarker> {
 template <>
 struct FoldingSetTrait<clang::ento::mutex_modeling::CritSectionMarker> {
   static void Profile(const clang::ento::mutex_modeling::CritSectionMarker &CSM,
-               llvm::FoldingSetNodeID &ID) {
+                      llvm::FoldingSetNodeID &ID) {
     ID.Add(CSM.BeginExpr);
     ID.Add(CSM.MutexRegion);
   }
 };
 } // namespace llvm
 
-// Iterator traits for ImmutableList data structure
+// Iterator traits for ImmutableList and ImmutableMap data structures
 // that enable the use of STL algorithms.
 namespace std {
 // TODO: Move these to llvm::ImmutableList when overhauling immutable data
@@ -87,10 +90,36 @@ struct iterator_traits<typename llvm::ImmutableList<
   using reference = clang::ento::mutex_modeling::CritSectionMarker &;
   using pointer = clang::ento::mutex_modeling::CritSectionMarker *;
 };
+template <>
+struct iterator_traits<typename llvm::ImmutableMap<
+    const clang::ento::MemRegion *,
+    clang::ento::mutex_modeling::LockStateKind>::iterator> {
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = std::pair<const clang::ento::MemRegion *,
+                               clang::ento::mutex_modeling::LockStateKind>;
+  using difference_type = std::ptrdiff_t;
+  using reference = std::pair<const clang::ento::MemRegion *,
+                              clang::ento::mutex_modeling::LockStateKind> &;
+  using pointer = std::pair<const clang::ento::MemRegion *,
+                            clang::ento::mutex_modeling::LockStateKind> *;
+};
+template <>
+struct iterator_traits<typename llvm::ImmutableMap<
+    const clang::ento::MemRegion *, clang::ento::SymbolRef>::iterator> {
+  using iterator_category = std::forward_iterator_tag;
+  using value_type =
+      std::pair<const clang::ento::MemRegion *, clang::ento::SymbolRef>;
+  using difference_type = std::ptrdiff_t;
+  using reference =
+      std::pair<const clang::ento::MemRegion *, clang::ento::SymbolRef> &;
+  using pointer =
+      std::pair<const clang::ento::MemRegion *, clang::ento::SymbolRef> *;
+};
 } // namespace std
 
 // NOTE: ProgramState macros are not used here, because the visibility of these
 // GDM entries must span multiple translation units (multiple checkers).
+// TODO: check if this is still true after finishing the implementation.
 namespace clang {
 namespace ento {
 template <>
@@ -106,6 +135,24 @@ template <>
 struct ProgramStateTrait<clang::ento::mutex_modeling::CritSections>
     : public ProgramStatePartialTrait<
           clang::ento::mutex_modeling::CritSectionsTy> {
+  static void *GDMIndex() {
+    static int Index;
+    return &Index;
+  }
+};
+template <>
+struct ProgramStateTrait<clang::ento::mutex_modeling::LockStates>
+    : public ProgramStatePartialTrait<
+          clang::ento::mutex_modeling::LockStatesTy> {
+  static void *GDMIndex() {
+    static int Index;
+    return &Index;
+  }
+};
+template <>
+struct ProgramStateTrait<clang::ento::mutex_modeling::DestroyedRetVals>
+    : public ProgramStatePartialTrait<
+          clang::ento::mutex_modeling::DestroyedRetValsTy> {
   static void *GDMIndex() {
     static int Index;
     return &Index;
