@@ -27,6 +27,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
+#include <clang/Analysis/CallGraph.h>
 #include <optional>
 #include <queue>
 #include <sstream>
@@ -230,6 +231,44 @@ public:
 
 private:
   void handleFunction(const FunctionDecl *FD) {
+
+    llvm::outs() << "Function: \n";
+    FD->print(llvm::outs());
+    llvm::outs() << "\n";
+
+    llvm::outs() << "Postorder callees: \n";
+    clang::CallGraph CG;
+    CG.addToCallGraph(const_cast<TranslationUnitDecl *>(FD->getTranslationUnitDecl()));
+
+    std::set<CallGraphNode *> SeenNodes;
+    std::vector<CallGraphNode *> Postorder;
+
+    auto postorder = [&](CallGraphNode *Node) {
+      auto postorder_impl = [&](CallGraphNode *Node, auto &impl) -> void {
+        Node->dump();
+        SeenNodes.insert(Node);
+        for (CallGraphNode::iterator I = Node->begin(), E = Node->end(); I != E;
+             ++I) {
+          CallGraphNode *Callee = *I;
+          if (SeenNodes.count(Callee) == 0) {
+            impl(Callee, impl);
+          }
+        }
+        Postorder.push_back(Node);
+      };
+      postorder_impl(Node, postorder_impl);
+    };
+
+    postorder(CG.getNode(FD));
+
+    for (CallGraphNode *Node : Postorder) {
+      llvm::outs() << "Node: ";
+      Node->print(llvm::outs());
+      llvm::outs() << "\n";
+    }
+
+    return;
+
     EC.FunctionsVisited.insert(FD);
 
     std::optional<std::string> LookupName =
