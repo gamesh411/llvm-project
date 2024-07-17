@@ -290,6 +290,55 @@ private:
       return;
     }
 
+    FDCFG->viewCFG(LangOptions());
+
+    // do a forward dataflow analysis with a worklist algorithm
+    // I want to compute noexcept specification for the function by going over
+    // the statements and try and catch blocks. at the end i want to have
+    // noexcept false if there are any uncaught throws, otherwise it is the
+    // and-combined noexcept specification of the called functions
+
+    auto &Entry = FDCFG->getEntry();
+    std::queue<const CFGBlock *> Worklist;
+
+    for (auto &&Starts : Entry.succs()) {
+      Worklist.push(Starts);
+    }
+
+    // dataflow domain for statements
+    struct ThrowInfo {
+      std::set<Stmt *> FunctionCallsThatCanInfluenceNoexcept;
+      constexpr bool operator==(const ThrowInfo &Other) const {
+        return FunctionCallsThatCanInfluenceNoexcept ==
+               Other.FunctionCallsThatCanInfluenceNoexcept;
+      }
+    };
+    std::map<const Stmt *, ThrowInfo> Throws;
+
+    while (!Worklist.empty()) {
+      const CFGBlock *Current = Worklist.front();
+      Worklist.pop();
+
+      auto IsTryCFGBlock = [](const CFGBlock *Current) {
+        const Stmt *TerminatorStmt = Current->getTerminatorStmt();
+        if (!TerminatorStmt)
+          return false;
+        return TerminatorStmt->getStmtClass() == Stmt::CXXTryStmtClass;
+      };
+      // dump the CFGBlock if it is a catch block
+      if (IsTryCFGBlock(Current)) {
+        Current->dump();
+        llvm::errs() << Current->getTerminatorStmt()->getStmtClassName()
+                     << "\n";
+      }
+
+      for (const CFGBlock *Succ : Current->succs()) {
+        Worklist.push(Succ);
+      }
+    }
+
+    return;
+
     EC.BodyIndex[FD] = Body;
     EC.IsInMainFileIndex[FD] = SM.isInMainFile(FD->getLocation());
 
