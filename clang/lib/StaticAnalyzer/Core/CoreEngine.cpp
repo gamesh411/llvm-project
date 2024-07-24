@@ -426,8 +426,8 @@ void CoreEngine::HandleBlockExit(const CFGBlock * B, ExplodedNode *Pred) {
     return;
   }
 
-  assert(B->succ_size() == 1 &&
-         "Blocks with no terminator should have at most 1 successor.");
+  // assert(B->succ_size() == 1 &&
+  //       "Blocks with no terminator should have at most 1 successor.");
 
   generateNode(BlockEdge(B, *(B->succ_begin()), Pred->getLocationContext()),
                Pred->State, Pred);

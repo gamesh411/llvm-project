@@ -214,6 +214,8 @@ CFG *AnalysisDeclContext::getCFG() {
   if (!cfgBuildOptions.PruneTriviallyFalseEdges)
     return getUnoptimizedCFG();
 
+  SaveAndRestore ShowExceptions(cfgBuildOptions.AddEHEdges, true);
+
   if (!builtCFG) {
     cfg = CFG::buildCFG(D, getBody(), &D->getASTContext(), cfgBuildOptions);
     // Even when the cfg is not successfully built, we don't
