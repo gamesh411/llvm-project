@@ -18,27 +18,35 @@
 
 namespace clang::ento::mutex_modeling {
 
-class FirstArgMutexExtractor : public clang::ento::CallDescription {
+class FirstArgMutexExtractor {
+  CallDescription CD;
+
 public:
   template <typename T>
-  FirstArgMutexExtractor(T &&CD) : CallDescription(std::forward<T>(CD)) {}
+  FirstArgMutexExtractor(T &&CD) : CD(std::forward<T>(CD)) {}
 
-  [[nodiscard]] const clang::ento::MemRegion *
-  getRegion(const clang::ento::CallEvent &Call) const {
+  [[nodiscard]] bool matches(const CallEvent &Call) const {
+    return CD.matches(Call);
+  }
+
+  [[nodiscard]] const MemRegion *getRegion(const CallEvent &Call) const {
     return Call.getArgSVal(0).getAsRegion();
   }
 };
 
-class MemberMutexExtractor : public clang::ento::CallDescription {
+class MemberMutexExtractor {
+  CallDescription CD;
+
 public:
   template <typename T>
-  MemberMutexExtractor(T &&CD) : CallDescription(std::forward<T>(CD)) {}
+  MemberMutexExtractor(T &&CD) : CD(std::forward<T>(CD)) {}
 
-  [[nodiscard]] const clang::ento::MemRegion *
-  getRegion(const clang::ento::CallEvent &Call) const {
-    return llvm::cast<clang::ento::CXXMemberCall>(Call)
-        .getCXXThisVal()
-        .getAsRegion();
+  [[nodiscard]] bool matches(const CallEvent &Call) const {
+    return CD.matches(Call);
+  }
+
+  [[nodiscard]] const MemRegion *getRegion(const CallEvent &Call) const {
+    return llvm::cast<CXXMemberCall>(Call).getCXXThisVal().getAsRegion();
   }
 };
 
@@ -47,7 +55,7 @@ template <bool IsLock> class RAIIMutexExtractor {
   mutable bool IdentifierInfoInitialized{};
   mutable llvm::SmallString<32> GuardName{};
 
-  void initIdentifierInfo(const clang::ento::CallEvent &Call) const {
+  void initIdentifierInfo(const CallEvent &Call) const {
     if (!IdentifierInfoInitialized) {
       // In case of checking C code, or when the corresponding headers are not
       // included, we might end up query the identifier table every time when
@@ -59,8 +67,7 @@ template <bool IsLock> class RAIIMutexExtractor {
     }
   }
 
-  template <typename T>
-  bool matchesImpl(const clang::ento::CallEvent &Call) const {
+  template <typename T> bool matchesImpl(const CallEvent &Call) const {
     const T *C = llvm::dyn_cast<T>(&Call);
     if (!C)
       return false;
@@ -72,25 +79,22 @@ template <bool IsLock> class RAIIMutexExtractor {
 
 public:
   RAIIMutexExtractor(llvm::StringRef GuardName) : GuardName(GuardName) {}
-  [[nodiscard]] bool matches(const clang::ento::CallEvent &Call) const {
+  [[nodiscard]] bool matches(const CallEvent &Call) const {
     initIdentifierInfo(Call);
     if constexpr (IsLock) {
-      return matchesImpl<clang::ento::CXXConstructorCall>(Call);
+      return matchesImpl<CXXConstructorCall>(Call);
     } else {
-      return matchesImpl<clang::ento::CXXDestructorCall>(Call);
+      return matchesImpl<CXXDestructorCall>(Call);
     }
   }
-  [[nodiscard]] const clang::ento::MemRegion *
-  getRegion(const clang::ento::CallEvent &Call) const {
-    const clang::ento::MemRegion *MutexRegion = nullptr;
+  [[nodiscard]] const MemRegion *getRegion(const CallEvent &Call) const {
+    const MemRegion *MutexRegion = nullptr;
     if constexpr (IsLock) {
-      if (std::optional<clang::ento::SVal> Object =
-              Call.getReturnValueUnderConstruction()) {
+      if (std::optional<SVal> Object = Call.getReturnValueUnderConstruction()) {
         MutexRegion = Object->getAsRegion();
       } else {
-        MutexRegion = llvm::cast<clang::ento::CXXDestructorCall>(Call)
-                          .getCXXThisVal()
-                          .getAsRegion();
+        MutexRegion =
+            llvm::cast<CXXDestructorCall>(Call).getCXXThisVal().getAsRegion();
       }
     }
     return MutexRegion;
@@ -104,9 +108,8 @@ using MutexRegionExtractor =
     std::variant<FirstArgMutexExtractor, MemberMutexExtractor,
                  RAIILockExtractor, RAIIReleaseExtractor>;
 
-inline const clang::ento::MemRegion *
-getRegion(const MutexRegionExtractor &Extractor,
-          const clang::ento::CallEvent &Call) {
+inline const MemRegion *getRegion(const MutexRegionExtractor &Extractor,
+                                  const CallEvent &Call) {
   return std::visit(
       [&Call](auto &&Descriptor) { return Descriptor.getRegion(Call); },
       Extractor);
@@ -121,10 +124,7 @@ inline bool operator==(const MutexRegionExtractor &LHS,
 inline bool matches(const MutexRegionExtractor &Extractor,
                     const CallEvent &Call) {
   return std::visit(
-      [](auto &&Extractor, const CallEvent &Call) {
-        return Extractor.matches(Call);
-      },
-      Extractor, Call);
+      [&Call](auto &&Extractor) { return Extractor.matches(Call); }, Extractor);
 }
 
 } // namespace clang::ento::mutex_modeling

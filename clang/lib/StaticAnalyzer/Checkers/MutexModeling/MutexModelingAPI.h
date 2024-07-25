@@ -28,14 +28,44 @@ namespace ento {
 class BugType;
 namespace mutex_modeling {
 
-inline llvm::SmallSet<const BugType *, 8> RegisteredCheckers{};
+inline llvm::SmallSet<const BugType *, 0> RegisteredBugTypes{};
 
-inline void RegisterCheckerForMutexModeling(const BugType *BT) {
-  RegisteredCheckers.insert(BT);
+inline void RegisterBugTypeForMutexModeling(const BugType *BT) {
+  RegisteredBugTypes.insert(BT);
 }
 
-inline bool IsCheckerRegisteredForMutexModeling(const BugType *BT) {
-  return RegisteredCheckers.contains(BT);
+inline bool IsBugTypeRegisteredForMutexModeling(const BugType *BT) {
+  return RegisteredBugTypes.contains(BT);
+}
+
+inline llvm::SmallVector<EventDescriptor, 0> RegisteredEvents{};
+
+inline auto RegisterEvent(EventDescriptor Event) {
+  RegisteredEvents.push_back(Event);
+}
+
+// Opinionated make functions for commonly used parameter values as default
+// arguments.
+inline auto
+MakeFirstArgExtractor(ArrayRef<StringRef> NameParts, int NumArgsRequired = 1,
+                      CallDescription::Mode MatchAs = CDM::CLibrary) {
+  return FirstArgMutexExtractor{
+      CallDescription{MatchAs, NameParts, NumArgsRequired}};
+}
+
+inline auto MakeMemberExtractor(ArrayRef<StringRef> NameParts,
+                                int NumArgsRequired = 1,
+                                CallDescription::Mode MatchAs = CDM::CLibrary) {
+  return MemberMutexExtractor{
+      CallDescription{MatchAs, NameParts, NumArgsRequired}};
+}
+
+inline auto MakeRAIILockExtractor(StringRef GuardObjectName) {
+  return RAIILockExtractor{GuardObjectName};
+}
+
+inline auto MakeRAIIReleaseExtractor(StringRef GuardObjectName) {
+  return RAIIReleaseExtractor{GuardObjectName};
 }
 
 inline bool AreAnyCritsectionsActive(CheckerContext &C) {
@@ -46,7 +76,7 @@ inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
                                                  CheckerContext &C) {
   return C.getNoteTag([M](const PathSensitiveBugReport &BR,
                           llvm::raw_ostream &OS) {
-    if (!IsCheckerRegisteredForMutexModeling(&BR.getBugType()))
+    if (!IsBugTypeRegisteredForMutexModeling(&BR.getBugType()))
       return;
     const auto CritSectionBegins =
         BR.getErrorNode()->getState()->get<CritSections>();
@@ -85,6 +115,119 @@ inline const NoteTag *CreateMutexCritSectionNote(CritSectionMarker M,
     OS << "Entering critical section for the " << OrdinalOfLock
        << llvm::getOrdinalSuffix(OrdinalOfLock) << " time here";
   });
+}
+
+inline void printState(raw_ostream &Out, ProgramStateRef State, const char *NL,
+                       const char *Sep) {
+
+  const MutexEventsTy &ME = State->get<MutexEvents>();
+  if (!ME.isEmpty()) {
+    Out << Sep << "Mutex event:" << NL;
+    for (auto I : ME) {
+      Out << Sep << "Kind: " << ": ";
+      switch (I.Kind) {
+      case (EventKind::Init):
+        Out << "Init";
+        break;
+      case (EventKind::Acquire):
+        Out << "Acquire";
+        break;
+      case (EventKind::TryAcquire):
+        Out << "TryAcquire";
+        break;
+      case (EventKind::Release):
+        Out << "Release";
+        break;
+      case (EventKind::Destroy):
+        Out << "Destroy";
+        break;
+      default:
+        llvm_unreachable("Unknown event kind");
+      }
+      Out << NL;
+      Out << Sep << "Semantics: ";
+      switch (I.Semantics) {
+      case (SemanticsKind::NotApplicable):
+        Out << "NotApplicable";
+        break;
+      case (SemanticsKind::PthreadSemantics):
+        Out << "PthreadSemantics";
+        break;
+      case (SemanticsKind::XNUSemantics):
+        Out << "XNUSemantics";
+        break;
+      default:
+        llvm_unreachable("Unknown semantics");
+      }
+      Out << NL;
+      Out << Sep << "Library: ";
+      switch (I.Library) {
+      case (LibraryKind::Pthread):
+        Out << "Pthread";
+        break;
+      case (LibraryKind::Fuchsia):
+        Out << "Fuchsia";
+        break;
+      case (LibraryKind::C11):
+        Out << "C11";
+        break;
+      default:
+        llvm_unreachable("Unknown library");
+      }
+      Out << NL;
+
+      // Omit MutexExpr and EventExpr
+
+      Out << Sep << "Mutex region: ";
+      I.MutexRegion->dumpToStream(Out);
+      Out << NL;
+    }
+
+    const LockStatesTy &LM = State->get<LockStates>();
+    if (!LM.isEmpty()) {
+      Out << Sep << "Mutex states:" << NL;
+      for (auto I : LM) {
+        I.first->dumpToStream(Out);
+        switch (I.second) {
+        case (LockStateKind::Locked):
+          Out << ": locked";
+          break;
+        case (LockStateKind::Unlocked):
+          Out << ": unlocked";
+          break;
+        case (LockStateKind::Destroyed):
+          Out << ": destroyed";
+          break;
+        case (LockStateKind::UntouchedAndPossiblyDestroyed):
+          Out << ": not tracked, possibly destroyed";
+          break;
+        case (LockStateKind::UnlockedAndPossiblyDestroyed):
+          Out << ": unlocked, possibly destroyed";
+          break;
+        case (LockStateKind::Error_DoubleInit):
+          Out << ": error: double init";
+          break;
+        case (LockStateKind::Error_DoubleInitWhileLocked):
+          Out << ": error: double init while locked";
+          break;
+        default:
+          llvm_unreachable("Unknown lock state");
+        }
+        Out << NL;
+      }
+    }
+
+    const DestroyedRetValsTy &DRV = State->get<DestroyedRetVals>();
+    if (!DRV.isEmpty()) {
+      Out << Sep << "Mutexes in unresolved possibly destroyed state:" << NL;
+      for (auto I : DRV) {
+        I.first->dumpToStream(Out);
+        Out << ": ";
+        I.second->dumpToStream(Out);
+        Out << NL;
+      }
+    }
+  }
 }
 
 } // namespace mutex_modeling

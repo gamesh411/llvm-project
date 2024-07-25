@@ -53,7 +53,7 @@ public:
 } // end anonymous namespace
 
 BlockInCriticalSectionChecker::BlockInCriticalSectionChecker() {
-  RegisterCheckerForMutexModeling(&BlockInCritSectionBugType);
+  RegisterBugTypeForMutexModeling(&BlockInCritSectionBugType);
 }
 
 bool BlockInCriticalSectionChecker::isBlockingInCritSection(

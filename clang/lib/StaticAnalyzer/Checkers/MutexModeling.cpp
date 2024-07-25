@@ -119,77 +119,61 @@ void updateCriticalSectionOnUnlock(const EventDescriptor &UnlockDescriptor,
 }
 
 class MutexModeling : public Checker<check::PostCall> {
-  std::vector<EventDescriptor> handledEvents = getHandledEvents();
-
 public:
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
 
 private:
-  std::unique_ptr<BugType> BT_initlock = std::make_unique<BugType>(
-      this->getCheckerName(), "Init invalid lock", "Lock checker");
+  mutable std::unique_ptr<BugType> BT_initlock;
   ProgramStateRef handleInit(const EventDescriptor &Event, const MemRegion *MTX,
-                             const Expr *MTXExpr, const CallEvent &Call,
-                             ProgramStateRef State, CheckerContext &C) const;
+                             const CallEvent &Call, ProgramStateRef State,
+                             CheckerContext &C) const;
   ProgramStateRef handleEvent(const EventDescriptor &Event,
-                              const MemRegion *MTX, const Expr *MTXExpr,
-                              const CallEvent &Call, ProgramStateRef State,
-                              CheckerContext &C) const;
+                              const MemRegion *MTX, const CallEvent &Call,
+                              ProgramStateRef State, CheckerContext &C) const;
 };
 
 } // namespace
 
-ProgramStateRef
-MutexModeling::handleInit(const EventDescriptor &Event, const MemRegion *MTX,
-                          const Expr *MTXExpr, const CallEvent &Call,
-                          ProgramStateRef State, CheckerContext &C) const {
+ProgramStateRef MutexModeling::handleInit(const EventDescriptor &Event,
+                                          const MemRegion *MTX,
+                                          const CallEvent &Call,
+                                          ProgramStateRef State,
+                                          CheckerContext &C) const {
   assert(MTX && "should only be called with a mutex region");
-  assert(MTXExpr && "should only be called with a valid mutex expression");
 
-  State = State->add<MutexEvents>(EventMarker{
-      Event.Kind, Event.Semantics, Call.getCalleeIdentifier(), MTXExpr, MTX});
+  State = State->add<MutexEvents>(
+      EventMarker{Event.Kind, Event.Semantics, Event.Library,
+                  Call.getCalleeIdentifier(), Call.getOriginExpr(), MTX});
 
   const LockStateKind *LState = State->get<LockStates>(MTX);
-  if (!LState || *LState == LockStateKind::Destroyed) {
+
+  if (!LState)
+    return State->set<LockStates>(MTX, LockStateKind::Unlocked);
+
+  switch (*LState) {
+  case (LockStateKind::Destroyed): {
     return State->set<LockStates>(MTX, LockStateKind::Unlocked);
   }
-
-  // We are here if three is an init event on a lock that is modelled, and it
-  // is not in destroyed state. The bugreporting should be done in the
-  // reporting checker and not it the modeling, but we still want to be
-  // efficient.
-  StringRef Message;
-  if (*LState == LockStateKind::Locked) {
-    Message = "This lock is still being held";
-    State =
-        State->set<LockStates>(MTX, LockStateKind::Error_DoubleInitWhileLocked);
-  } else {
-    Message = "This lock has already been initialized";
-    State = State->set<LockStates>(MTX, LockStateKind::Error_DoubleInit);
+  case (LockStateKind::Locked): {
+    return State->set<LockStates>(MTX,
+                                  LockStateKind::Error_DoubleInitWhileLocked);
   }
-
-  // TODO: put this part in the reporting checker
-
-  ExplodedNode *N = C.generateErrorNode();
-  if (!N)
-    return State;
-  auto Report =
-      std::make_unique<PathSensitiveBugReport>(BT_initlock.get(), Message, N);
-  Report->addRange(MTXExpr->getSourceRange());
-  C.emitReport(std::move(Report));
-
-  return State;
+  default: {
+    return State->set<LockStates>(MTX, LockStateKind::Error_DoubleInit);
+  }
+  }
 }
 
-ProgramStateRef
-MutexModeling::handleEvent(const EventDescriptor &Event, const MemRegion *MTX,
-                           const Expr *MTXExpr, const CallEvent &Call,
-                           ProgramStateRef State, CheckerContext &C) const {
+ProgramStateRef MutexModeling::handleEvent(const EventDescriptor &Event,
+                                           const MemRegion *MTX,
+                                           const CallEvent &Call,
+                                           ProgramStateRef State,
+                                           CheckerContext &C) const {
   assert(MTX && "should only be called with a mutex region");
-  assert(MTXExpr && "should only be called with a valid mutex expression");
 
   switch (Event.Kind) {
   case EventKind::Init:
-    return handleInit(Event, MTX, MTXExpr, Call, State, C);
+    return handleInit(Event, MTX, Call, State, C);
     break;
   default:
     llvm_unreachable("Unhandled event kind!");
@@ -212,33 +196,33 @@ MutexModeling::handleEvent(const EventDescriptor &Event, const MemRegion *MTX,
 
 void MutexModeling::checkPostCall(const CallEvent &Call,
                                   CheckerContext &C) const {
-  // FIXME: Try to handle cases when the implementation was inlined rather than
-  // just giving up.
+  // FIXME: Try to handle cases when the implementation was inlined rather
+  // than just giving up.
+
   if (C.wasInlined)
     return;
 
   ProgramStateRef State = C.getState();
-  for (auto &&Event : handledEvents) {
+  for (auto &&Event : RegisteredEvents) {
     if (matches(Event.Trigger, Call)) {
       const MemRegion *MTX = getRegion(Event.Trigger, Call);
       if (!MTX)
         continue;
-      const Expr *MTXExpr = Call.getOriginExpr();
-      if (!MTXExpr)
-        continue;
       State = doResolvePossiblyDestroyedMutex(State, MTX);
-      State = handleEvent(Event, MTX, MTXExpr, Call, State, C);
+      State = handleEvent(Event, MTX, Call, State, C);
       C.addTransition(State);
     }
   }
-
-} // namespace
+}
 
 namespace clang {
 namespace ento {
 // Checker registration
 void registerMutexModeling(CheckerManager &mgr) {
   mgr.registerChecker<MutexModeling>();
+  RegisterEvent(
+      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}, 2),
+                      EventKind::Init, LibraryKind::Pthread});
 }
 bool shouldRegisterMutexModeling(const CheckerManager &) { return true; }
 } // namespace ento

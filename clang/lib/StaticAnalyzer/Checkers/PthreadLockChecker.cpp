@@ -21,12 +21,14 @@
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CallDescription.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 
+#include "MutexModeling/MutexModelingAPI.h"
+
 using namespace clang;
 using namespace ento;
+using namespace mutex_modeling;
 
 namespace {
 
@@ -68,191 +70,46 @@ public:
   void Profile(llvm::FoldingSetNodeID &ID) const { ID.AddInteger(K); }
 };
 
-class PthreadLockChecker : public Checker<check::PostCall, check::DeadSymbols,
-                                          check::RegionChanges> {
+class PthreadLockChecker : public Checker<check::PostCall> {
+// , check::DeadSymbols,
+//                                          check::RegionChanges> {
+
 public:
-  enum LockingSemantics { NotApplicable = 0, PthreadSemantics, XNUSemantics };
   enum CheckerKind {
     CK_PthreadLockChecker,
     CK_FuchsiaLockChecker,
     CK_C11LockChecker,
     CK_NumCheckKinds
   };
+
   bool ChecksEnabled[CK_NumCheckKinds] = {false};
   CheckerNameRef CheckNames[CK_NumCheckKinds];
 
+  PthreadLockChecker() {
+    RegisterEvents();
+  }
+
 private:
-  typedef void (PthreadLockChecker::*FnCheck)(const CallEvent &Call,
-                                              CheckerContext &C,
-                                              CheckerKind CheckKind) const;
-  CallDescriptionMap<FnCheck> PThreadCallbacks = {
-      // Init.
-      {{CDM::CLibrary, {"pthread_mutex_init"}, 2},
-       &PthreadLockChecker::InitAnyLock},
-      // TODO: pthread_rwlock_init(2 arguments).
-      // TODO: lck_mtx_init(3 arguments).
-      // TODO: lck_mtx_alloc_init(2 arguments) => returns the mutex.
-      // TODO: lck_rw_init(3 arguments).
-      // TODO: lck_rw_alloc_init(2 arguments) => returns the mutex.
-
-      // Acquire.
-      {{CDM::CLibrary, {"pthread_mutex_lock"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-      {{CDM::CLibrary, {"pthread_rwlock_rdlock"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-      {{CDM::CLibrary, {"pthread_rwlock_wrlock"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-      {{CDM::CLibrary, {"lck_mtx_lock"}, 1},
-       &PthreadLockChecker::AcquireXNULock},
-      {{CDM::CLibrary, {"lck_rw_lock_exclusive"}, 1},
-       &PthreadLockChecker::AcquireXNULock},
-      {{CDM::CLibrary, {"lck_rw_lock_shared"}, 1},
-       &PthreadLockChecker::AcquireXNULock},
-
-      // Try.
-      {{CDM::CLibrary, {"pthread_mutex_trylock"}, 1},
-       &PthreadLockChecker::TryPthreadLock},
-      {{CDM::CLibrary, {"pthread_rwlock_tryrdlock"}, 1},
-       &PthreadLockChecker::TryPthreadLock},
-      {{CDM::CLibrary, {"pthread_rwlock_trywrlock"}, 1},
-       &PthreadLockChecker::TryPthreadLock},
-      {{CDM::CLibrary, {"lck_mtx_try_lock"}, 1},
-       &PthreadLockChecker::TryXNULock},
-      {{CDM::CLibrary, {"lck_rw_try_lock_exclusive"}, 1},
-       &PthreadLockChecker::TryXNULock},
-      {{CDM::CLibrary, {"lck_rw_try_lock_shared"}, 1},
-       &PthreadLockChecker::TryXNULock},
-
-      // Release.
-      {{CDM::CLibrary, {"pthread_mutex_unlock"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"pthread_rwlock_unlock"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"lck_mtx_unlock"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"lck_rw_unlock_exclusive"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"lck_rw_unlock_shared"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"lck_rw_done"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-
-      // Destroy.
-      {{CDM::CLibrary, {"pthread_mutex_destroy"}, 1},
-       &PthreadLockChecker::DestroyPthreadLock},
-      {{CDM::CLibrary, {"lck_mtx_destroy"}, 2},
-       &PthreadLockChecker::DestroyXNULock},
-      // TODO: pthread_rwlock_destroy(1 argument).
-      // TODO: lck_rw_destroy(2 arguments).
-  };
-
-  CallDescriptionMap<FnCheck> FuchsiaCallbacks = {
-      // Init.
-      {{CDM::CLibrary, {"spin_lock_init"}, 1},
-       &PthreadLockChecker::InitAnyLock},
-
-      // Acquire.
-      {{CDM::CLibrary, {"spin_lock"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-      {{CDM::CLibrary, {"spin_lock_save"}, 3},
-       &PthreadLockChecker::AcquirePthreadLock},
-      {{CDM::CLibrary, {"sync_mutex_lock"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-      {{CDM::CLibrary, {"sync_mutex_lock_with_waiter"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-
-      // Try.
-      {{CDM::CLibrary, {"spin_trylock"}, 1},
-       &PthreadLockChecker::TryFuchsiaLock},
-      {{CDM::CLibrary, {"sync_mutex_trylock"}, 1},
-       &PthreadLockChecker::TryFuchsiaLock},
-      {{CDM::CLibrary, {"sync_mutex_timedlock"}, 2},
-       &PthreadLockChecker::TryFuchsiaLock},
-
-      // Release.
-      {{CDM::CLibrary, {"spin_unlock"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"spin_unlock_restore"}, 3},
-       &PthreadLockChecker::ReleaseAnyLock},
-      {{CDM::CLibrary, {"sync_mutex_unlock"}, 1},
-       &PthreadLockChecker::ReleaseAnyLock},
-  };
-
-  CallDescriptionMap<FnCheck> C11Callbacks = {
-      // Init.
-      {{CDM::CLibrary, {"mtx_init"}, 2}, &PthreadLockChecker::InitAnyLock},
-
-      // Acquire.
-      {{CDM::CLibrary, {"mtx_lock"}, 1},
-       &PthreadLockChecker::AcquirePthreadLock},
-
-      // Try.
-      {{CDM::CLibrary, {"mtx_trylock"}, 1}, &PthreadLockChecker::TryC11Lock},
-      {{CDM::CLibrary, {"mtx_timedlock"}, 2}, &PthreadLockChecker::TryC11Lock},
-
-      // Release.
-      {{CDM::CLibrary, {"mtx_unlock"}, 1}, &PthreadLockChecker::ReleaseAnyLock},
-
-      // Destroy
-      {{CDM::CLibrary, {"mtx_destroy"}, 1},
-       &PthreadLockChecker::DestroyPthreadLock},
-  };
-
-  ProgramStateRef resolvePossiblyDestroyedMutex(ProgramStateRef state,
-                                                const MemRegion *lockR,
-                                                const SymbolRef *sym) const;
+  std::vector<EventDescriptor> EventsToModel{
+      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}, 2),
+                      EventKind::Init, LibraryKind::Pthread}};
+  void RegisterEvents() const {
+    for (auto &&Event : EventsToModel) {
+      RegisterEvent(Event);
+    }
+  }
   void reportBug(CheckerContext &C, std::unique_ptr<BugType> BT[],
                  const Expr *MtxExpr, CheckerKind CheckKind,
                  StringRef Desc) const;
 
-  // Init.
-  void InitAnyLock(const CallEvent &Call, CheckerContext &C,
-                   CheckerKind CheckKind) const;
-  void InitLockAux(const CallEvent &Call, CheckerContext &C,
-                   const Expr *MtxExpr, SVal MtxVal,
-                   CheckerKind CheckKind) const;
-
-  // Lock, Try-lock.
-  void AcquirePthreadLock(const CallEvent &Call, CheckerContext &C,
-                          CheckerKind CheckKind) const;
-  void AcquireXNULock(const CallEvent &Call, CheckerContext &C,
-                      CheckerKind CheckKind) const;
-  void TryPthreadLock(const CallEvent &Call, CheckerContext &C,
-                      CheckerKind CheckKind) const;
-  void TryXNULock(const CallEvent &Call, CheckerContext &C,
-                  CheckerKind CheckKind) const;
-  void TryFuchsiaLock(const CallEvent &Call, CheckerContext &C,
-                      CheckerKind CheckKind) const;
-  void TryC11Lock(const CallEvent &Call, CheckerContext &C,
-                  CheckerKind CheckKind) const;
-  void AcquireLockAux(const CallEvent &Call, CheckerContext &C,
-                      const Expr *MtxExpr, SVal MtxVal, bool IsTryLock,
-                      LockingSemantics Semantics, CheckerKind CheckKind) const;
-
-  // Release.
-  void ReleaseAnyLock(const CallEvent &Call, CheckerContext &C,
-                      CheckerKind CheckKind) const;
-  void ReleaseLockAux(const CallEvent &Call, CheckerContext &C,
-                      const Expr *MtxExpr, SVal MtxVal,
-                      CheckerKind CheckKind) const;
-
-  // Destroy.
-  void DestroyPthreadLock(const CallEvent &Call, CheckerContext &C,
-                          CheckerKind CheckKind) const;
-  void DestroyXNULock(const CallEvent &Call, CheckerContext &C,
-                      CheckerKind CheckKind) const;
-  void DestroyLockAux(const CallEvent &Call, CheckerContext &C,
-                      const Expr *MtxExpr, SVal MtxVal,
-                      LockingSemantics Semantics, CheckerKind CheckKind) const;
-
 public:
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
-  void checkDeadSymbols(SymbolReaper &SymReaper, CheckerContext &C) const;
-  ProgramStateRef
-  checkRegionChanges(ProgramStateRef State, const InvalidatedSymbols *Symbols,
-                     ArrayRef<const MemRegion *> ExplicitRegions,
-                     ArrayRef<const MemRegion *> Regions,
-                     const LocationContext *LCtx, const CallEvent *Call) const;
+  // void checkDeadSymbols(SymbolReaper &SymReaper, CheckerContext &C) const;
+  // ProgramStateRef
+  // checkRegionChanges(ProgramStateRef State, const InvalidatedSymbols *Symbols,
+  //                    ArrayRef<const MemRegion *> ExplicitRegions,
+  //                    ArrayRef<const MemRegion *> Regions,
+  //                    const LocationContext *LCtx, const CallEvent *Call) const;
   void printState(raw_ostream &Out, ProgramStateRef State, const char *NL,
                   const char *Sep) const override;
 
@@ -261,6 +118,7 @@ private:
   mutable std::unique_ptr<BugType> BT_doubleunlock[CK_NumCheckKinds];
   mutable std::unique_ptr<BugType> BT_destroylock[CK_NumCheckKinds];
   mutable std::unique_ptr<BugType> BT_initlock[CK_NumCheckKinds];
+  mutable std::unique_ptr<BugType> BT_initlockPthread;
   mutable std::unique_ptr<BugType> BT_lor[CK_NumCheckKinds];
 
   void initBugType(CheckerKind CheckKind) const {
@@ -277,111 +135,97 @@ private:
     BT_lor[CheckKind].reset(new BugType{CheckNames[CheckKind],
                                         "Lock order reversal", "Lock checker"});
   }
+
+  [[nodiscard]] constexpr PthreadLockChecker::CheckerKind
+  detectCheckerKind(mutex_modeling::EventMarker EV) const noexcept {
+    switch (EV.Library) {
+    case mutex_modeling::LibraryKind::Pthread:
+      return PthreadLockChecker::CK_PthreadLockChecker;
+    case mutex_modeling::LibraryKind::Fuchsia:
+      return PthreadLockChecker::CK_FuchsiaLockChecker;
+    case mutex_modeling::LibraryKind::C11:
+      return PthreadLockChecker::CK_C11LockChecker;
+    default:
+      llvm_unreachable("Unknown locking library");
+    }
+  }
 };
 } // end anonymous namespace
 
-// A stack of locks for tracking lock-unlock order.
-REGISTER_LIST_WITH_PROGRAMSTATE(LockSet, const MemRegion *)
-
-// An entry for tracking lock states.
-REGISTER_MAP_WITH_PROGRAMSTATE(LockMap, const MemRegion *, LockState)
-
-// Return values for unresolved calls to pthread_mutex_destroy().
-REGISTER_MAP_WITH_PROGRAMSTATE(DestroyRetVal, const MemRegion *, SymbolRef)
-
 void PthreadLockChecker::checkPostCall(const CallEvent &Call,
                                        CheckerContext &C) const {
-  // FIXME: Try to handle cases when the implementation was inlined rather
-  // than just giving up.
-  if (C.wasInlined)
-    return;
 
-  if (const FnCheck *Callback = PThreadCallbacks.lookup(Call))
-    (this->**Callback)(Call, C, CK_PthreadLockChecker);
-  else if (const FnCheck *Callback = FuchsiaCallbacks.lookup(Call))
-    (this->**Callback)(Call, C, CK_FuchsiaLockChecker);
-  else if (const FnCheck *Callback = C11Callbacks.lookup(Call))
-    (this->**Callback)(Call, C, CK_C11LockChecker);
+  ProgramStateRef State = C.getState();
+
+  const auto &MTXEvents = State->get<MutexEvents>();
+
+  Call.dump(llvm::errs());
+  llvm::errs() << "before MTXEvents isEmpty check\n";
+
+  if (MTXEvents.isEmpty()) {
+    return;
+  }
+
+  llvm::errs() << "after MTXEvents isEmpty check\n";
+  printState(llvm::errs(), State, "\n", " ");
+
+  const auto &LastEvent = MTXEvents.getHead();
+
+  if (LastEvent.Kind != EventKind::Init) {
+    return;
+  }
+
+  const LockStateKind *const LockState =
+      State->get<LockStates>(LastEvent.MutexRegion);
+
+  if (!LockState || *LockState == LockStateKind::Destroyed) {
+    return;
+  }
+
+  bool IsError = false;
+  StringRef Message;
+  switch (*LockState) {
+  case LockStateKind::Error_DoubleInit: {
+    IsError = true;
+    Message = "This lock has already been initialized";
+    break;
+  }
+  case LockStateKind::Error_DoubleInitWhileLocked: {
+    IsError = true;
+    Message = "This lock is still being held";
+    break;
+  }
+  default: {
+  }
+  }
+
+  if (!IsError) {
+    return;
+  }
+
+  reportBug(C, BT_initlock, LastEvent.EventExpr, detectCheckerKind(LastEvent), Message);
 }
 
-// When a lock is destroyed, in some semantics(like PthreadSemantics) we are not
-// sure if the destroy call has succeeded or failed, and the lock enters one of
-// the 'possibly destroyed' state. There is a short time frame for the
-// programmer to check the return value to see if the lock was successfully
-// destroyed. Before we model the next operation over that lock, we call this
-// function to see if the return value was checked by now and set the lock state
-// - either to destroyed state or back to its previous state.
-
-// In PthreadSemantics, pthread_mutex_destroy() returns zero if the lock is
-// successfully destroyed and it returns a non-zero value otherwise.
-ProgramStateRef PthreadLockChecker::resolvePossiblyDestroyedMutex(
-    ProgramStateRef state, const MemRegion *lockR, const SymbolRef *sym) const {
-  const LockState *lstate = state->get<LockMap>(lockR);
-  // Existence in DestroyRetVal ensures existence in LockMap.
-  // Existence in Destroyed also ensures that the lock state for lockR is either
-  // UntouchedAndPossiblyDestroyed or UnlockedAndPossiblyDestroyed.
-  assert(lstate);
-  assert(lstate->isUntouchedAndPossiblyDestroyed() ||
-         lstate->isUnlockedAndPossiblyDestroyed());
-
-  ConstraintManager &CMgr = state->getConstraintManager();
-  ConditionTruthVal retZero = CMgr.isNull(state, *sym);
-  if (retZero.isConstrainedFalse()) {
-    if (lstate->isUntouchedAndPossiblyDestroyed())
-      state = state->remove<LockMap>(lockR);
-    else if (lstate->isUnlockedAndPossiblyDestroyed())
-      state = state->set<LockMap>(lockR, LockState::getUnlocked());
-  } else
-    state = state->set<LockMap>(lockR, LockState::getDestroyed());
-
-  // Removing the map entry (lockR, sym) from DestroyRetVal as the lock state is
-  // now resolved.
-  state = state->remove<DestroyRetVal>(lockR);
-  return state;
+void PthreadLockChecker::reportBug(CheckerContext &C,
+                                   std::unique_ptr<BugType> BT[],
+                                   const Expr *MtxExpr, CheckerKind CheckKind,
+                                   StringRef Desc) const {
+  ExplodedNode *N = C.generateErrorNode();
+  if (!N)
+    return;
+  initBugType(CheckKind);
+  auto Report =
+      std::make_unique<PathSensitiveBugReport>(*BT[CheckKind], Desc, N);
+  Report->addRange(MtxExpr->getSourceRange());
+  C.emitReport(std::move(Report));
 }
 
 void PthreadLockChecker::printState(raw_ostream &Out, ProgramStateRef State,
                                     const char *NL, const char *Sep) const {
-  LockMapTy LM = State->get<LockMap>();
-  if (!LM.isEmpty()) {
-    Out << Sep << "Mutex states:" << NL;
-    for (auto I : LM) {
-      I.first->dumpToStream(Out);
-      if (I.second.isLocked())
-        Out << ": locked";
-      else if (I.second.isUnlocked())
-        Out << ": unlocked";
-      else if (I.second.isDestroyed())
-        Out << ": destroyed";
-      else if (I.second.isUntouchedAndPossiblyDestroyed())
-        Out << ": not tracked, possibly destroyed";
-      else if (I.second.isUnlockedAndPossiblyDestroyed())
-        Out << ": unlocked, possibly destroyed";
-      Out << NL;
-    }
-  }
-
-  LockSetTy LS = State->get<LockSet>();
-  if (!LS.isEmpty()) {
-    Out << Sep << "Mutex lock order:" << NL;
-    for (auto I : LS) {
-      I->dumpToStream(Out);
-      Out << NL;
-    }
-  }
-
-  DestroyRetValTy DRV = State->get<DestroyRetVal>();
-  if (!DRV.isEmpty()) {
-    Out << Sep << "Mutexes in unresolved possibly destroyed state:" << NL;
-    for (auto I : DRV) {
-      I.first->dumpToStream(Out);
-      Out << ": ";
-      I.second->dumpToStream(Out);
-      Out << NL;
-    }
-  }
+  mutex_modeling::printState(Out, State, NL, Sep);
 }
 
+#if 0
 void PthreadLockChecker::AcquirePthreadLock(const CallEvent &Call,
                                             CheckerContext &C,
                                             CheckerKind CheckKind) const {
@@ -650,20 +494,6 @@ void PthreadLockChecker::InitLockAux(const CallEvent &Call, CheckerContext &C,
   reportBug(C, BT_initlock, MtxExpr, CheckKind, Message);
 }
 
-void PthreadLockChecker::reportBug(CheckerContext &C,
-                                   std::unique_ptr<BugType> BT[],
-                                   const Expr *MtxExpr, CheckerKind CheckKind,
-                                   StringRef Desc) const {
-  ExplodedNode *N = C.generateErrorNode();
-  if (!N)
-    return;
-  initBugType(CheckKind);
-  auto Report =
-      std::make_unique<PathSensitiveBugReport>(*BT[CheckKind], Desc, N);
-  Report->addRange(MtxExpr->getSourceRange());
-  C.emitReport(std::move(Report));
-}
-
 void PthreadLockChecker::checkDeadSymbols(SymbolReaper &SymReaper,
                                           CheckerContext &C) const {
   ProgramStateRef State = C.getState();
@@ -725,23 +555,25 @@ ProgramStateRef PthreadLockChecker::checkRegionChanges(
 
   return State;
 }
+#endif
 
 void ento::registerPthreadLockBase(CheckerManager &mgr) {
   mgr.registerChecker<PthreadLockChecker>();
 }
 
-bool ento::shouldRegisterPthreadLockBase(const CheckerManager &mgr) { return true; }
+bool ento::shouldRegisterPthreadLockBase(const CheckerManager &mgr) {
+  return true;
+}
 
-#define REGISTER_CHECKER(name)                                                 \
+#define REGISTER_CHECKER(name, library)                                        \
   void ento::register##name(CheckerManager &mgr) {                             \
     PthreadLockChecker *checker = mgr.getChecker<PthreadLockChecker>();        \
     checker->ChecksEnabled[PthreadLockChecker::CK_##name] = true;              \
     checker->CheckNames[PthreadLockChecker::CK_##name] =                       \
         mgr.getCurrentCheckerName();                                           \
   }                                                                            \
-                                                                               \
   bool ento::shouldRegister##name(const CheckerManager &mgr) { return true; }
 
-REGISTER_CHECKER(PthreadLockChecker)
-REGISTER_CHECKER(FuchsiaLockChecker)
-REGISTER_CHECKER(C11LockChecker)
+REGISTER_CHECKER(PthreadLockChecker, LibraryKind::Pthread)
+REGISTER_CHECKER(FuchsiaLockChecker, LibraryKind::Fuchsia)
+REGISTER_CHECKER(C11LockChecker, LibraryKind::C11)

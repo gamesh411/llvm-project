@@ -20,39 +20,42 @@
 
 namespace clang::ento::mutex_modeling {
 
-inline auto getHandledEvents() -> std::vector<EventDescriptor> {
-  return std::vector<EventDescriptor>{
-                     // - Pthread
-                     EventDescriptor{FirstArgMutexExtractor{CallDescription{
-                         CDM::CLibrary, {"pthread_mutex_init"}, 2}}},
-                     EventKind::Init, SemanticsKind::NotApplicable},
-         // TODO: pthread_rwlock_init(2 arguments).
-         // TODO: lck_mtx_init(3 arguments).
-         // TODO: lck_mtx_alloc_init(2 arguments) => returns the mutex.
-         // TODO: lck_rw_init(3 arguments).
-         // TODO: lck_rw_alloc_init(2 arguments) => returns the mutex.
+static auto getHandledEvents(){return std::vector<EventDescriptor> {
+  // - Pthread
+  EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}), EventKind::Init,
+                  LibraryKind::Pthread},
+#if 0
+             // TODO: pthread_rwlock_init(2 arguments).
+             // TODO: lck_mtx_init(3 arguments).
+             // TODO: lck_mtx_alloc_init(2 arguments) => returns the mutex.
+             // TODO: lck_rw_init(3 arguments).
+             // TODO: lck_rw_alloc_init(2 arguments) => returns the mutex.
 
-         // - Fuchsia
-         EventDescriptor{CallDescription{CDM::CLibrary, {"spin_lock_init"}, 1},
-                         Event::Init, Syntax::FirstArg,
-                         LockingSemantics::NotApplicable},
+             // - Fuchsia
+             EventDescriptor{FirstArgMutexExtractor{CallDescription{
+                                 CDM::CLibrary, {"spin_lock_init"}, 1}},
+                             EventKind::Init, LibraryKind::Fuchsia},
 
-         // - C11
-         EventDescriptor{CallDescription{CDM::CLibrary, {"mtx_init"}, 2},
-                         Event::Init, Syntax::FirstArg,
-                         LockingSemantics::NotApplicable},
+             // - C11
+             EventDescriptor{FirstArgMutexExtractor{CallDescription{
+                                 CDM::CLibrary, {"mtx_init"}, 2}},
+                             EventKind::Init, LibraryKind::C11},
 
-         // Acquire kind
-         // - Pthread
-         //
-         EventDescriptor{
-             CallDescription{CDM::CLibrary, {"pthread_mutex_lock"}, 1},
-             Event::Acquire, Syntax::FirstArg,
-             LockingSemantics::PthreadSemantics},
-         EventDescriptor{
-             CallDescription{CDM::CLibrary, {"pthread_rwlock_rdlock"}, 1},
-             Event::Acquire, Syntax::FirstArg,
-             LockingSemantics::PthreadSemantics},
+             // Acquire kind
+             // - Pthread
+             //
+             EventDescriptor{FirstArgMutexExtractor{CallDescription{
+                                 CDM::CLibrary, {"pthread_mutex_lock"}, 1}},
+                             Event::Acquire, LibraryKind::Pthread,
+                             SemanticsKind::PthreadSemantics},
+             EventDescriptor{FirstArgMutexExtractor{
+                 CallDescription{CDM::CLibrary, {"pthread_rwlock_rdlock"}, 1},
+                 Event::Acquire, LibraryKind::Pthread,
+                 SemanticsKind::PthreadSemantics}},
+             EventDescriptor{FirstArgMutexExtractor{CallDescription{
+                                 CDM::CLibrary, {"pthread_rwlock_wrlock"}, 1}},
+                             Event::Acquire, LibraryKind::Pthread,
+                             SemanticsKind::PthreadSemantics}},
          EventDescriptor{
              CallDescription{CDM::CLibrary, {"pthread_rwlock_wrlock"}, 1},
              Event::Acquire, Syntax::FirstArg,
@@ -205,7 +208,9 @@ inline auto getHandledEvents() -> std::vector<EventDescriptor> {
          EventDescriptor{CallDescription{CDM::CLibrary, {"mtx_destroy"}, 1},
                          Event::Destroy, Syntax::FirstArg,
                          LockingSemantics::NotApplicable}
+#endif
 };
+} // namespace clang::ento::mutex_modeling
 
 } // namespace clang::ento::mutex_modeling
 

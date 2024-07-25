@@ -48,10 +48,10 @@ namespace llvm {
 template <> struct FoldingSetTrait<clang::ento::mutex_modeling::EventMarker> {
   static void Profile(const clang::ento::mutex_modeling::EventMarker &EM,
                       llvm::FoldingSetNodeID &ID) {
-    ID.Add(EM.Event);
     ID.Add(EM.Kind);
+    ID.Add(EM.Library);
     ID.Add(EM.Semantics);
-    ID.Add(EM.LockState);
+    ID.Add(EM.EventII);
     ID.Add(EM.EventExpr);
     ID.Add(EM.MutexRegion);
   }

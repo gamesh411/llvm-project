@@ -14,21 +14,28 @@
 #define LLVM_CLANG_LIB_STATICANALYZER_CHECKERS_MUTEXMODELINGDOMAIN_H
 
 #include "MutexRegionExtractor.h"
-#include "clang/Basic/IdentifierTable.h"
 
+// Forwad declarations.
 namespace clang {
-
 class Expr;
-
+class IdentifierInfo;
 namespace ento {
-
 class MemRegion;
+} // namespace ento
+} // namespace clang
 
-namespace mutex_modeling {
+namespace clang::ento::mutex_modeling {
 
 enum class EventKind { Init, Acquire, TryAcquire, Release, Destroy };
 
-enum class SyntaxKind { FirstArg, Member, RAII };
+// TODO: Ideally the modeling should not know about which checkers consume the
+// modeling information. This enum is here to make a correspondence between the
+// checked mutex event the library that event came from. In order to keep the
+// external API of multiple distinct checkers (PthreadLockChecker,
+// FuchsiaLockChecker and C11LockChecker), this mapping is done here, but if
+// more consumers of this modeling arise, adding all of them here may note be
+// feasible and we may need to make this modeling more flexible.
+enum class LibraryKind { Pthread = 0, Fuchsia, C11, NumLibraryKinds };
 
 enum class SemanticsKind { NotApplicable = 0, PthreadSemantics, XNUSemantics };
 
@@ -42,35 +49,40 @@ enum class LockStateKind {
   Error_DoubleInitWhileLocked,
 };
 
+/// This class is intended for describing the list of events to detect.
+/// This list of events is the configuration of the MutexModeling checker.
 struct EventDescriptor {
   MutexRegionExtractor Trigger;
   EventKind Kind{};
+  LibraryKind Library{};
   SemanticsKind Semantics{};
 
   // TODO: Modernize to spaceship when C++20 is available.
-  [[nodiscard]] constexpr bool
-  operator!=(const EventDescriptor &Other) const noexcept {
-    return !(Trigger == Other.Trigger) || Kind != Other.Kind ||
-           Semantics != Other.Semantics;
+  [[nodiscard]] bool operator!=(const EventDescriptor &Other) const noexcept {
+    return !(Trigger == Other.Trigger) || Library != Other.Library ||
+           Kind != Other.Kind || Semantics != Other.Semantics;
   }
-  [[nodiscard]] constexpr bool
-  operator==(const EventDescriptor &Other) const noexcept {
+  [[nodiscard]] bool operator==(const EventDescriptor &Other) const noexcept {
     return !(*this != Other);
   }
 };
 
+/// This class is used in the GDM to describe the events that were detected.
+/// As instances of this class can appear many times in the ExplodedGraph, it
+/// best to keep it as simple and small as possible.
 struct EventMarker {
   EventKind Kind{};
   SemanticsKind Semantics{};
-  const IdentifierInfo *Event;
+  LibraryKind Library{};
+  const IdentifierInfo *EventII;
   const clang::Expr *EventExpr{};
   const clang::ento::MemRegion *MutexRegion{};
 
   // TODO: Modernize to spaceship when C++20 is available.
   [[nodiscard]] constexpr bool
   operator!=(const EventMarker &Other) const noexcept {
-    return Event != Other.Event || Kind != Other.Kind ||
-           Semantics != Other.Semantics || LockState != Other.LockState ||
+    return EventII != Other.EventII || Kind != Other.Kind ||
+           Semantics != Other.Semantics || Library != Other.Library ||
            EventExpr != Other.EventExpr || MutexRegion != Other.MutexRegion;
   }
   [[nodiscard]] constexpr bool
@@ -98,8 +110,6 @@ struct CritSectionMarker {
   }
 };
 
-} // namespace mutex_modeling
-} // namespace ento
-} // namespace clang
+} // namespace clang::ento::mutex_modeling
 
 #endif

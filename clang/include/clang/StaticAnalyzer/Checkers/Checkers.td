@@ -622,7 +622,7 @@ def ChrootChecker : Checker<"Chroot">,
 
 def PthreadLockChecker : Checker<"PthreadLock">,
   HelpText<"Simple lock -> unlock checker">,
-  Dependencies<[PthreadLockBase]>,
+  Dependencies<[PthreadLockBase, MutexModeling]>,
   Documentation<HasDocumentation>;
 
 def SimpleStreamChecker : Checker<"SimpleStream">,
