@@ -127,6 +127,19 @@ private:
   ProgramStateRef handleInit(const EventDescriptor &Event, const MemRegion *MTX,
                              const CallEvent &Call, ProgramStateRef State,
                              CheckerContext &C) const;
+  ProgramStateRef handleAcquire(const EventDescriptor &Event,
+                                const MemRegion *MTX, const CallEvent &Call,
+                                ProgramStateRef State, CheckerContext &C) const;
+  ProgramStateRef handleTryAcquire(const EventDescriptor &Event,
+                                   const MemRegion *MTX, const CallEvent &Call,
+                                   ProgramStateRef State,
+                                   CheckerContext &C) const;
+  ProgramStateRef handleRelease(const EventDescriptor &Event,
+                                const MemRegion *MTX, const CallEvent &Call,
+                                ProgramStateRef State, CheckerContext &C) const;
+  ProgramStateRef handleDestroy(const EventDescriptor &Event,
+                                const MemRegion *MTX, const CallEvent &Call,
+                                ProgramStateRef State, CheckerContext &C) const;
   ProgramStateRef handleEvent(const EventDescriptor &Event,
                               const MemRegion *MTX, const CallEvent &Call,
                               ProgramStateRef State, CheckerContext &C) const;
@@ -160,40 +173,83 @@ ProgramStateRef MutexModeling::handleInit(const EventDescriptor &Event,
   }
 }
 
-ProgramStateRef handleAcquire(const EventDescriptor &Event,
-                              const MemRegion *MTX, const CallEvent &Call,
-                              ProgramStateRef State, CheckerContext &C) const {
-  assert(MTX && "should only be called with a mutex region");
-
+static ProgramStateRef doAcquireCommonLogic(ProgramStateRef State,
+                                            const MemRegion *MTX) {
   const LockStateKind *LState = State->get<LockStates>(MTX);
 
   if (!LState)
-    return State->set<LockStates>(MTX, LockStateKind::Locked);
+    State = State->set<LockStates>(MTX, LockStateKind::Locked);
+  else if (*LState == LockStateKind::Locked)
+    State = State->set<LockStates>(MTX, LockStateKind::Error_DoubleLock);
+  if (*LState == LockStateKind::Destroyed)
+    State = State->set<LockStates>(MTX, LockStateKind::Error_LockDestroyed);
 
-  switch (*LState) {
-  case (LockStateKind::Locked): {
-    return State->set<LockStates>(MTX, LockStateKind::Error_DoubleLock);
-  }
-  case (LockStateKind::Destroyed): {
-    return State->set<LockStates>(MTX, LockStateKind::Error_LockDestroyed);
-  }
-  }
+  return State;
+}
 
-  if (Semantics == PthreadSemantics) {
+ProgramStateRef MutexModeling::handleAcquire(const EventDescriptor &Event,
+                                             const MemRegion *MTX,
+                                             const CallEvent &Call,
+                                             ProgramStateRef State,
+                                             CheckerContext &C) const {
+
+  State = doAcquireCommonLogic(State, MTX);
+
+  switch (Event.Semantics) {
+  case SemanticsKind::PthreadSemantics: {
     // Assume that the return value was 0.
     SVal RetVal = Call.getReturnValue();
     if (auto DefinedRetVal = RetVal.getAs<DefinedSVal>()) {
       // FIXME: If the lock function was inlined and returned true,
       // we need to behave sanely - at least generate sink.
-      lockSucc = state->assume(*DefinedRetVal, false);
-      assert(lockSucc);
+      State = State->assume(*DefinedRetVal, false);
+      assert(State);
     }
+    break;
+  }
+  case SemanticsKind::XNUSemantics:
+    // XNU semantics return void on non-try locks.
+    break;
+  default:
+    llvm_unreachable(
+        "Acquire events should have either Pthread or XNU semantics");
+  }
+
+  return State;
+}
+
+ProgramStateRef MutexModeling::handleTryAcquire(const EventDescriptor &Event,
+                                                const MemRegion *MTX,
+                                                const CallEvent &Call,
+                                                ProgramStateRef State,
+                                                CheckerContext &C) const {
+
+  State = doAcquireCommonLogic(State, MTX);
+
+  // Bifurcate the state, and allow a mode where the lock acquisition fails.
+  ProgramStateRef LockSucc;
+  SVal RetVal = Call.getReturnValue();
+  if (auto DefinedRetVal = RetVal.getAs<DefinedSVal>()) {
+    ProgramStateRef LockFail;
+    switch (Event.Semantics) {
+    case SemanticsKind::PthreadSemantics:
+      std::tie(LockFail, LockSucc) = State->assume(*DefinedRetVal);
+      break;
+    case SemanticsKind::XNUSemantics:
+      std::tie(LockSucc, LockFail) = State->assume(*DefinedRetVal);
+      break;
+    default:
+      llvm_unreachable("Unknown tryLock locking semantics");
+    }
+
+    // This is the bifurcation point in the ExplodedGraph, we do not need to
+    // pass the new ExplodedGraph node because we do not plan on building this
+    // failed case part forward in this checker.
+    C.addTransition(LockFail);
+
+    return LockSucc;
     // We might want to handle the case when the mutex lock function was inlined
     // and returned an Unknown or Undefined value.
-  } else {
-    // XNU locking semantics return void on non-try locks
-    assert((Semantics == XNUSemantics) && "Unknown locking semantics");
-    lockSucc = state;
   }
 }
 
@@ -212,22 +268,20 @@ ProgramStateRef MutexModeling::handleEvent(const EventDescriptor &Event,
   case EventKind::Init:
     return handleInit(Event, MTX, Call, State, C);
     break;
-  default:
-    llvm_unreachable("Unhandled event kind!");
-#if 0
   case EventKind::Acquire:
-    handleAcquire(Event, Call, C);
+    handleAcquire(Event, MTX, Call, State, C);
     break;
   case EventKind::TryAcquire:
-    handleTryAcquire(Event, Call, C);
+    handleTryAcquire(Event, MTX, Call, State, C);
     break;
   case EventKind::Release:
-    handleRelease(Event, Call, C);
+    handleRelease(Event, MTX, Call, State, C);
     break;
   case EventKind::Destroy:
-    handleDestroy(Event, Call, C);
+    handleDestroy(Event, MTX, Call, State, C);
     break;
-#endif
+  default:
+    llvm_unreachable("Unhandled event kind!");
   }
 }
 
