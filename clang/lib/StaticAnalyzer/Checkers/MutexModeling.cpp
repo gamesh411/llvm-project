@@ -141,10 +141,6 @@ ProgramStateRef MutexModeling::handleInit(const EventDescriptor &Event,
                                           CheckerContext &C) const {
   assert(MTX && "should only be called with a mutex region");
 
-  State = State->add<MutexEvents>(
-      EventMarker{Event.Kind, Event.Semantics, Event.Library,
-                  Call.getCalleeIdentifier(), Call.getOriginExpr(), MTX});
-
   const LockStateKind *LState = State->get<LockStates>(MTX);
 
   if (!LState)
@@ -164,12 +160,53 @@ ProgramStateRef MutexModeling::handleInit(const EventDescriptor &Event,
   }
 }
 
+ProgramStateRef handleAcquire(const EventDescriptor &Event,
+                              const MemRegion *MTX, const CallEvent &Call,
+                              ProgramStateRef State, CheckerContext &C) const {
+  assert(MTX && "should only be called with a mutex region");
+
+  const LockStateKind *LState = State->get<LockStates>(MTX);
+
+  if (!LState)
+    return State->set<LockStates>(MTX, LockStateKind::Locked);
+
+  switch (*LState) {
+  case (LockStateKind::Locked): {
+    return State->set<LockStates>(MTX, LockStateKind::Error_DoubleLock);
+  }
+  case (LockStateKind::Destroyed): {
+    return State->set<LockStates>(MTX, LockStateKind::Error_LockDestroyed);
+  }
+  }
+
+  if (Semantics == PthreadSemantics) {
+    // Assume that the return value was 0.
+    SVal RetVal = Call.getReturnValue();
+    if (auto DefinedRetVal = RetVal.getAs<DefinedSVal>()) {
+      // FIXME: If the lock function was inlined and returned true,
+      // we need to behave sanely - at least generate sink.
+      lockSucc = state->assume(*DefinedRetVal, false);
+      assert(lockSucc);
+    }
+    // We might want to handle the case when the mutex lock function was inlined
+    // and returned an Unknown or Undefined value.
+  } else {
+    // XNU locking semantics return void on non-try locks
+    assert((Semantics == XNUSemantics) && "Unknown locking semantics");
+    lockSucc = state;
+  }
+}
+
 ProgramStateRef MutexModeling::handleEvent(const EventDescriptor &Event,
                                            const MemRegion *MTX,
                                            const CallEvent &Call,
                                            ProgramStateRef State,
                                            CheckerContext &C) const {
   assert(MTX && "should only be called with a mutex region");
+
+  State = State->add<MutexEvents>(
+      EventMarker{Event.Kind, Event.Semantics, Event.Library,
+                  Call.getCalleeIdentifier(), Call.getOriginExpr(), MTX});
 
   switch (Event.Kind) {
   case EventKind::Init:

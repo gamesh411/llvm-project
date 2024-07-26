@@ -71,8 +71,8 @@ public:
 };
 
 class PthreadLockChecker : public Checker<check::PostCall> {
-// , check::DeadSymbols,
-//                                          check::RegionChanges> {
+  // , check::DeadSymbols,
+  //                                          check::RegionChanges> {
 
 public:
   enum CheckerKind {
@@ -85,9 +85,7 @@ public:
   bool ChecksEnabled[CK_NumCheckKinds] = {false};
   CheckerNameRef CheckNames[CK_NumCheckKinds];
 
-  PthreadLockChecker() {
-    RegisterEvents();
-  }
+  PthreadLockChecker() { RegisterEvents(); }
 
 private:
   std::vector<EventDescriptor> EventsToModel{
@@ -106,10 +104,12 @@ public:
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
   // void checkDeadSymbols(SymbolReaper &SymReaper, CheckerContext &C) const;
   // ProgramStateRef
-  // checkRegionChanges(ProgramStateRef State, const InvalidatedSymbols *Symbols,
+  // checkRegionChanges(ProgramStateRef State, const InvalidatedSymbols
+  // *Symbols,
   //                    ArrayRef<const MemRegion *> ExplicitRegions,
   //                    ArrayRef<const MemRegion *> Regions,
-  //                    const LocationContext *LCtx, const CallEvent *Call) const;
+  //                    const LocationContext *LCtx, const CallEvent *Call)
+  //                    const;
   void printState(raw_ostream &Out, ProgramStateRef State, const char *NL,
                   const char *Sep) const override;
 
@@ -149,31 +149,19 @@ private:
       llvm_unreachable("Unknown locking library");
     }
   }
+
+  void checkInitEvent(const EventMarker &LastEvent, CheckerContext &C) const;
+  void checkAcquireEvent(const EventMarker &LastEvent, CheckerContext &C) const;
+  void checkTryAcquireEvent(const EventMarker &LastEvent,
+                            CheckerContext &C) const;
+  void checkReleaseEvent(const EventMarker &LastEvent, CheckerContext &C) const;
+  void checkDestroyEvent(const EventMarker &LastEvent, CheckerContext &C) const;
 };
 } // end anonymous namespace
 
-void PthreadLockChecker::checkPostCall(const CallEvent &Call,
-                                       CheckerContext &C) const {
-
+void PthreadLockChecker::checkInitEvent(const EventMarker &LastEvent,
+                                        CheckerContext &C) const {
   ProgramStateRef State = C.getState();
-
-  const auto &MTXEvents = State->get<MutexEvents>();
-
-  Call.dump(llvm::errs());
-  llvm::errs() << "before MTXEvents isEmpty check\n";
-
-  if (MTXEvents.isEmpty()) {
-    return;
-  }
-
-  llvm::errs() << "after MTXEvents isEmpty check\n";
-  printState(llvm::errs(), State, "\n", " ");
-
-  const auto &LastEvent = MTXEvents.getHead();
-
-  if (LastEvent.Kind != EventKind::Init) {
-    return;
-  }
 
   const LockStateKind *const LockState =
       State->get<LockStates>(LastEvent.MutexRegion);
@@ -203,7 +191,50 @@ void PthreadLockChecker::checkPostCall(const CallEvent &Call,
     return;
   }
 
-  reportBug(C, BT_initlock, LastEvent.EventExpr, detectCheckerKind(LastEvent), Message);
+  reportBug(C, BT_initlock, LastEvent.EventExpr, detectCheckerKind(LastEvent),
+            Message);
+}
+
+void PthreadLockChecker::checkAcquireEvent(const EventMarker &LastEvent,
+                                           CheckerContext &C) const {
+  ProgramStateRef State = C.getState();
+
+  const LockStateKind *const LockState =
+      State->get<LockStates>(LastEvent.MutexRegion);
+}
+
+void PthreadLockChecker::checkPostCall(const CallEvent &Call,
+                                       CheckerContext &C) const {
+
+  ProgramStateRef State = C.getState();
+
+  const auto &MTXEvents = State->get<MutexEvents>();
+
+  if (MTXEvents.isEmpty()) {
+    return;
+  }
+
+  const auto &LastEvent = MTXEvents.getHead();
+
+  switch (LastEvent.Kind) {
+  case EventKind::Init:
+    checkInitEvent(LastEvent, C);
+    break;
+  case EventKind::Acquire:
+    checkAcquireEvent(LastEvent, C);
+    break;
+  case EventKind::TryAcquire:
+    checkTryAcquireEvent(LastEvent, C);
+    break;
+  case EventKind::Release:
+    checkReleaseEvent(LastEvent, C);
+    break;
+  case EventKind::Destroy:
+    checkDestroyEvent(LastEvent, C);
+    break;
+  default:
+    llvm_unreachable("Unknown event kind");
+  }
 }
 
 void PthreadLockChecker::reportBug(CheckerContext &C,
