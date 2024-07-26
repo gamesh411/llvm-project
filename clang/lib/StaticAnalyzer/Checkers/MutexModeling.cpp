@@ -247,10 +247,49 @@ ProgramStateRef MutexModeling::handleTryAcquire(const EventDescriptor &Event,
     // failed case part forward in this checker.
     C.addTransition(LockFail);
 
-    return LockSucc;
+    // Pass the state where the locking succeeded onwards.
+    State = LockSucc;
     // We might want to handle the case when the mutex lock function was inlined
     // and returned an Unknown or Undefined value.
   }
+  return State;
+}
+
+ProgramStateRef MutexModeling::handleRelease(const EventDescriptor &Event,
+                                             const MemRegion *MTX,
+                                             const CallEvent &Call,
+                                             ProgramStateRef State,
+                                             CheckerContext &C) const {
+
+  const LockStateKind *LState = State->get<LockStates>(MTX);
+
+  if (!LState)
+    return State->set<LockStates>(MTX, LockStateKind::Unlocked);
+
+  if (*LState == LockStateKind::Unlocked)
+    return State->set<LockStates>(MTX, LockStateKind::Error_DoubleUnlock);
+
+  if (*LState == LockStateKind::Destroyed)
+    return State->set<LockStates>(MTX, LockStateKind::Error_UnlockDestroyed);
+
+  // Check if the currently released mutex is also the most recently locked one.
+  // If not, report a lock reversal bug.
+  // NOTE: MutexEvents stores events in reverse order as the ImmutableList data
+  // structure grows towards its Head element.
+  const auto &Events = State->get<MutexEvents>();
+  bool IsLockReversal = false;
+  for (const auto &Event : Events) {
+    if (Event.Kind == EventKind::Acquire) {
+      IsLockReversal = Event.MutexRegion != MTX;
+      break;
+    }
+  }
+
+  if (IsLockReversal) {
+    return State->set<LockStates>(MTX, LockStateKind::Error_LockReversal);
+  }
+
+  return State->set<LockStates>(MTX, LockStateKind::Unlocked);
 }
 
 ProgramStateRef MutexModeling::handleEvent(const EventDescriptor &Event,
