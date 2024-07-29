@@ -261,6 +261,11 @@ def NonnullGlobalConstantsChecker: Checker<"NonnilStringConstants">,
 
 let ParentPackage = CoreAlpha in {
 
+def MutexModeling : Checker<"MutexModeling">,
+  HelpText<"Model mutexes lock and unlock events">,
+  Documentation<NotDocumented>,
+  Hidden;
+
 def BoolAssignmentChecker : Checker<"BoolAssignment">,
   HelpText<"Warn about assigning non-{0,1} values to Boolean variables">,
   Documentation<HasDocumentation>;
@@ -313,6 +318,7 @@ def StackAddrAsyncEscapeChecker : Checker<"StackAddressAsyncEscape">,
 
 def PthreadLockBase : Checker<"PthreadLockBase">,
   HelpText<"Helper registering multiple checks.">,
+  Dependencies<[MutexModeling]>,
   Documentation<NotDocumented>,
   Hidden;
 
@@ -508,11 +514,6 @@ let ParentPackage = Unix in {
 def UnixAPIMisuseChecker : Checker<"API">,
   HelpText<"Check calls to various UNIX/Posix functions">,
   Documentation<HasDocumentation>;
-
-def MutexModeling : Checker<"MutexModeling">,
-  HelpText<"Model mutexes lock and unlock events">,
-  Documentation<NotDocumented>,
-  Hidden;
 
 def BlockInCriticalSectionChecker : Checker<"BlockInCriticalSection">,
   HelpText<"Check for calls to blocking functions inside a critical section">,

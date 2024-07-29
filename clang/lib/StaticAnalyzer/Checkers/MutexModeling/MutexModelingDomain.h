@@ -48,7 +48,12 @@ enum class LockStateKind {
   Error_DoubleInit,
   Error_DoubleInitWhileLocked,
   Error_DoubleLock,
-  Error_LockDestroyed
+  Error_LockDestroyed,
+  Error_DoubleUnlock,
+  Error_UnlockDestroyed,
+  Error_LockReversal,
+  Error_DestroyLocked,
+  Error_DoubleDestroy
 };
 
 /// This class is intended for describing the list of events to detect.
