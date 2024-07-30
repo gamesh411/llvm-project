@@ -39,18 +39,18 @@ namespace {
 ProgramStateRef resolvePossiblyDestroyedMutex(ProgramStateRef State,
                                               const MemRegion *LockReg,
                                               const SymbolRef *LockReturnSym) {
-  const LockStateKind *LState = State->get<LockStates>(LockReg);
+  const LockStateKind *LockState = State->get<LockStates>(LockReg);
   // Existence in DestroyRetVal ensures existence in LockMap.
   // Existence in Destroyed also ensures that the lock state for lockR is either
   // UntouchedAndPossiblyDestroyed or UnlockedAndPossiblyDestroyed.
-  assert(LState);
-  assert(*LState == LockStateKind::UntouchedAndPossiblyDestroyed ||
-         *LState == LockStateKind::UnlockedAndPossiblyDestroyed);
+  assert(LockState);
+  assert(*LockState == LockStateKind::UntouchedAndPossiblyDestroyed ||
+         *LockState == LockStateKind::UnlockedAndPossiblyDestroyed);
 
   ConstraintManager &CMgr = State->getConstraintManager();
   ConditionTruthVal RetZero = CMgr.isNull(State, *LockReturnSym);
   if (RetZero.isConstrainedFalse()) {
-    switch (*LState) {
+    switch (*LockState) {
     case LockStateKind::UntouchedAndPossiblyDestroyed: {
       State = State->remove<LockStates>(LockReg);
       break;
@@ -163,12 +163,12 @@ ProgramStateRef MutexModeling::handleInit(const EventDescriptor &Event,
                                           CheckerContext &C) const {
   assert(MTX && "should only be called with a mutex region");
 
-  const LockStateKind *LState = State->get<LockStates>(MTX);
+  const LockStateKind *LockState = State->get<LockStates>(MTX);
 
-  if (!LState)
+  if (!LockState)
     return State->set<LockStates>(MTX, LockStateKind::Unlocked);
 
-  switch (*LState) {
+  switch (*LockState) {
   case (LockStateKind::Destroyed): {
     return State->set<LockStates>(MTX, LockStateKind::Unlocked);
   }
@@ -184,12 +184,12 @@ ProgramStateRef MutexModeling::handleInit(const EventDescriptor &Event,
 
 static ProgramStateRef doAcquireCommonLogic(ProgramStateRef State,
                                             const MemRegion *MTX) {
-  const LockStateKind *LState = State->get<LockStates>(MTX);
+  const LockStateKind *LockState = State->get<LockStates>(MTX);
 
-  if (!LState)
+  if (!LockState)
     return State->set<LockStates>(MTX, LockStateKind::Locked);
 
-  switch (*LState) {
+  switch (*LockState) {
   case LockStateKind::Unlocked:
     return State->set<LockStates>(MTX, LockStateKind::Locked);
   case LockStateKind::Locked:
@@ -275,31 +275,53 @@ ProgramStateRef MutexModeling::handleRelease(const EventDescriptor &Event,
                                              ProgramStateRef State,
                                              CheckerContext &C) const {
 
-  const LockStateKind *LState = State->get<LockStates>(MTX);
+  const LockStateKind *LockState = State->get<LockStates>(MTX);
 
-  if (!LState)
-    return State->set<LockStates>(MTX, LockStateKind::Unlocked);
-
-  if (*LState == LockStateKind::Unlocked)
+  // FIXME: to be more conservative we shoud maybe just assume, that the lock
+  // is was in a locked state? This would assume that before we start modeling
+  // the mutex, the state was correct.
+  // return State->set<LockStates>(MTX, LockStateKind::Unlocked);
+  if (!LockState)
     return State->set<LockStates>(MTX, LockStateKind::Error_DoubleUnlock);
 
-  if (*LState == LockStateKind::Destroyed)
+  if (*LockState == LockStateKind::Unlocked)
+    return State->set<LockStates>(MTX, LockStateKind::Error_DoubleUnlock);
+
+  if (*LockState == LockStateKind::Destroyed)
     return State->set<LockStates>(MTX, LockStateKind::Error_UnlockDestroyed);
 
   // Check if the currently released mutex is also the most recently locked
-  // one. If not, report a lock reversal bug. NOTE: MutexEvents stores events
-  // in reverse order as the ImmutableList data structure grows towards its
-  // Head element.
+  // one. If not, report a lock reversal bug.
+  //
+  // NOTE: MutexEvents stores events in reverse order as the ImmutableList data
+  // structure grows towards its Head element.
+  //
+  // Every time a Release event is met in the reverse order of Mutex events it
+  // is pushed to a stack. Every time an Acquire-like event is met, if the top
+  // of the stack matches the Acquire event's mutex region, it is popped
+  // (signifying that the order of lock/unlocks was matching), but if a
+  // non-matching item is found, we are sure that there is a reversal.
+  //
+  // FIXME: A stack of mutexes could be used instead of computing the reverse
+  // critical sections every time, use the critical section modeling aggregated
+  // data for this check, and rewrite the comment paragraph above.
   const auto &Events = State->get<MutexEvents>();
-  bool IsLockReversal = false;
+  llvm::SmallVector<const EventMarker *, 4> InverseLockStack;
   for (const auto &Event : Events) {
-    if (Event.Kind == EventKind::Acquire) {
-      IsLockReversal = Event.MutexRegion != MTX;
-      break;
+    if (Event.Kind == EventKind::Release) {
+      InverseLockStack.push_back(&Event);
+    } else if (Event.Kind == EventKind::Acquire ||
+               Event.Kind == EventKind::TryAcquire) {
+      if (InverseLockStack.empty()) {
+        continue;
+      }
+      if (InverseLockStack.back()->MutexRegion == Event.MutexRegion) {
+        InverseLockStack.pop_back();
+      }
     }
   }
 
-  if (IsLockReversal) {
+  if (!InverseLockStack.empty()) {
     return State->set<LockStates>(MTX, LockStateKind::Error_LockReversal);
   }
 
@@ -317,9 +339,9 @@ ProgramStateRef MutexModeling::handleDestroy(const EventDescriptor &Event,
   if (LockReturnSym)
     State = resolvePossiblyDestroyedMutex(State, MTX, LockReturnSym);
 
-  const LockStateKind *LState = State->get<LockStates>(MTX);
+  const LockStateKind *LockState = State->get<LockStates>(MTX);
 
-  if (!LState || *LState == LockStateKind::Unlocked) {
+  if (!LockState || *LockState == LockStateKind::Unlocked) {
     if (Event.Semantics != SemanticsKind::PthreadSemantics) {
       return State->set<LockStates>(MTX, LockStateKind::Destroyed);
     }
@@ -333,22 +355,22 @@ ProgramStateRef MutexModeling::handleDestroy(const EventDescriptor &Event,
 
     State = State->set<DestroyedRetVals>(MTX, Sym);
     return State->set<LockStates>(
-        MTX, LState && *LState == LockStateKind::Unlocked
+        MTX, LockState && *LockState == LockStateKind::Unlocked
                  ? LockStateKind::UnlockedAndPossiblyDestroyed
                  : LockStateKind::UntouchedAndPossiblyDestroyed);
   }
 
-  if (*LState == LockStateKind::Locked) {
+  if (*LockState == LockStateKind::Locked) {
     return State->set<LockStates>(MTX, LockStateKind::Error_DestroyLocked);
   }
 
-  if (*LState == LockStateKind::Destroyed) {
+  if (*LockState == LockStateKind::Destroyed) {
     return State->set<LockStates>(MTX, LockStateKind::Error_DoubleDestroy);
   }
 
-  assert(LState && *LState != LockStateKind::Unlocked &&
-         *LState != LockStateKind::Locked &&
-         *LState != LockStateKind::Destroyed &&
+  assert(LockState && *LockState != LockStateKind::Unlocked &&
+         *LockState != LockStateKind::Locked &&
+         *LockState != LockStateKind::Destroyed &&
          "Only error states should remain if we get here");
 
   return State;
@@ -469,11 +491,8 @@ ProgramStateRef MutexModeling::checkRegionChanges(
 namespace clang {
 namespace ento {
 // Checker registration
-void registerMutexModeling(CheckerManager &mgr) {
-  mgr.registerChecker<MutexModeling>();
-  RegisterEvent(
-      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}, 2),
-                      EventKind::Init, LibraryKind::Pthread});
+void registerMutexModeling(CheckerManager &CM) {
+  CM.registerChecker<MutexModeling>();
 }
 bool shouldRegisterMutexModeling(const CheckerManager &) { return true; }
 } // namespace ento

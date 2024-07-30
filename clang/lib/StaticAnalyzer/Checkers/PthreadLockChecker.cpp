@@ -33,8 +33,6 @@ using namespace mutex_modeling;
 namespace {
 
 class PthreadLockChecker : public Checker<check::PostCall> {
-  // , check::DeadSymbols,
-  //                                          check::RegionChanges> {
 
 public:
   enum CheckerKind {
@@ -50,14 +48,7 @@ public:
   PthreadLockChecker() { RegisterEvents(); }
 
 private:
-  std::vector<EventDescriptor> EventsToModel{
-      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}, 2),
-                      EventKind::Init, LibraryKind::Pthread},
-      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_lock"}),
-                      EventKind::Acquire, LibraryKind::Pthread,
-                      SemanticsKind::PthreadSemantics},
-      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_unlock"}),
-                      EventKind::Release, LibraryKind::Pthread}};
+  std::vector<EventDescriptor> EventsToModel{};
   void RegisterEvents() const {
     for (auto &&Event : EventsToModel) {
       RegisterEvent(Event);
@@ -180,14 +171,14 @@ void PthreadLockChecker::checkReleaseEvent(const EventMarker &LastEvent,
   if (*LockState == LockStateKind::Error_DoubleUnlock) {
     reportBug(C, BT_doubleunlock, LastEvent.EventExpr,
               detectCheckerKind(LastEvent),
-              "This lock has already been released");
+              "This lock has already been unlocked");
   } else if (*LockState == LockStateKind::Error_UnlockDestroyed) {
     reportBug(C, BT_destroylock, LastEvent.EventExpr,
               detectCheckerKind(LastEvent),
               "This lock has already been destroyed");
   } else if (*LockState == LockStateKind::Error_LockReversal) {
     reportBug(C, BT_lor, LastEvent.EventExpr, detectCheckerKind(LastEvent),
-              "Lock order reversal");
+              "This was not the most recently acquired lock");
   }
 }
 
@@ -195,17 +186,17 @@ void PthreadLockChecker::checkDestroyEvent(const EventMarker &LastEvent,
                                            CheckerContext &C) const {
   ProgramStateRef State = C.getState();
 
-  const LockStateKind *const LState =
+  const LockStateKind *const LockState =
       State->get<LockStates>(LastEvent.MutexRegion);
 
-  if (!LState || *LState == LockStateKind::Destroyed) {
+  if (!LockState || *LockState == LockStateKind::Destroyed) {
     return;
   }
 
-  if (*LState == LockStateKind::Error_DestroyLocked) {
+  if (*LockState == LockStateKind::Error_DestroyLocked) {
     reportBug(C, BT_destroylock, LastEvent.EventExpr,
               detectCheckerKind(LastEvent), "This lock is still locked");
-  } else if (*LState == LockStateKind::Error_DoubleDestroy)
+  } else if (*LockState == LockStateKind::Error_DoubleDestroy)
     reportBug(C, BT_destroylock, LastEvent.EventExpr,
               detectCheckerKind(LastEvent),
               "This lock has already been destroyed");
@@ -223,6 +214,9 @@ void PthreadLockChecker::checkPostCall(const CallEvent &Call,
   }
 
   const auto &LastEvent = MTXEvents.getHead();
+
+  if (!ChecksEnabled[detectCheckerKind(LastEvent)])
+    return;
 
   switch (LastEvent.Kind) {
   case EventKind::Init:
@@ -270,15 +264,62 @@ bool ento::shouldRegisterPthreadLockBase(const CheckerManager &mgr) {
   return true;
 }
 
-#define REGISTER_CHECKER(name, library)                                        \
-  void ento::register##name(CheckerManager &mgr) {                             \
-    PthreadLockChecker *checker = mgr.getChecker<PthreadLockChecker>();        \
-    checker->ChecksEnabled[PthreadLockChecker::CK_##name] = true;              \
-    checker->CheckNames[PthreadLockChecker::CK_##name] =                       \
-        mgr.getCurrentCheckerName();                                           \
-  }                                                                            \
-  bool ento::shouldRegister##name(const CheckerManager &mgr) { return true; }
+void ento::registerPthreadLockChecker(CheckerManager &CM) {
+  PthreadLockChecker *ImplChecker = CM.getChecker<PthreadLockChecker>();
+  ImplChecker->ChecksEnabled[PthreadLockChecker::CK_PthreadLockChecker] = true;
+  ImplChecker->CheckNames[PthreadLockChecker::CK_PthreadLockChecker] =
+      CM.getCurrentCheckerName();
 
-REGISTER_CHECKER(PthreadLockChecker, LibraryKind::Pthread)
-REGISTER_CHECKER(FuchsiaLockChecker, LibraryKind::Fuchsia)
-REGISTER_CHECKER(C11LockChecker, LibraryKind::C11)
+  RegisterEvent(
+      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}, 2),
+                      EventKind::Init, LibraryKind::Pthread});
+  RegisterEvent(
+      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_init"}, 2),
+                      EventKind::Init, LibraryKind::Pthread});
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_lock"}),
+                                EventKind::Acquire, LibraryKind::Pthread,
+                                SemanticsKind::PthreadSemantics});
+  RegisterEvent(EventDescriptor{
+      MakeFirstArgExtractor({"pthread_mutex_trylock"}), EventKind::TryAcquire,
+      LibraryKind::Pthread, SemanticsKind::PthreadSemantics});
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_unlock"}),
+                                EventKind::Release, LibraryKind::Pthread});
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_destroy"}),
+                                EventKind::Destroy, LibraryKind::Pthread});
+}
+
+bool ento::shouldRegisterPthreadLockChecker(const CheckerManager &CM) {
+  return true;
+}
+
+void ento::registerFuchsiaLockChecker(CheckerManager &CM) {
+  PthreadLockChecker *ImplChecker = CM.getChecker<PthreadLockChecker>();
+  ImplChecker->ChecksEnabled[PthreadLockChecker::CK_FuchsiaLockChecker] = true;
+  ImplChecker->CheckNames[PthreadLockChecker::CK_FuchsiaLockChecker] =
+      CM.getCurrentCheckerName();
+}
+
+bool ento::shouldRegisterFuchsiaLockChecker(const CheckerManager &CM) {
+  return true;
+}
+
+void ento::registerC11LockChecker(CheckerManager &CM) {
+  PthreadLockChecker *ImplChecker = CM.getChecker<PthreadLockChecker>();
+  ImplChecker->ChecksEnabled[PthreadLockChecker::CK_C11LockChecker] = true;
+  ImplChecker->CheckNames[PthreadLockChecker::CK_C11LockChecker] =
+      CM.getCurrentCheckerName();
+
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"lck_mtx_lock"}),
+                                EventKind::Acquire, LibraryKind::C11,
+                                SemanticsKind::XNUSemantics});
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"lck_mtx_try_lock"}),
+                                EventKind::TryAcquire, LibraryKind::C11,
+                                SemanticsKind::XNUSemantics});
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"lck_mtx_unlock"}),
+                                EventKind::Release, LibraryKind::C11,
+                                SemanticsKind::XNUSemantics});
+}
+
+bool ento::shouldRegisterC11LockChecker(const CheckerManager &CM) {
+  return true;
+}
