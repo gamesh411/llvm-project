@@ -16,6 +16,7 @@ clang_target_link_libraries(clang-exception-scan
   clangBasic
   clangCrossTU
   clangFrontend
+  clangIndex
   clangSerialization
   clangTooling
   )

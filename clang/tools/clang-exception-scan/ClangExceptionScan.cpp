@@ -13,90 +13,20 @@
 //===--------------------------------------------------------------------===//
 
 #include "clang/AST/ASTConsumer.h"
+#include "ClangExceptionScanAction.hpp"
+#include "ExceptionContext.hpp"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/ASTDumper.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
-#include "clang/Analysis/CFG.h"
-#include "clang/Basic/SourceManager.h"
-#include "clang/CrossTU/CrossTranslationUnit.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "clang/Frontend/FrontendActions.h"
-#include "clang/Tooling/CommonOptionsParser.h"
+#include <clang/Analysis/CallGraph.h>
 #include "clang/Tooling/JSONCompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
-#include "llvm/Support/CommandLine.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Signals.h"
-#include <clang/Analysis/CallGraph.h>
 #include <optional>
-#include <queue>
-#include <sstream>
 #include <string>
-#include <unordered_map>
 
 using namespace llvm;
 using namespace clang;
-using namespace clang::ast_matchers;
-using namespace clang::cross_tu;
 using namespace clang::tooling;
-
-static cl::OptionCategory
-    ClangExtDefMapGenCategory("clang-extdefmapgen options");
-
-struct CallInfo {
-  const Expr *CallOrCtorInvocation;
-  const FunctionDecl *Callee;
-  std::string Name;
-  std::string Location;
-};
-
-struct ThrowInfo {
-  const CXXThrowExpr *Expr;
-  bool isRethrow;
-  std::string Description;
-  std::string Location;
-};
-
-struct CatchInfo {
-  const CXXCatchStmt *Stmt;
-  bool isCatchAll;
-  std::string Description;
-  std::string Location;
-};
-
-struct TryInfo {
-  const CXXTryStmt *Stmt;
-  std::string Location;
-};
-
-struct ExceptionInfo {
-  llvm::SmallVector<ThrowInfo> Throws;
-  llvm::SmallVector<CatchInfo> Catches;
-  llvm::SmallVector<CallInfo> Calls;
-  llvm::SmallVector<TryInfo> Tries;
-};
-
-struct ExceptionContext {
-  std::set<const FunctionDecl *> FunctionsVisited;
-  std::unordered_map<const FunctionDecl *, std::string> NameIndex;
-  std::unordered_map<const FunctionDecl *, std::string> ShortNameIndex;
-  std::unordered_map<const FunctionDecl *, const Stmt *> BodyIndex;
-
-  std::unordered_map<const FunctionDecl *, bool> IsInMainFileIndex;
-  std::unordered_map<const FunctionDecl *, ExceptionInfo> ExInfoIndex;
-
-  std::unordered_map<const FunctionDecl *, const FunctionDecl *> CalleeIndex;
-
-  // std::set<const FunctionDecl *> AlreadyVisitedFunctions;
-  // std::set<std::pair<const FunctionDecl *, const FunctionDecl *>>
-  //    AlreadyVisitedPairs;
-  // std::queue<const FunctionDecl *> FunctionWorklist;
-};
-
-StatementMatcher CallMatcher = findAll(invocation().bind("invocation"));
-StatementMatcher ThrowMatcher = findAll(cxxThrowExpr().bind("throw"));
-StatementMatcher CatchMatcher = findAll(cxxCatchStmt().bind("catch"));
-StatementMatcher TryMatcher = findAll(cxxTryStmt().bind("try"));
 
 std::optional<bool> isInside(const Stmt *Candidate, const Stmt *Container) {
   SourceRange CandidateRange = Candidate->getSourceRange();
@@ -108,321 +38,218 @@ std::optional<bool> isInside(const Stmt *Candidate, const Stmt *Container) {
   return ContainerRange.fullyContains(CandidateRange);
 }
 
-class ExceptionInfoConsumer {
-public:
-  ExceptionInfoConsumer(ExceptionInfo &EI, SourceManager &SM)
-      : EI(EI), SM(SM) {}
+// NOTE: this function is copied from clang/SemaExprCXX.cpp
+static void
+collectPublicBases(CXXRecordDecl *RD,
+                   llvm::DenseMap<CXXRecordDecl *, unsigned> &SubobjectsSeen,
+                   llvm::SmallPtrSetImpl<CXXRecordDecl *> &VBases,
+                   llvm::SetVector<CXXRecordDecl *> &PublicSubobjectsSeen,
+                   bool ParentIsPublic) {
+  for (const CXXBaseSpecifier &BS : RD->bases()) {
+    CXXRecordDecl *BaseDecl = BS.getType()->getAsCXXRecordDecl();
+    bool NewSubobject;
+    // Virtual bases constitute the same subobject.  Non-virtual bases are
+    // always distinct subobjects.
+    if (BS.isVirtual())
+      NewSubobject = VBases.insert(BaseDecl).second;
+    else
+      NewSubobject = true;
 
-protected:
-  ExceptionInfo &EI;
-  SourceManager &SM;
-};
+    if (NewSubobject)
+      ++SubobjectsSeen[BaseDecl];
 
-class CalledFunctions : public ExceptionInfoConsumer,
-                        public MatchFinder::MatchCallback {
-public:
-  CalledFunctions(ExceptionInfo &EI, SourceManager &SM)
-      : ExceptionInfoConsumer(EI, SM) {}
-  virtual void run(const MatchFinder::MatchResult &Result) override {
-    const Expr *Expr = nullptr;
-    const FunctionDecl *Callee = nullptr;
+    // Only add subobjects which have public access throughout the entire chain.
+    bool PublicPath = ParentIsPublic && BS.getAccessSpecifier() == AS_public;
+    if (PublicPath)
+      PublicSubobjectsSeen.insert(BaseDecl);
 
-    if (const CallExpr *Call =
-            Result.Nodes.getNodeAs<clang::CallExpr>("invocation")) {
-      Expr = Call;
-      Callee = Call->getDirectCallee();
-    } else if (const CXXConstructExpr *CTOR =
-                   Result.Nodes.getNodeAs<clang::CXXConstructExpr>(
-                       "invocation")) {
-      Expr = CTOR;
-      Callee = CTOR->getConstructor();
+    // Recurse on to each base subobject.
+    collectPublicBases(BaseDecl, SubobjectsSeen, VBases, PublicSubobjectsSeen,
+                       PublicPath);
+  }
+}
+
+// NOTE: this function is copied from clang/SemaExprCXX.cpp
+static void getUnambiguousPublicSubobjects(
+    CXXRecordDecl *RD, llvm::SmallVectorImpl<CXXRecordDecl *> &Objects) {
+  llvm::DenseMap<CXXRecordDecl *, unsigned> SubobjectsSeen;
+  llvm::SmallSet<CXXRecordDecl *, 2> VBases;
+  llvm::SetVector<CXXRecordDecl *> PublicSubobjectsSeen;
+  SubobjectsSeen[RD] = 1;
+  PublicSubobjectsSeen.insert(RD);
+  collectPublicBases(RD, SubobjectsSeen, VBases, PublicSubobjectsSeen,
+                     /*ParentIsPublic=*/true);
+
+  for (CXXRecordDecl *PublicSubobject : PublicSubobjectsSeen) {
+    // Skip ambiguous objects.
+    if (SubobjectsSeen[PublicSubobject] > 1)
+      continue;
+
+    Objects.push_back(PublicSubobject);
+  }
+}
+
+void printNoexceptSuggestion(const FunctionDecl *FD,
+                             const ExceptionContext &EC) {
+  // exception specification if noexcept false if there are any uncaught
+  // throws, otherwise it is the and-combined noexcept specification of the
+  // called functions
+  if (FD->getExceptionSpecType() == clang::EST_BasicNoexcept ||
+      FD->getExceptionSpecType() == clang::EST_NoexceptTrue) {
+    llvm::outs() << "The function is already marked noexcept!\n";
+    return;
+  }
+
+  const ExceptionInfo &EI = EC.ExInfoIndex.at(FD);
+  auto PotentiallyThrowingCalls = llvm::SmallVector<const FunctionDecl *>();
+  for (const auto &Call : EI.Calls) {
+    if (Call.Callee->getExceptionSpecType() == clang::EST_BasicNoexcept ||
+        Call.Callee->getExceptionSpecType() == clang::EST_NoexceptTrue) {
+      continue;
     }
+    PotentiallyThrowingCalls.push_back(Call.Callee);
+  }
+  if (PotentiallyThrowingCalls.empty()) {
+    llvm::outs() << "The function has only noexcept callees!\n";
+    return;
+  }
 
-    if (!Expr || !Callee) {
-      return;
+  llvm::outs() << "Exception specification: noexcept(";
+  bool first = true;
+  for (const auto &Call : PotentiallyThrowingCalls) {
+    if (!first) {
+      llvm::outs() << " && ";
     }
-
-    std::string Name =
-        CrossTranslationUnitContext::getLookupName(Callee).value_or(
-            "<no-lookup-name>");
-    EI.Calls.push_back(
-        {Expr, Callee, Name, Expr->getSourceRange().printToString(SM)});
+    first = false;
+    llvm::outs() << "noexcept(";
+    llvm::outs() << EC.ShortNameIndex.at(Call) << "()";
+    llvm::outs() << ")";
   }
-};
+  llvm::outs() << ")";
+}
 
-class ThrownExceptions : public ExceptionInfoConsumer,
-                         public MatchFinder::MatchCallback {
-public:
-  ThrownExceptions(ExceptionInfo &EI, SourceManager &SM)
-      : ExceptionInfoConsumer(EI, SM) {}
-  virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CXXThrowExpr *Throw =
-            Result.Nodes.getNodeAs<clang::CXXThrowExpr>("throw")) {
-      bool IsRethrow = Throw->getSubExpr() == nullptr;
-      std::string Description;
-      if (IsRethrow)
-        Description = "rethrow";
-      else {
-        const QualType CT = Throw->getSubExpr()->getType();
-        if (CT.isNull()) {
-          Description = "nulltype";
-        } else {
-          Description = CT.getAsString();
-        }
-      }
-      EI.Throws.push_back({Throw, IsRethrow, Description,
-                           Throw->getSourceRange().printToString(SM)});
-    }
-  }
-};
+void printExceptionInfoRec(const FunctionDecl *FD, const ExceptionContext &EC,
+                           int IndentLevel = 0, bool ShowLocation = false) {
+  const ExceptionInfo &EI = EC.ExInfoIndex.at(FD);
+  std::string Indent(2 * IndentLevel, ' ');
 
-class CaughtExceptions : public ExceptionInfoConsumer,
-                         public MatchFinder::MatchCallback {
-public:
-  CaughtExceptions(ExceptionInfo &EI, SourceManager &SM)
-      : ExceptionInfoConsumer(EI, SM) {}
-  virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CXXCatchStmt *Catch =
-            Result.Nodes.getNodeAs<clang::CXXCatchStmt>("catch")) {
-      bool IsCatchAll = Catch->getExceptionDecl() == nullptr;
-      std::string Description;
-      if (IsCatchAll)
-        Description = "...";
-      else {
-        const QualType CT = Catch->getExceptionDecl()->getType();
-        if (CT.isNull()) {
-          Description = "nulltype";
-        } else {
-          Description = CT.getAsString();
-        }
-      }
-      EI.Catches.push_back({Catch, IsCatchAll, Description,
-                            Catch->getSourceRange().printToString(SM)});
-    }
-  }
-};
-
-class TryBlocks : public ExceptionInfoConsumer,
-                  public MatchFinder::MatchCallback {
-public:
-  TryBlocks(ExceptionInfo &EI, SourceManager &SM)
-      : ExceptionInfoConsumer(EI, SM) {}
-  virtual void run(const MatchFinder::MatchResult &Result) override {
-    if (const CXXTryStmt *Try =
-            Result.Nodes.getNodeAs<clang::CXXTryStmt>("try")) {
-      EI.Tries.push_back({Try, Try->getSourceRange().printToString(SM)});
-    }
-  }
-};
-
-class FunctionMapConsumer : public ASTConsumer {
-public:
-  FunctionMapConsumer(ASTContext &Context, ExceptionContext &EC)
-      : AC(Context), SM(Context.getSourceManager()), EC(EC) {}
-
-  ~FunctionMapConsumer() {
-    // Flush results to standard output.
-    // llvm::outs() << createCrossTUIndexString(Index);
+  if (IndentLevel == 0) {
+    llvm::outs() << Indent << "Name:\n";
+    llvm::outs() << Indent << EC.ShortNameIndex.at(FD) << "\n";
   }
 
-  void HandleTranslationUnit(ASTContext &Context) override {
-    handleDecl(Context.getTranslationUnitDecl());
-  }
+  if (!EI.Tries.empty()) {
+    llvm::outs() << Indent << "tries:\n";
 
-private:
-  void handleFunction(const FunctionDecl *FD) {
-
-    llvm::outs() << "Function: \n";
-    FD->print(llvm::outs());
-    llvm::outs() << "\n";
-
-    llvm::outs() << "Postorder callees: \n";
-    clang::CallGraph CG;
-    CG.addToCallGraph(const_cast<TranslationUnitDecl *>(FD->getTranslationUnitDecl()));
-
-    std::set<CallGraphNode *> SeenNodes;
-    std::vector<CallGraphNode *> Postorder;
-
-    auto postorder = [&](CallGraphNode *Node) {
-      auto postorder_impl = [&](CallGraphNode *Node, auto &impl) -> void {
-        Node->dump();
-        SeenNodes.insert(Node);
-        for (CallGraphNode::iterator I = Node->begin(), E = Node->end(); I != E;
-             ++I) {
-          CallGraphNode *Callee = *I;
-          if (SeenNodes.count(Callee) == 0) {
-            impl(Callee, impl);
-          }
-        }
-        Postorder.push_back(Node);
-      };
-      postorder_impl(Node, postorder_impl);
-    };
-
-    postorder(CG.getNode(FD));
-
-    for (CallGraphNode *Node : Postorder) {
-      llvm::outs() << "Node: ";
-      Node->print(llvm::outs());
+    for (const TryInfo &Try : EI.Tries) {
+      llvm::outs() << Indent << "  - " << Try.Stmt;
+      if (ShowLocation)
+        llvm::outs() << "@" << Try.Location;
       llvm::outs() << "\n";
     }
+  }
 
-    return;
-
-    EC.FunctionsVisited.insert(FD);
-
-    std::optional<std::string> LookupName =
-        CrossTranslationUnitContext::getLookupName(FD);
-    std::string CallerName = LookupName.value_or("<no-name>");
-    EC.NameIndex[FD] = CallerName;
-    EC.ShortNameIndex[FD] = FD->getNameAsString();
-    Stmt *Body = FD->getBody();
-    if (!Body)
-      return;
-
-    auto BO = clang::CFG::BuildOptions{};
-    BO.AddEHEdges = true;
-    // BO.setAllAlwaysAdd();
-
-    std::unique_ptr<CFG> FDCFG = clang::CFG::buildCFG(FD, Body, &AC, BO);
-
-    if (!FDCFG) {
-      return;
-    }
-
-    FDCFG->viewCFG(LangOptions());
-
-    // do a forward dataflow analysis with a worklist algorithm
-    // I want to compute noexcept specification for the function by going over
-    // the statements and try and catch blocks. at the end i want to have
-    // noexcept false if there are any uncaught throws, otherwise it is the
-    // and-combined noexcept specification of the called functions
-
-    auto &Entry = FDCFG->getEntry();
-    std::queue<const CFGBlock *> Worklist;
-
-    for (auto &&Starts : Entry.succs()) {
-      Worklist.push(Starts);
-    }
-
-    // dataflow domain for statements
-    struct ThrowInfo {
-      std::set<Stmt *> FunctionCallsThatCanInfluenceNoexcept;
-      constexpr bool operator==(const ThrowInfo &Other) const {
-        return FunctionCallsThatCanInfluenceNoexcept ==
-               Other.FunctionCallsThatCanInfluenceNoexcept;
-      }
-    };
-    std::map<const Stmt *, ThrowInfo> Throws;
-
-    while (!Worklist.empty()) {
-      const CFGBlock *Current = Worklist.front();
-      Worklist.pop();
-
-      auto IsTryCFGBlock = [](const CFGBlock *Current) {
-        const Stmt *TerminatorStmt = Current->getTerminatorStmt();
-        if (!TerminatorStmt)
-          return false;
-        return TerminatorStmt->getStmtClass() == Stmt::CXXTryStmtClass;
-      };
-      // dump the CFGBlock if it is a catch block
-      if (IsTryCFGBlock(Current)) {
-        Current->dump();
-        llvm::errs() << Current->getTerminatorStmt()->getStmtClassName()
-                     << "\n";
-      }
-
-      for (const CFGBlock *Succ : Current->succs()) {
-        Worklist.push(Succ);
-      }
-    }
-
-    return;
-
-    EC.BodyIndex[FD] = Body;
-    EC.IsInMainFileIndex[FD] = SM.isInMainFile(FD->getLocation());
-
-    MatchFinder MF;
-    ExceptionInfo EI;
-    auto CallAction = std::make_unique<CalledFunctions>(EI, SM);
-    auto ThrowAction = std::make_unique<ThrownExceptions>(EI, SM);
-    auto CatchAction = std::make_unique<CaughtExceptions>(EI, SM);
-    auto TryAction = std::make_unique<TryBlocks>(EI, SM);
-    MF.addMatcher(CallMatcher, CallAction.get());
-    MF.addMatcher(ThrowMatcher, ThrowAction.get());
-    MF.addMatcher(CatchMatcher, CatchAction.get());
-    MF.addMatcher(TryMatcher, TryAction.get());
-    MF.match(*Body, AC);
-
-    EC.ExInfoIndex[FD] = EI;
-
-    for (const CallInfo &CI : EI.Calls) {
-      const FunctionDecl *Callee = CI.Callee;
-
-      auto [_, emplaced] = SeenFunctions.insert(Callee);
-      if (emplaced) {
-        ExplorationWorklist.push(Callee);
+  // -------------------
+  // Matching exceptions
+  // -------------------
+  // Each try block associates with a number of handlers, these handlers form a
+  // handler sequence. When an exception is thrown from a try block, the
+  // handlers in the sequence are tried in order of appearance to match the
+  // exception. A handler is a match for an exception object of type E if any of
+  // the following conditions is satisfied:
+  //   - The handler is of type “possibly cv-qualified T” or “lvalue reference
+  //   to possibly cv-qualified T”, and any of the following conditions is
+  //   satisfied:
+  //     - E and T are the same type (ignoring the top-level cv-qualifiers).
+  //     - T is an unambiguous public base class of E.
+  // The handler is of type “possibly cv-qualified T” or const T& where T is a
+  // pointer or pointer-to-member type, and any of the following conditions is
+  // satisfied: E is a pointer or pointer-to-member type that can be converted
+  // to T by at least one of the following conversions:
+  //   - A standard pointer conversion not involving conversions to pointers to
+  //   private or protected or ambiguous classes.
+  //   - A function pointer conversion. (since C++17)
+  //   - A qualification conversion.
+  //   - E is std::nullptr_t. (since C++11)
+  //
+  // source: https://en.cppreference.com/w/cpp/language/catch
+  //
+  auto UncaughtThrows = EI.Throws;
+  if (!EI.Throws.empty()) {
+    for (const ThrowInfo &Throw : EI.Throws) {
+      // if a throw statement is inside a try statement, then
+      // lets examine all the catch statements, and if a catch statement
+      // matches the throw type, then lets remove the throw statement
+      // from the list of throws.
+      // FIXME: this is ugly
+      for (const TryInfo &Try : EI.Tries) {
+        if (isInside(Throw.Expr, Try.Stmt)) {
+          for (const CatchInfo &Catch : EI.Catches) {
+            if (isInside(Catch.Stmt, Try.Stmt)) {
+              bool CanBeCaught = false;
+              if (Catch.Stmt->getCaughtType() ==
+                  Throw.Expr->getSubExpr()->getType()) {
+                CanBeCaught = true;
+              } else {
+                if (Throw.Expr->getSubExpr() == nullptr) {
+                  llvm::outs() << "This is a rethrow, TODO\n";
+                } else {
+                  CXXRecordDecl *CatchRecordType =
+                      Catch.Stmt->getCaughtType()->getAsCXXRecordDecl();
+                  CXXRecordDecl *ThrowRecordType =
+                      Throw.Expr->getSubExpr()->getType()->getAsCXXRecordDecl();
+                  if (CatchRecordType && ThrowRecordType) {
+                    llvm::SmallVector<clang::CXXRecordDecl *>
+                        UnambiguousPublicSubobjects;
+                    getUnambiguousPublicSubobjects(ThrowRecordType,
+                                                   UnambiguousPublicSubobjects);
+                    CanBeCaught = llvm::is_contained(
+                        UnambiguousPublicSubobjects, CatchRecordType);
+                  }
+                }
+              }
+              if (CanBeCaught) {
+                UncaughtThrows.erase(
+                    std::find_if(UncaughtThrows.begin(), UncaughtThrows.end(),
+                                 [TE = Throw.Expr](const ThrowInfo &TI) {
+                                   return TE == TI.Expr;
+                                 }));
+              }
+            }
+          }
+        }
       }
     }
   }
 
-  void handleDecl(const Decl *D) {
-    if (!D)
-      return;
+  llvm::outs() << Indent << "uncaught throws:\n";
+  for (const ThrowInfo &Throw : UncaughtThrows) {
+    llvm::outs() << Indent << "  - " << Throw.Description;
+    if (ShowLocation)
+      llvm::outs() << "@" << Throw.Location;
+    llvm::outs() << "\n";
+  }
 
-    if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-      handleFunction(FD);
-    }
+  if (!EI.Catches.empty()) {
+    llvm::outs() << Indent << "catches:\n";
+    for (const CatchInfo &Catch : EI.Catches) {
+      llvm::outs() << Indent << "  - " << Catch.Description;
 
-    if (const DeclContext *DC = dyn_cast<DeclContext>(D)) {
-      for (const Decl *SubDecl : DC->decls()) {
-        handleDecl(SubDecl);
-      }
-    }
-
-    while (!ExplorationWorklist.empty()) {
-      const FunctionDecl *FD = ExplorationWorklist.front();
-      handleFunction(FD);
-      ExplorationWorklist.pop();
+      if (ShowLocation)
+        llvm::outs() << "@" << Catch.Location;
+      llvm::outs() << "\n";
     }
   }
 
-  ASTContext &AC;
-  SourceManager &SM;
-  ExceptionContext &EC;
-  std::set<const FunctionDecl *> SeenFunctions;
-  std::queue<const FunctionDecl *> ExplorationWorklist;
-};
-
-class CollectFunctionDeclsAction : public ASTFrontendAction {
-public:
-  CollectFunctionDeclsAction(ExceptionContext &Index) : Index(Index) {}
-
-protected:
-  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
-                                                 llvm::StringRef) override {
-    return std::make_unique<FunctionMapConsumer>(CI.getASTContext(), Index);
-  }
-
-private:
-  ExceptionContext &Index;
-};
-
-std::unique_ptr<FrontendActionFactory>
-newCollectFunctionDeclsFactory(ExceptionContext &EC) {
-  class CollectFunctionDecslActionFactory : public FrontendActionFactory {
-  public:
-    CollectFunctionDecslActionFactory(ExceptionContext &EC) : EC(EC) {}
-    std::unique_ptr<FrontendAction> create() override {
-      return std::make_unique<CollectFunctionDeclsAction>(EC);
+  if (!EI.Calls.empty()) {
+    llvm::outs() << Indent << "calls:\n";
+    for (const CallInfo &Call : EI.Calls) {
+      llvm::outs() << Indent << "  - " << EC.ShortNameIndex.at(Call.Callee);
+      if (ShowLocation)
+        llvm::outs() << "@" << Call.Location;
+      llvm::outs() << "\n";
     }
-
-  private:
-    ExceptionContext &EC;
-  };
-
-  return std::unique_ptr<FrontendActionFactory>(
-      new CollectFunctionDecslActionFactory(EC));
+  }
 }
 
 int main(int argc, const char **argv) {
@@ -467,145 +294,19 @@ int main(int argc, const char **argv) {
   ClangTool Tool(*CompDB, CompDB->getAllFiles());
 
   ExceptionContext EC;
-  auto FunctionCollector = std::make_unique<CollectFunctionDeclsAction>(EC);
+  auto FunctionCollector = std::make_unique<ExceptionScanAction>(EC);
 
-  int result = Tool.run(newCollectFunctionDeclsFactory(EC).get());
+  int result = Tool.run(newExceptionScanActionFactory(EC).get());
 
-  bool ShowLocation = true;
-
-  llvm::outs() << '\n';
   for (const auto &FD : EC.FunctionsVisited) {
-
-    if (!EC.IsInMainFileIndex[FD])
+    if (!EC.IsInMainFileIndex.at(FD))
       continue;
 
-    const ExceptionInfo &EI = EC.ExInfoIndex[FD];
+    llvm::outs() << "Exception Info:\n";
+    printExceptionInfoRec(FD, EC);
 
-    auto UncaughtThrows = EI.Throws;
-
-    auto rec_print_ei = [&](const FunctionDecl *FD, int level = 0) {
-      llvm::outs() << "Function:\n";
-
-      // ASTDumper P(llvm::outs(), /*ShowColors=*/false);
-      // P.Visit(FD->getBody());
-
-      auto rec_print_ei_impl = [&](const FunctionDecl *FD, int level,
-                                   auto &rec_ref) -> void {
-        std::string indent(2 * level, ' ');
-
-        if (level == 0) {
-          llvm::outs() << indent << "Name:\n";
-          llvm::outs() << indent << EC.ShortNameIndex[FD] << "\n";
-        }
-
-        if (!EI.Tries.empty()) {
-          llvm::outs() << indent << "tries:\n";
-
-          for (const TryInfo &Try : EI.Tries) {
-            llvm::outs() << indent << "  - " << Try.Stmt;
-            if (ShowLocation)
-              llvm::outs() << "@" << Try.Location;
-            llvm::outs() << "\n";
-          }
-        }
-
-        if (!EI.Throws.empty()) {
-          for (const ThrowInfo &Throw : EI.Throws) {
-            // if a throw statement is inside a try statement, then
-            // lets examine all the catch statements, and if a catch statement
-            // matches the throw type, then lets remove the throw statement
-            // from the list of throws.
-            // FIXME: this is ugly
-            for (const TryInfo &Try : EI.Tries) {
-              if (isInside(Throw.Expr, Try.Stmt)) {
-                for (const CatchInfo &Catch : EI.Catches) {
-                  if (isInside(Catch.Stmt, Try.Stmt)) {
-                    if (Catch.Stmt->getCaughtType() ==
-                        Throw.Expr->getSubExpr()->getType()) {
-                      const auto &AsConst = std::as_const(UncaughtThrows);
-                      UncaughtThrows.erase(
-                          std::find_if(AsConst.begin(), AsConst.end(),
-                                       [TE = Throw.Expr](const ThrowInfo &TI) {
-                                         return TE == TI.Expr;
-                                       }));
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          llvm::outs() << indent << "uncaught throws:\n";
-          for (const ThrowInfo &Throw : UncaughtThrows) {
-            llvm::outs() << indent << "  - " << Throw.Description;
-            if (ShowLocation)
-              llvm::outs() << "@" << Throw.Location;
-            llvm::outs() << "\n";
-          }
-        }
-
-        if (!EI.Catches.empty()) {
-          llvm::outs() << indent << "catches:\n";
-          for (const CatchInfo &Catch : EI.Catches) {
-            llvm::outs() << indent << "  - " << Catch.Description;
-
-            if (ShowLocation)
-              llvm::outs() << "@" << Catch.Location;
-            llvm::outs() << "\n";
-          }
-        }
-
-        if (!EI.Calls.empty()) {
-          llvm::outs() << indent << "calls:\n";
-          for (const CallInfo &Call : EI.Calls) {
-            llvm::outs() << indent << "  - " << EC.ShortNameIndex[Call.Callee];
-            if (ShowLocation)
-              llvm::outs() << "@" << Call.Location;
-            llvm::outs() << "\n";
-
-            //rec_ref(Call.Callee, level + 1, rec_ref);
-          }
-        }
-      };
-      rec_print_ei_impl(FD, level, rec_print_ei_impl);
-    };
-
-    rec_print_ei(FD);
-
-    // exception specification if noexcept false if there are any uncaught
-    // throws, otherwise it is the and-combined noexcept specification of the
-    // called functions
-    llvm::outs() << "Exception specification:\n";
-
-    llvm::outs() << "  noexcept";
-    if (FD->getExceptionSpecType() == clang::EST_BasicNoexcept ||
-        FD->getExceptionSpecType() == clang::EST_NoexceptTrue) {
-      continue;
-    }
-
-    auto PotentiallyThrowingCalls = llvm::SmallVector<const FunctionDecl *>();
-    for (const auto &Call : EI.Calls) {
-      if (Call.Callee->getExceptionSpecType() == clang::EST_BasicNoexcept ||
-          Call.Callee->getExceptionSpecType() == clang::EST_NoexceptTrue) {
-        continue;
-      }
-      PotentiallyThrowingCalls.push_back(Call.Callee);
-    }
-    if (PotentiallyThrowingCalls.empty()) {
-      continue;
-    }
-    llvm::outs() << "(";
-    bool first = true;
-    for (const auto &Call : PotentiallyThrowingCalls) {
-      if (!first) {
-        llvm::outs() << " && ";
-      }
-      first = false;
-      llvm::outs() << "noexcept(";
-      llvm::outs() << EC.ShortNameIndex[Call] << "()";
-      llvm::outs() << ")";
-    }
-    llvm::outs() << ")";
+    llvm::outs() << "\nNoexcept Suggestion:\n";
+    printNoexceptSuggestion(FD, EC);
   }
 
   return result;
