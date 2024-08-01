@@ -284,8 +284,9 @@ void ento::registerPthreadLockChecker(CheckerManager &CM) {
       LibraryKind::Pthread, SemanticsKind::PthreadSemantics});
   RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_unlock"}),
                                 EventKind::Release, LibraryKind::Pthread});
-  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_destroy"}),
-                                EventKind::Destroy, LibraryKind::Pthread});
+  RegisterEvent(
+      EventDescriptor{MakeFirstArgExtractor({"pthread_mutex_destroy"}),
+                      EventKind::Destroy, LibraryKind::Pthread});
 }
 
 bool ento::shouldRegisterPthreadLockChecker(const CheckerManager &CM) {
@@ -318,6 +319,8 @@ void ento::registerC11LockChecker(CheckerManager &CM) {
   RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"lck_mtx_unlock"}),
                                 EventKind::Release, LibraryKind::C11,
                                 SemanticsKind::XNUSemantics});
+  RegisterEvent(EventDescriptor{MakeFirstArgExtractor({"lck_mtx_destroy"}, 2),
+                                EventKind::Destroy, LibraryKind::C11});
 }
 
 bool ento::shouldRegisterC11LockChecker(const CheckerManager &CM) {
