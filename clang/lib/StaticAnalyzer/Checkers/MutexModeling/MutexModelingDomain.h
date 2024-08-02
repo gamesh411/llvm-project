@@ -33,9 +33,9 @@ enum class EventKind { Init, Acquire, TryAcquire, Release, Destroy };
 // checked mutex event the library that event came from. In order to keep the
 // external API of multiple distinct checkers (PthreadLockChecker,
 // FuchsiaLockChecker and C11LockChecker), this mapping is done here, but if
-// more consumers of this modeling arise, adding all of them here may note be
+// more consumers of this modeling arise, adding all of them here may not be
 // feasible and we may need to make this modeling more flexible.
-enum class LibraryKind { Pthread = 0, Fuchsia, C11, NumLibraryKinds };
+enum class LibraryKind { NotApplicable = 0, Pthread, Fuchsia, C11 };
 
 enum class SemanticsKind { NotApplicable = 0, PthreadSemantics, XNUSemantics };
 
