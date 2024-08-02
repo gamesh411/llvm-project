@@ -45,15 +45,7 @@ public:
   bool ChecksEnabled[CK_NumCheckKinds] = {false};
   CheckerNameRef CheckNames[CK_NumCheckKinds];
 
-  PthreadLockChecker() { RegisterEvents(); }
-
 private:
-  std::vector<EventDescriptor> EventsToModel{};
-  void RegisterEvents() const {
-    for (auto &&Event : EventsToModel) {
-      RegisterEvent(Event);
-    }
-  }
   void reportBug(CheckerContext &C, std::unique_ptr<BugType> BT[],
                  const Expr *MtxExpr, CheckerKind CheckKind,
                  StringRef Desc) const;
@@ -86,28 +78,33 @@ private:
                                         "Lock order reversal", "Lock checker"});
   }
 
-  [[nodiscard]] constexpr PthreadLockChecker::CheckerKind
+  [[nodiscard]] constexpr std::optional<PthreadLockChecker::CheckerKind>
   detectCheckerKind(mutex_modeling::EventMarker EV) const noexcept {
     switch (EV.Library) {
-    case mutex_modeling::LibraryKind::Pthread:
-      return PthreadLockChecker::CK_PthreadLockChecker;
-    case mutex_modeling::LibraryKind::Fuchsia:
-      return PthreadLockChecker::CK_FuchsiaLockChecker;
-    case mutex_modeling::LibraryKind::C11:
-      return PthreadLockChecker::CK_C11LockChecker;
     default:
-      llvm_unreachable("Unknown locking library");
+      return std::nullopt;
+    case mutex_modeling::LibraryKind::Pthread:
+      return {PthreadLockChecker::CK_PthreadLockChecker};
+    case mutex_modeling::LibraryKind::Fuchsia:
+      return {PthreadLockChecker::CK_FuchsiaLockChecker};
+    case mutex_modeling::LibraryKind::C11:
+      return {PthreadLockChecker::CK_C11LockChecker};
     }
   }
 
-  void checkInitEvent(const EventMarker &LastEvent, CheckerContext &C) const;
-  void checkAcquireEvent(const EventMarker &LastEvent, CheckerContext &C) const;
-  void checkReleaseEvent(const EventMarker &LastEvent, CheckerContext &C) const;
-  void checkDestroyEvent(const EventMarker &LastEvent, CheckerContext &C) const;
+  void checkInitEvent(const EventMarker &LastEvent, CheckerKind Checker,
+                      CheckerContext &C) const;
+  void checkAcquireEvent(const EventMarker &LastEvent, CheckerKind Checker,
+                         CheckerContext &C) const;
+  void checkReleaseEvent(const EventMarker &LastEvent, CheckerKind Checker,
+                         CheckerContext &C) const;
+  void checkDestroyEvent(const EventMarker &LastEvent, CheckerKind Checker,
+                         CheckerContext &C) const;
 };
 } // end anonymous namespace
 
 void PthreadLockChecker::checkInitEvent(const EventMarker &LastEvent,
+                                        CheckerKind Checker,
                                         CheckerContext &C) const {
   ProgramStateRef State = C.getState();
 
@@ -119,79 +116,74 @@ void PthreadLockChecker::checkInitEvent(const EventMarker &LastEvent,
   }
 
   if (*LockState == LockStateKind::Error_DoubleInit) {
-    reportBug(C, BT_initlock, LastEvent.EventExpr, detectCheckerKind(LastEvent),
+    reportBug(C, BT_initlock, LastEvent.EventExpr, Checker,
               "This lock has already been initialized");
   } else if (*LockState == LockStateKind::Error_DoubleInitWhileLocked) {
-    reportBug(C, BT_initlock, LastEvent.EventExpr, detectCheckerKind(LastEvent),
+    reportBug(C, BT_initlock, LastEvent.EventExpr, Checker,
               "This lock is still being held");
   }
 }
 
 void PthreadLockChecker::checkAcquireEvent(const EventMarker &LastEvent,
+                                           CheckerKind Checker,
                                            CheckerContext &C) const {
   ProgramStateRef State = C.getState();
 
   const LockStateKind *const LockState =
       State->get<LockStates>(LastEvent.MutexRegion);
 
-  if (!LockState) {
+  if (!LockState)
     return;
-  }
 
   if (*LockState == LockStateKind::Error_DoubleLock) {
-    reportBug(C, BT_doublelock, LastEvent.EventExpr,
-              detectCheckerKind(LastEvent),
+    reportBug(C, BT_doublelock, LastEvent.EventExpr, Checker,
               "This lock has already been acquired");
   } else if (*LockState == LockStateKind::Error_LockDestroyed) {
-    reportBug(C, BT_destroylock, LastEvent.EventExpr,
-              detectCheckerKind(LastEvent),
+    reportBug(C, BT_destroylock, LastEvent.EventExpr, Checker,
               "This lock has already been destroyed");
   }
 }
 
 void PthreadLockChecker::checkReleaseEvent(const EventMarker &LastEvent,
+                                           CheckerKind Checker,
                                            CheckerContext &C) const {
   ProgramStateRef State = C.getState();
 
   const LockStateKind *const LockState =
       State->get<LockStates>(LastEvent.MutexRegion);
 
-  if (!LockState) {
+  if (!LockState)
     return;
-  }
 
   if (*LockState == LockStateKind::Error_DoubleUnlock) {
-    reportBug(C, BT_doubleunlock, LastEvent.EventExpr,
-              detectCheckerKind(LastEvent),
+    reportBug(C, BT_doubleunlock, LastEvent.EventExpr, Checker,
               "This lock has already been unlocked");
   } else if (*LockState == LockStateKind::Error_UnlockDestroyed) {
-    reportBug(C, BT_destroylock, LastEvent.EventExpr,
-              detectCheckerKind(LastEvent),
+    reportBug(C, BT_destroylock, LastEvent.EventExpr, Checker,
               "This lock has already been destroyed");
   } else if (*LockState == LockStateKind::Error_LockReversal) {
-    reportBug(C, BT_lor, LastEvent.EventExpr, detectCheckerKind(LastEvent),
+    reportBug(C, BT_lor, LastEvent.EventExpr, Checker,
               "This was not the most recently acquired lock. Possible lock "
               "order reversal");
   }
 }
 
 void PthreadLockChecker::checkDestroyEvent(const EventMarker &LastEvent,
+                                           CheckerKind Checker,
                                            CheckerContext &C) const {
   ProgramStateRef State = C.getState();
 
   const LockStateKind *const LockState =
       State->get<LockStates>(LastEvent.MutexRegion);
 
-  if (!LockState || *LockState == LockStateKind::Destroyed) {
+  if (!LockState || *LockState == LockStateKind::Destroyed)
     return;
-  }
 
   if (*LockState == LockStateKind::Error_DestroyLocked) {
-    reportBug(C, BT_destroylock, LastEvent.EventExpr,
-              detectCheckerKind(LastEvent), "This lock is still locked");
+    reportBug(C, BT_destroylock, LastEvent.EventExpr, Checker,
+              "This lock is still locked");
   } else if (*LockState == LockStateKind::Error_DoubleDestroy)
-    reportBug(C, BT_destroylock, LastEvent.EventExpr,
-              detectCheckerKind(LastEvent),
+    reportBug(C, BT_destroylock, LastEvent.EventExpr, Checker,
               "This lock has already been destroyed");
 }
 
@@ -202,28 +194,29 @@ void PthreadLockChecker::checkPostCall(const CallEvent &Call,
 
   const auto &MTXEvents = State->get<MutexEvents>();
 
-  if (MTXEvents.isEmpty()) {
+  if (MTXEvents.isEmpty())
     return;
-  }
 
   const auto &LastEvent = MTXEvents.getHead();
 
-  if (!ChecksEnabled[detectCheckerKind(LastEvent)])
+  std::optional<CheckerKind> Checker = detectCheckerKind(LastEvent);
+
+  if (!Checker || !ChecksEnabled[*Checker])
     return;
 
   switch (LastEvent.Kind) {
   case EventKind::Init:
-    checkInitEvent(LastEvent, C);
+    checkInitEvent(LastEvent, *Checker, C);
     break;
   case EventKind::Acquire:
   case EventKind::TryAcquire:
-    checkAcquireEvent(LastEvent, C);
+    checkAcquireEvent(LastEvent, *Checker, C);
     break;
   case EventKind::Release:
-    checkReleaseEvent(LastEvent, C);
+    checkReleaseEvent(LastEvent, *Checker, C);
     break;
   case EventKind::Destroy:
-    checkDestroyEvent(LastEvent, C);
+    checkDestroyEvent(LastEvent, *Checker, C);
     break;
   }
 }
