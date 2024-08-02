@@ -88,6 +88,25 @@ void BlockInCriticalSectionChecker::checkPostCall(const CallEvent &Call,
 // Checker registration
 void ento::registerBlockInCriticalSectionChecker(CheckerManager &mgr) {
   mgr.registerChecker<BlockInCriticalSectionChecker>();
+  RegisterEvent(EventDescriptor{
+      mutex_modeling::MakeMemberExtractor({"std", "mutex", "lock"}),
+      EventKind::Acquire, LibraryKind::NotApplicable,
+      SemanticsKind::XNUSemantics});
+  RegisterEvent(EventDescriptor{
+      mutex_modeling::MakeMemberExtractor({"std", "mutex", "unlock"}),
+      EventKind::Release});
+  RegisterEvent(EventDescriptor{
+      mutex_modeling::MakeRAIILockExtractor("lock_guard"), EventKind::Acquire,
+      LibraryKind::NotApplicable, SemanticsKind::XNUSemantics});
+  RegisterEvent(
+      EventDescriptor{mutex_modeling::MakeRAIIReleaseExtractor("lock_guard"),
+                      EventKind::Release});
+  RegisterEvent(EventDescriptor{
+      mutex_modeling::MakeRAIILockExtractor("scoped_lock"), EventKind::Acquire,
+      LibraryKind::NotApplicable, SemanticsKind::XNUSemantics});
+  RegisterEvent(
+      EventDescriptor{mutex_modeling::MakeRAIIReleaseExtractor("scoped_lock"),
+                      EventKind::Release});
 }
 
 bool ento::shouldRegisterBlockInCriticalSectionChecker(
