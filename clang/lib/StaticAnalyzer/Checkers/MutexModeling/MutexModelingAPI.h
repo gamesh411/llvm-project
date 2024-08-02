@@ -54,8 +54,8 @@ MakeFirstArgExtractor(ArrayRef<StringRef> NameParts, int NumArgsRequired = 1,
 }
 
 inline auto MakeMemberExtractor(ArrayRef<StringRef> NameParts,
-                                int NumArgsRequired = 1,
-                                CallDescription::Mode MatchAs = CDM::CLibrary) {
+                                int NumArgsRequired = 0,
+                                CallDescription::Mode MatchAs = CDM::CXXMethod) {
   return MemberMutexExtractor{
       CallDescription{MatchAs, NameParts, NumArgsRequired}};
 }
