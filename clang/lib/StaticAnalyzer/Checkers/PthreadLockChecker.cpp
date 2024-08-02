@@ -170,7 +170,8 @@ void PthreadLockChecker::checkReleaseEvent(const EventMarker &LastEvent,
               "This lock has already been destroyed");
   } else if (*LockState == LockStateKind::Error_LockReversal) {
     reportBug(C, BT_lor, LastEvent.EventExpr, detectCheckerKind(LastEvent),
-              "This was not the most recently acquired lock");
+              "This was not the most recently acquired lock. Possible lock "
+              "order reversal");
   }
 }
 
@@ -319,31 +320,31 @@ void ento::registerPthreadLockChecker(CheckerManager &CM) {
   });
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"pthread_rwlock_tryrdlock"}),
-    EventKind::Acquire,
+    EventKind::TryAcquire,
     LibraryKind::Pthread,
     SemanticsKind::PthreadSemantics
   });
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"pthread_rwlock_trywrlock"}),
-    EventKind::Acquire,
+    EventKind::TryAcquire,
     LibraryKind::Pthread,
     SemanticsKind::PthreadSemantics
   });
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"lck_mtx_try_lock"}),
-    EventKind::Acquire,
+    EventKind::TryAcquire,
     LibraryKind::Pthread,
     SemanticsKind::XNUSemantics
   });
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"lck_rw_try_lock_exclusive"}),
-    EventKind::Acquire,
+    EventKind::TryAcquire,
     LibraryKind::Pthread,
     SemanticsKind::XNUSemantics
   });
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"lck_rw_try_lock_shared"}),
-    EventKind::Acquire,
+    EventKind::TryAcquire,
     LibraryKind::Pthread,
     SemanticsKind::XNUSemantics
   });
@@ -384,12 +385,14 @@ void ento::registerPthreadLockChecker(CheckerManager &CM) {
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"pthread_mutex_destroy"}),
     EventKind::Destroy,
-    LibraryKind::Pthread
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
   });
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"lck_mtx_destroy"}, 2),
     EventKind::Destroy,
-    LibraryKind::Pthread
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
   });
   // clang-format on
 }
@@ -439,7 +442,7 @@ void ento::registerFuchsiaLockChecker(CheckerManager &CM) {
 
   // TryAcquire
   RegisterEvent(EventDescriptor{
-    MakeFirstArgExtractor({"spin_try_lock"}),
+    MakeFirstArgExtractor({"spin_trylock"}),
     EventKind::TryAcquire,
     LibraryKind::Fuchsia,
     SemanticsKind::PthreadSemantics
@@ -527,7 +530,8 @@ void ento::registerC11LockChecker(CheckerManager &CM) {
   RegisterEvent(EventDescriptor{
     MakeFirstArgExtractor({"mtx_destroy"}),
     EventKind::Destroy,
-    LibraryKind::C11
+    LibraryKind::C11,
+    SemanticsKind::PthreadSemantics
   });
   // clang-format on
 }
