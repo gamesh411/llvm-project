@@ -407,11 +407,6 @@ MutexModeling::handleEvent(const EventDescriptor &Event, const MemRegion *MTX,
 
 void MutexModeling::checkPostCall(const CallEvent &Call,
                                   CheckerContext &C) const {
-  // FIXME: Try to handle cases when the implementation was inlined rather
-  // than just giving up.
-  if (C.wasInlined)
-    return;
-
   ProgramStateRef State = C.getState();
   for (auto &&Event : RegisteredEvents) {
     if (matches(Event.Trigger, Call)) {
