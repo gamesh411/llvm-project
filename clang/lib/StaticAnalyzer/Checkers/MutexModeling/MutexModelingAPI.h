@@ -141,8 +141,6 @@ inline void printState(raw_ostream &Out, ProgramStateRef State, const char *NL,
       case (EventKind::Destroy):
         Out << "Destroy";
         break;
-      default:
-        llvm_unreachable("Unknown event kind");
       }
       Out << NL;
       Out << Sep << "Semantics: ";
@@ -156,8 +154,6 @@ inline void printState(raw_ostream &Out, ProgramStateRef State, const char *NL,
       case (SemanticsKind::XNUSemantics):
         Out << "XNUSemantics";
         break;
-      default:
-        llvm_unreachable("Unknown semantics");
       }
       Out << NL;
       Out << Sep << "Library: ";

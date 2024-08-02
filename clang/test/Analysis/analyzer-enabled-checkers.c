@@ -16,6 +16,7 @@
 // CHECK-NEXT: core.CallAndMessage
 // CHECK-NEXT: core.DivideZero
 // CHECK-NEXT: core.DynamicTypePropagation
+// CHECK-NEXT: core.MutexModeling
 // CHECK-NEXT: core.NonNullParamChecker
 // CHECK-NEXT: core.NonnilStringConstants
 // CHECK-NEXT: core.NullDereference
@@ -42,7 +43,6 @@
 // CHECK-NEXT: security.insecureAPI.mktemp
 // CHECK-NEXT: security.insecureAPI.vfork
 // CHECK-NEXT: unix.API
-// CHECK-NEXT: unix.MutexModeling
 // CHECK-NEXT: unix.BlockInCriticalSection
 // CHECK-NEXT: unix.cstring.CStringModeling
 // CHECK-NEXT: unix.DynamicMemoryModeling

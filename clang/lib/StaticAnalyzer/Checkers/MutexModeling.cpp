@@ -335,46 +335,6 @@ MutexModeling::ModelingResult
 MutexModeling::handleDestroy(const EventDescriptor &Event, const MemRegion *MTX,
                              const CallEvent &Call, ProgramStateRef State,
                              CheckerContext &C) const {
-
-  // Original implementation:
-  //
-  // const LockState *LState = State->get<LockMap>(LockR);
-  // // Checking the return value of the destroy method only in the case of
-  // // PthreadSemantics
-  // if (Semantics == PthreadSemantics) {
-  //   if (!LState || LState->isUnlocked()) {
-  //     SymbolRef sym = Call.getReturnValue().getAsSymbol();
-  //     if (!sym) {
-  //       State = State->remove<LockMap>(LockR);
-  //       C.addTransition(State);
-  //       return;
-  //     }
-  //     State = State->set<DestroyRetVal>(LockR, sym);
-  //     if (LState && LState->isUnlocked())
-  //       State = State->set<LockMap>(
-  //           LockR, LockState::getUnlockedAndPossiblyDestroyed());
-  //     else
-  //       State = State->set<LockMap>(
-  //           LockR, LockState::getUntouchedAndPossiblyDestroyed());
-  //     C.addTransition(State);
-  //     return;
-  //   }
-  // } else {
-  //   if (!LState || LState->isUnlocked()) {
-  //     State = State->set<LockMap>(LockR, LockState::getDestroyed());
-  //     C.addTransition(State);
-  //     return;
-  //   }
-  // }
-
-  // StringRef Message = LState->isLocked()
-  //                         ? "This lock is still locked"
-  //                         : "This lock has already been destroyed";
-
-  // reportBug(C, BT_destroylock, MtxExpr, CheckKind, Message);
-
-  // New implementation:
-
   ModelingResult Result{State};
 
   const LockStateKind *LockState = Result.State->get<LockStates>(MTX);
@@ -442,8 +402,6 @@ MutexModeling::handleEvent(const EventDescriptor &Event, const MemRegion *MTX,
     return handleRelease(Event, MTX, Call, State, C);
   case EventKind::Destroy:
     return handleDestroy(Event, MTX, Call, State, C);
-  default:
-    llvm_unreachable("Unhandled event kind!");
   }
 }
 
@@ -537,6 +495,256 @@ namespace ento {
 // Checker registration
 void registerMutexModeling(CheckerManager &CM) {
   CM.registerChecker<MutexModeling>();
+
+  // clang-format off
+  // Pthread-related events
+  // Init
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor(
+      {"pthread_mutex_init"}, 2),
+      EventKind::Init,
+      LibraryKind::Pthread
+  });
+
+  // Acquire
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor(
+      {"pthread_mutex_lock"}),
+      EventKind::Acquire,
+      LibraryKind::Pthread,
+      SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_rwlock_rdlock"}),
+    EventKind::Acquire,
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_rwlock_wrlock"}),
+    EventKind::Acquire,
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_mtx_lock"}),
+    EventKind::Acquire,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_lock_exclusive"}),
+    EventKind::Acquire,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_lock_shared"}),
+    EventKind::Acquire,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+
+  // TryAcquire
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_mutex_trylock"}),
+    EventKind::TryAcquire,
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_rwlock_tryrdlock"}),
+    EventKind::TryAcquire,
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_rwlock_trywrlock"}),
+    EventKind::TryAcquire,
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_mtx_try_lock"}),
+    EventKind::TryAcquire,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_try_lock_exclusive"}),
+    EventKind::TryAcquire,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_try_lock_shared"}),
+    EventKind::TryAcquire,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+
+  // Release
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_mutex_unlock"}),
+    EventKind::Release,
+    LibraryKind::Pthread
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_rwlock_unlock"}),
+    EventKind::Release,
+    LibraryKind::Pthread
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_mtx_unlock"}),
+    EventKind::Release,
+    LibraryKind::Pthread
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_unlock_exclusive"}),
+    EventKind::Release,
+    LibraryKind::Pthread
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_unlock_shared"}),
+    EventKind::Release,
+    LibraryKind::Pthread
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_rw_done"}),
+    EventKind::Release,
+    LibraryKind::Pthread
+  });
+
+  // Destroy
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"pthread_mutex_destroy"}),
+    EventKind::Destroy,
+    LibraryKind::Pthread,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"lck_mtx_destroy"}, 2),
+    EventKind::Destroy,
+    LibraryKind::Pthread,
+    SemanticsKind::XNUSemantics
+  });
+
+  // Fuchsia-related events
+  // Init
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"spin_lock_init"}),
+    EventKind::Init,
+    LibraryKind::Fuchsia
+  });
+
+  // Acquire
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"spin_lock"}),
+    EventKind::Acquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"spin_lock_save"}, 3),
+    EventKind::Acquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"sync_mutex_lock"}),
+    EventKind::Acquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"sync_mutex_lock_with_waiter"}),
+    EventKind::Acquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+
+  // TryAcquire
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"spin_trylock"}),
+    EventKind::TryAcquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"sync_mutex_trylock"}),
+    EventKind::TryAcquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"sync_mutex_timedlock"}, 2),
+    EventKind::TryAcquire,
+    LibraryKind::Fuchsia,
+    SemanticsKind::PthreadSemantics
+  });
+
+  // Release
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"spin_unlock"}),
+    EventKind::Release,
+    LibraryKind::Fuchsia
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"spin_unlock_restore"}, 3),
+    EventKind::Release,
+    LibraryKind::Fuchsia
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"sync_mutex_unlock"}),
+    EventKind::Release,
+    LibraryKind::Fuchsia
+  });
+
+  // C11-related events
+  // Init
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"mtx_init"}, 2),
+    EventKind::Init,
+    LibraryKind::C11
+  });
+
+  // Acquire
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"mtx_lock"}),
+    EventKind::Acquire,
+    LibraryKind::C11,
+    SemanticsKind::PthreadSemantics
+  });
+
+  // TryAcquire
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"mtx_trylock"}),
+    EventKind::TryAcquire,
+    LibraryKind::C11,
+    SemanticsKind::PthreadSemantics
+  });
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"mtx_timedlock"}, 2),
+    EventKind::TryAcquire,
+    LibraryKind::C11,
+    SemanticsKind::PthreadSemantics
+  });
+
+  // Release
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"mtx_unlock"}),
+    EventKind::Release,
+    LibraryKind::C11
+  });
+
+  // Destroy
+  RegisterEvent(EventDescriptor{
+    MakeFirstArgExtractor({"mtx_destroy"}),
+    EventKind::Destroy,
+    LibraryKind::C11,
+    SemanticsKind::PthreadSemantics
+  });
+  // clang-format on
 }
 bool shouldRegisterMutexModeling(const CheckerManager &) { return true; }
 } // namespace ento

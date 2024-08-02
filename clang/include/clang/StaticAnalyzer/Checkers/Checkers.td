@@ -220,6 +220,11 @@ def DereferenceChecker : Checker<"NullDereference">,
   ]>,
   Documentation<HasDocumentation>;
 
+def MutexModeling : Checker<"MutexModeling">,
+  HelpText<"Model mutexes lock and unlock events">,
+  Documentation<NotDocumented>,
+  Hidden;
+
 def NonNullParamChecker : Checker<"NonNullParamChecker">,
   HelpText<"Check for null pointers passed as arguments to a function whose "
            "arguments are references or marked with the 'nonnull' attribute">,
@@ -260,11 +265,6 @@ def NonnullGlobalConstantsChecker: Checker<"NonnilStringConstants">,
 } // end "core"
 
 let ParentPackage = CoreAlpha in {
-
-def MutexModeling : Checker<"MutexModeling">,
-  HelpText<"Model mutexes lock and unlock events">,
-  Documentation<NotDocumented>,
-  Hidden;
 
 def BoolAssignmentChecker : Checker<"BoolAssignment">,
   HelpText<"Warn about assigning non-{0,1} values to Boolean variables">,
