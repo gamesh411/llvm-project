@@ -1,6 +1,6 @@
 #pragma once
 
-class ExceptionInfo;
+struct ExceptionInfo;
 
 namespace clang {
 class SourceManager;
