@@ -9,18 +9,18 @@ class CalledFunctionInfoConsumer
     : public ExceptionInfoConsumer,
       public clang::ast_matchers::MatchFinder::MatchCallback {
 public:
-  CalledFunctionInfoConsumer(ExceptionInfo &EI, clang::SourceManager &SM)
+  CalledFunctionInfoConsumer(ExceptionInfo &EI, SourceManager &SM)
       : ExceptionInfoConsumer(EI, SM) {}
   virtual void
   run(const clang::ast_matchers::MatchFinder::MatchResult &Result) override {
-    const clang::Expr *Expr = nullptr;
-    const clang::FunctionDecl *Callee = nullptr;
+    const Expr *Expr = nullptr;
+    const FunctionDecl *Callee = nullptr;
 
-    if (const clang::CallExpr *Call =
+    if (const CallExpr *Call =
             Result.Nodes.getNodeAs<clang::CallExpr>("invocation")) {
       Expr = Call;
       Callee = Call->getDirectCallee();
-    } else if (const clang::CXXConstructExpr *CTOR =
+    } else if (const CXXConstructExpr *CTOR =
                    Result.Nodes.getNodeAs<clang::CXXConstructExpr>(
                        "invocation")) {
       Expr = CTOR;
