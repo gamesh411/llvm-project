@@ -239,9 +239,8 @@ MutexModeling::ModelingResult MutexModeling::handleTryAcquire(
     const EventDescriptor &Event, const MemRegion *MTX, const CallEvent &Call,
     ProgramStateRef State, CheckerContext &C) const {
 
-  ModelingResult Result{State};
   // Bifurcate the state, and allow a mode where the lock acquisition fails.
-  ProgramStateRef LockSucc;
+  ProgramStateRef LockSucc{State};
   SVal RetVal = Call.getReturnValue();
   if (auto DefinedRetVal = RetVal.getAs<DefinedSVal>()) {
     ProgramStateRef LockFail;
@@ -264,8 +263,7 @@ MutexModeling::ModelingResult MutexModeling::handleTryAcquire(
   }
 
   // Pass the state where the locking succeeded onwards.
-  Result = onSuccessfullAcquire(MTX, Call, LockSucc, C);
-  return Result;
+  return onSuccessfullAcquire(MTX, Call, LockSucc, C);
 }
 
 MutexModeling::ModelingResult
