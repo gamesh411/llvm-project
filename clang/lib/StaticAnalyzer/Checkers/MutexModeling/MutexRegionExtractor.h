@@ -92,10 +92,10 @@ public:
     if constexpr (IsLock) {
       if (std::optional<SVal> Object = Call.getReturnValueUnderConstruction()) {
         MutexRegion = Object->getAsRegion();
-      } else {
-        MutexRegion =
-            llvm::cast<CXXDestructorCall>(Call).getCXXThisVal().getAsRegion();
       }
+    } else {
+      MutexRegion =
+          llvm::cast<CXXDestructorCall>(Call).getCXXThisVal().getAsRegion();
     }
     return MutexRegion;
   }
