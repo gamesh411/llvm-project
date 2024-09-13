@@ -299,14 +299,12 @@ void testTrylockCurrentlyFalsePositive(pthread_mutex_t *m) {
                                        // expected-note@+3 {{Taking true branch}}
                                        // expected-note@+2 {{Assuming the condition is false}}
                                        // expected-note@+1 {{Taking false branch}}
-  if (pthread_mutex_trylock(m) == 0) { // expected-note 2 {{Entering critical section here}}
+  if (pthread_mutex_trylock(m) == 0) { // expected-note {{Entering critical section here}}
                                        // FIXME: we are entering the critical section only in the true branch
     sleep(10); // expected-warning {{Call to blocking function 'sleep' inside of critical section}}
                // expected-note@-1 {{Call to blocking function 'sleep' inside of critical section}}
     pthread_mutex_unlock(m);
   } else {
-    sleep(10); // expected-warning {{Call to blocking function 'sleep' inside of critical section}}
-               // expected-note@-1 {{Call to blocking function 'sleep' inside of critical section}}
-               // FIXME: this is a false positive, the lock was not acquired
+    sleep(10); // no-warning
   }
 }
