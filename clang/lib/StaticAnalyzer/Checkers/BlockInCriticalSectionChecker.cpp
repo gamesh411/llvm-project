@@ -102,6 +102,12 @@ void ento::registerBlockInCriticalSectionChecker(CheckerManager &mgr) {
       EventDescriptor{mutex_modeling::MakeRAIIReleaseExtractor("lock_guard"),
                       EventKind::Release});
   RegisterEvent(EventDescriptor{
+      mutex_modeling::MakeRAIILockExtractor("unique_lock"), EventKind::Acquire,
+      LibraryKind::NotApplicable, SemanticsKind::XNUSemantics});
+  RegisterEvent(
+      EventDescriptor{mutex_modeling::MakeRAIIReleaseExtractor("unique_lock"),
+                      EventKind::Release});
+  RegisterEvent(EventDescriptor{
       mutex_modeling::MakeRAIILockExtractor("scoped_lock"), EventKind::Acquire,
       LibraryKind::NotApplicable, SemanticsKind::XNUSemantics});
   RegisterEvent(
