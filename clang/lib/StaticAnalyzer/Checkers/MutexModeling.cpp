@@ -181,27 +181,25 @@ MutexModeling::onSuccessfullAcquire(const MemRegion *MTX, const CallEvent &Call,
 
   if (!LockState) {
     Result.State = Result.State->set<LockStates>(MTX, LockStateKind::Locked);
-    Result = markCritSection(Result, MTX, Call, C);
-    return Result;
+  } else {
+    switch (*LockState) {
+    case LockStateKind::Unlocked:
+      Result.State = Result.State->set<LockStates>(MTX, LockStateKind::Locked);
+      break;
+    case LockStateKind::Locked:
+      Result.State =
+          Result.State->set<LockStates>(MTX, LockStateKind::Error_DoubleLock);
+      break;
+    case LockStateKind::Destroyed:
+      Result.State = Result.State->set<LockStates>(
+          MTX, LockStateKind::Error_LockDestroyed);
+      break;
+    default:
+      break;
+    }
   }
 
-  switch (*LockState) {
-  case LockStateKind::Unlocked:
-    Result.State = Result.State->set<LockStates>(MTX, LockStateKind::Locked);
-    Result = markCritSection(Result, MTX, Call, C);
-    break;
-  case LockStateKind::Locked:
-    Result.State =
-        Result.State->set<LockStates>(MTX, LockStateKind::Error_DoubleLock);
-    break;
-  case LockStateKind::Destroyed:
-    Result.State =
-        Result.State->set<LockStates>(MTX, LockStateKind::Error_LockDestroyed);
-    break;
-  default:
-    break;
-  }
-
+  Result = markCritSection(Result, MTX, Call, C);
   return Result;
 }
 
@@ -239,10 +237,13 @@ MutexModeling::ModelingResult MutexModeling::handleTryAcquire(
     const EventDescriptor &Event, const MemRegion *MTX, const CallEvent &Call,
     ProgramStateRef State, CheckerContext &C) const {
 
-  // Bifurcate the state, and allow a mode where the lock acquisition fails.
   ProgramStateRef LockSucc{State};
+  // Bifurcate the state, and allow a mode where the lock acquisition fails.
   SVal RetVal = Call.getReturnValue();
-  if (auto DefinedRetVal = RetVal.getAs<DefinedSVal>()) {
+  std::optional<DefinedSVal> DefinedRetVal = RetVal.getAs<DefinedSVal>();
+  // Bifurcating the state is only meaningful if the call was not inlined, but
+  // we can still reason about the return value.
+  if (!C.wasInlined && DefinedRetVal) {
     ProgramStateRef LockFail;
     switch (Event.Semantics) {
     case SemanticsKind::PthreadSemantics:
@@ -254,13 +255,15 @@ MutexModeling::ModelingResult MutexModeling::handleTryAcquire(
     default:
       llvm_unreachable("Unknown TryLock locking semantics");
     }
-    assert(LockFail && LockSucc && "Bifurcation point in ExplodedGraph");
 
     // This is the bifurcation point in the ExplodedGraph, we do not need to
     // return the new ExplodedGraph node because we do not plan on building this
     // lock-failed case path in this checker.
     C.addTransition(LockFail);
   }
+
+  if (!LockSucc)
+    LockSucc = State;
 
   // Pass the state where the locking succeeded onwards.
   return onSuccessfullAcquire(MTX, Call, LockSucc, C);
