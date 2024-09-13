@@ -403,6 +403,8 @@ MutexModeling::handleEvent(const EventDescriptor &Event, const MemRegion *MTX,
     return handleRelease(Event, MTX, Call, State, C);
   case EventKind::Destroy:
     return handleDestroy(Event, MTX, Call, State, C);
+  default:
+    llvm_unreachable("Unknown event kind");
   }
 }
 
