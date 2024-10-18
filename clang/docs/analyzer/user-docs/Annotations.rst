@@ -42,24 +42,28 @@ Specific Topics
   - `Attribute 'analyzer_noreturn'`_
 
 
+.. _Annotations to Enhance Generic Checks:
+
 Annotations to Enhance Generic Checks
 -------------------------------------
 
-### Null Pointer Checking
+.. _Null Pointer Checking:
+
+Null Pointer Checking
+^^^^^^^^^^^^^^^^^^^^^
 
 #### Attribute 'nonnull'
 
-The analyzer recognizes the GCC attribute `Nonnull`_, which indicates that a
+The analyzer recognizes the GCC attribute ``nonnull``, which indicates that a
 function expects that a given function parameter is not a null pointer. Specific
 details of the syntax of using the 'nonnull' attribute can be found in `GCC's
 documentation`_.
 
 Both the Clang compiler and GCC will flag warnings for simple cases where a
-null pointer is directly being passed to a function with a 'nonnull' parameter
+null pointer is directly being passed to a function with a ``nonnull`` parameter
 (e.g., as a constant). The analyzer extends this checking by using its deeper
 symbolic analysis to track what pointer values are potentially null and then
-flag warnings when they are passed in a function call via a 'nonnull'
-parameter.
+flag warnings when they are passed in a function call via a ``nonnull`` parameter.
 
 **Example**
 
@@ -72,16 +76,20 @@ parameter.
              : bar(p, 2, q);
    }
 
-Running `scan-build` over this source produces the following
-output:
+Running `scan-build` over this source produces the following output:
 
 .. image:: images/example_attribute_nonnull.png
    :alt: example attribute nonnull
 
+.. _Mac OS X API Annotations:
+
 Mac OS X API Annotations
 ------------------------
 
-### Cocoa & Core Foundation Memory Management Annotations
+.. _Cocoa & Core Foundation Memory Management Annotations:
+
+Cocoa & Core Foundation Memory Management Annotations
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The analyzer supports the proper management of retain counts for
 both Cocoa and Core Foundation objects. This checking is largely based on
@@ -92,25 +100,26 @@ conventions can cause the analyzer to miss bugs or flag false positives.
 One can educate the analyzer (and others who read your code) about methods or
 functions that deviate from the Cocoa and Core Foundation conventions using the
 attributes described here. However, you should consider using proper naming
-conventions or the `objc_method_family`_ attribute, if applicable.
+conventions or the ``objc_method_family`` attribute, if applicable.
+
+.. _Attribute 'ns_returns_retained':
 
 #### Attribute 'ns_returns_retained' (Clang-specific)
 
-The GCC-style (Clang-specific) attribute `ns_returns_retained`_ allows one to
+The GCC-style (Clang-specific) attribute ``ns_returns_retained`` allows one to
 annotate an Objective-C method or C function as returning a retained Cocoa
 object that the caller is responsible for releasing (via sending a
-`release` message to the object). The Foundation framework defines a
+``release`` message to the object). The Foundation framework defines a
 macro **NS_RETURNS_RETAINED** that is functionally equivalent to the
 one shown below.
 
 **Placing on Objective-C methods:** For Objective-C methods, this
 annotation essentially tells the analyzer to treat the method as if its name
-begins with "alloc" or "new" or contains the word
-"copy".
+begins with "alloc" or "new" or contains the word "copy".
 
 **Placing on C functions:** For C functions returning Cocoa objects, the
 analyzer typically does not make any assumptions about whether or not the object
-is returned retained. Explicitly adding the 'ns_returns_retained' attribute to C
+is returned retained. Explicitly adding the ``ns_returns_retained`` attribute to C
 functions allows the analyzer to perform extra checking.
 
 **Example**
@@ -149,9 +158,11 @@ Running `scan-build` on this source file produces the following output:
 .. image:: images/example_ns_returns_retained.png
    :alt: example returns retained
 
+.. _Attribute 'ns_returns_not_retained':
+
 #### Attribute 'ns_returns_not_retained' (Clang-specific)
 
-The `ns_returns_not_retained`_ attribute is the complement of `ns_returns_retained`_.
+The ``ns_returns_not_retained`` attribute is the complement of ``ns_returns_retained``.
 Where a function or method may appear to obey the Cocoa conventions and return
 a retained Cocoa object, this attribute can be used to indicate that the object reference
 returned should not be considered as an "owning" reference being
@@ -159,7 +170,7 @@ returned to the caller. The Foundation framework defines a
 macro **NS_RETURNS_NOT_RETAINED** that is functionally equivalent to
 the one shown below.
 
-Usage is identical to `ns_returns_retained`_. When using the
+Usage is identical to ``ns_returns_retained``. When using the
 attribute, be sure to declare it within the proper macro that checks for
 its availability, as it is not available in earlier versions of the analyzer:
 
@@ -177,16 +188,18 @@ its availability, as it is not available in earlier versions of the analyzer:
     #endif
     #endif
 
+.. _Attribute 'cf_returns_retained':
+
 #### Attribute 'cf_returns_retained' (Clang-specific)
 
-The GCC-style (Clang-specific) attribute `cf_returns_retained`_ allows one to
+The GCC-style (Clang-specific) attribute ``cf_returns_retained`` allows one to
 annotate an Objective-C method or C function as returning a retained Core
 Foundation object that the caller is responsible for releasing. The
 CoreFoundation framework defines a macro **CF_RETURNS_RETAINED**
 that is functionally equivalent to the one shown below.
 
 **Placing on Objective-C methods:** With respect to Objective-C methods.,
-this attribute is identical in its behavior and usage to `ns_returns_retained`_
+this attribute is identical in its behavior and usage to ``ns_returns_retained``
 except for the distinction of returning a Core Foundation object instead of a
 Cocoa object.
 
@@ -199,7 +212,7 @@ trivial for the analyzer to recognize if a pointer refers to a Cocoa object
 (given the Objective-C type system).
 
 **Placing on C functions:** When placing the attribute
-`cf_returns_retained`_ on the declarations of C functions, the analyzer
+``cf_returns_retained`` on the declarations of C functions, the analyzer
 interprets the function as:
 
 1. Returning a Core Foundation Object
@@ -257,6 +270,8 @@ Running `scan-build` on this example produces the following output:
 .. image:: images/example_cf_returns_retained.png
    :alt: example returns retained
 
+.. _Attribute 'cf_returns_not_retained':
+
 #### Attribute 'cf_returns_not_retained' (Clang-specific)
 
 The `cf_returns_not_retained`_ attribute is the complement of `cf_returns_retained`_.
@@ -284,6 +299,8 @@ its availability, as it is not available in earlier versions of the analyzer:
     #define CF_RETURNS_NOT_RETAINED
     #endif
     #endif
+
+.. _Attribute 'ns_consumed':
 
 #### Attribute 'ns_consumed' (Clang-specific)
 
@@ -334,6 +351,8 @@ is functionally equivalent to the `NS_CONSUMED`_ macro shown below.
     }
 
 
+.. _Attribute 'cf_consumed':
+
 #### Attribute 'cf_consumed' (Clang-specific)
 
 The `cf_consumed`_ attribute is practically identical to `ns_consumed`_. The attribute can be placed on a
@@ -383,6 +402,8 @@ Operationally this attribute is nearly identical to `ns_consumed`_.
       [Foo releaseArg:date]; // No leak!
     }
 
+.. _Attribute 'ns_consumes_self':
+
 #### Attribute 'ns_consumes_self' (Clang-specific)
 
 The `ns_consumes_self`_ attribute can be placed only on an Objective-C method
@@ -423,7 +444,10 @@ The Foundation framework defines a macro **NS_REPLACES_RECEIVER**
 which is functionally equivalent to the combination of `NS_CONSUMES_SELF`_
 and `NS_RETURNS_RETAINED`_ shown above.
 
-### Libkern Memory Management Annotations
+.. _Libkern Memory Management Annotations:
+
+Libkern Memory Management Annotations
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 `Libkern`_ requires developers to inherit all heap allocated objects from `OSObject`_
 and to perform manual reference counting.
@@ -467,6 +491,8 @@ By default, the following summaries are assumed:
 These summaries can be overridden with the following
 `attributes`_:
 
+.. _Attribute 'os_returns_retained':
+
 #### Attribute 'os_returns_retained'
 
 The `os_returns_retained`_ attribute (accessed through the macro `LIBKERN_RETURNS_RETAINED`_)
@@ -474,6 +500,8 @@ plays a role identical to `ns_returns_retained`_ for functions
 returning `OSObject`_ subclasses.
 The attribute indicates that it is the caller's responsibility to release the
 returned object.
+
+.. _Attribute 'os_returns_not_retained':
 
 #### Attribute 'os_returns_not_retained'
 
@@ -497,6 +525,8 @@ count of the returned object.
       return f;
     }
 
+.. _Attribute 'os_consumed':
+
 #### Attribute 'os_consumed'
 
 Similarly to `ns_consumed`_ attribute,
@@ -510,6 +540,8 @@ after the call.
 .. code-block:: objc
 
     IOReturn addToList(LIBKERN_CONSUMED IOPMinformee newInformee);
+
+.. _Attribute 'os_consumes_this':
 
 #### Attribute 'os_consumes_this'
 
@@ -525,7 +557,10 @@ destructor.
 
     void addThisToList(OSArray givenList) LIBKERN_CONSUMES_THIS;
 
-#### Out Parameters
+.. _Out Parameters:
+
+Out Parameters
+""""""""""""""
 
 A function can also return an object to a caller by a means of an out parameter
 (a pointer-to-`OSObject`_ pointer is passed, and a callee writes a pointer to an
@@ -587,10 +622,10 @@ parameters by default, but with annotations we distinguish four separate cases:
 caller has no obligations regardless of whether an object is written into or
 not.
 
-Mac OS X API Annotations Continues...
--------------------------------------
+.. _Custom Assertion Handlers:
 
-### Custom Assertion Handlers
+Custom Assertion Handlers
+-------------------------
 
 The analyzer exploits code assertions by pruning off paths where the
 assertion condition is false. The idea is to capture any program invariants
@@ -639,7 +674,10 @@ it is annotated with the `noreturn`_ attribute or the (Clang-specific)
 `analyzer_noreturn`_ attribute. **Note:** Currently, Clang does not support
 these attributes on Objective-C methods and C++ methods.
 
-#### Attribute 'noreturn'
+.. _Attribute 'noreturn':
+
+Attribute 'noreturn'
+^^^^^^^^^^^^^^^^^^^^
 
 The `noreturn`_ attribute is a GCC-attribute that can be placed on the
 declarations of functions. It means exactly what its name implies: a function
@@ -663,7 +701,10 @@ On Mac OS X, the function prototype for `__assert_rtn`_ (declared in
 
     void assert_rtn(const char , const char , int, const char ) attribute((noreturn));
 
-#### Attribute 'analyzer_noreturn' (Clang-specific)
+.. _Attribute 'analyzer_noreturn':
+
+Attribute 'analyzer_noreturn' (Clang-specific)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The Clang-specific `analyzer_noreturn`_ attribute is almost identical to
 `noreturn`_ except that it is ignored by the compiler for the purposes of code
