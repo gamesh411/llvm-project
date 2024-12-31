@@ -103,6 +103,11 @@ tools = [
     "llvm-profdata",
     "llvm-readtapi",
     ToolSubst(
+        "%clang_exception_scan",
+        command=FindTool("clang-exception-scan"),
+        unresolved="ignore",
+    ),
+    ToolSubst(
         "%clang_extdef_map",
         command=FindTool("clang-extdef-mapping"),
         unresolved="ignore",
@@ -112,6 +117,19 @@ tools = [
 if config.clang_examples:
     config.available_features.add("examples")
 
+# Add gen_compdb substitution for clang-exception-scan tests
+config.substitutions.append(
+    (
+        "%gen_compdb",
+        "'%s' %s"
+        % (
+            config.python_executable,
+            os.path.join(
+                config.clang_src_dir, "test/Analysis/clang-exception-scan/gen_compdb.py"
+            ),
+        ),
+    )
+)
 
 def have_host_jit_feature_support(feature_name):
     clang_repl_exe = lit.util.which("clang-repl", config.clang_tools_dir)
