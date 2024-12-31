@@ -1,21 +1,32 @@
 set(LLVM_LINK_COMPONENTS
-  ${LLVM_TARGETS_TO_BUILD}
   Support
-  FrontendOpenMP # for astmatchers
-  )
+  Core
+)
 
-add_clang_tool(clang-exception-scan
-  ClangExceptionScan.cpp
-  )
-
-clang_target_link_libraries(clang-exception-scan
-  PRIVATE
+add_clang_library(clangExceptionScan
+  CollectExceptionInfo.cpp
+  PARTIAL_SOURCES_INTENDED
+  LINK_LIBS
   clangAST
   clangASTMatchers
   clangAnalysis
   clangBasic
   clangCrossTU
   clangFrontend
-  clangSerialization
   clangTooling
-  )
+)
+
+add_clang_tool(clang-exception-scan
+  ClangExceptionScan.cpp
+  PARTIAL_SOURCES_INTENDED
+)
+
+target_link_libraries(clang-exception-scan
+  PRIVATE
+  clangExceptionScan
+  clangTooling
+  clangBasic
+  clangAST
+  clangFrontend
+  clangSerialization
+)
