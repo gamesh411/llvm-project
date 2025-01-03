@@ -1,190 +1,175 @@
 #include "CollectExceptionInfo.h"
+#include "clang/AST/ASTDumper.h"
 #include "clang/Analysis/CFG.h"
+#include "clang/Basic/ExceptionSpecificationType.h"
+#include "clang/Basic/LLVM.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/YAMLTraits.h"
+#include "llvm/Support/raw_ostream.h"
 
-using namespace clang;
-using namespace clang::ast_matchers;
-using namespace clang::exception_scan;
+#include "ExceptionAnalyzer.cpp"
 
-std::optional<bool> exception_scan::isInside(const Stmt *Candidate, const Stmt *Container) {
-  SourceRange CandidateRange = Candidate->getSourceRange();
-  SourceRange ContainerRange = Container->getSourceRange();
-
-  if (CandidateRange.isInvalid() || ContainerRange.isInvalid())
-    return std::nullopt;
-
-  return ContainerRange.fullyContains(CandidateRange);
-}
-
-CalledFunctions::CalledFunctions(ExceptionInfo &EI, SourceManager &SM)
-    : ExceptionInfoConsumer(EI, SM) {}
-
-void CalledFunctions::run(const MatchFinder::MatchResult &Result) {
-  const Expr *Expr = nullptr;
-  const FunctionDecl *Callee = nullptr;
-
-  if (const CallExpr *Call = Result.Nodes.getNodeAs<CallExpr>("invocation")) {
-    Expr = Call;
-    Callee = Call->getDirectCallee();
-  } else if (const CXXConstructExpr *CTOR =
-                 Result.Nodes.getNodeAs<CXXConstructExpr>("invocation")) {
-    Expr = CTOR;
-    Callee = CTOR->getConstructor();
-  }
-
-  if (!Expr || !Callee) {
-    return;
-  }
-
-  std::string Name =
-      cross_tu::CrossTranslationUnitContext::getLookupName(Callee).value_or(
-          "<no-lookup-name>");
-  EI.Calls.push_back(
-      {Expr, Callee, Name, Expr->getSourceRange().printToString(SM)});
-}
-
-ThrownExceptions::ThrownExceptions(ExceptionInfo &EI, SourceManager &SM)
-    : ExceptionInfoConsumer(EI, SM) {}
-
-void ThrownExceptions::run(const MatchFinder::MatchResult &Result) {
-  if (const CXXThrowExpr *Throw =
-          Result.Nodes.getNodeAs<CXXThrowExpr>("throw")) {
-    bool IsRethrow = Throw->getSubExpr() == nullptr;
-    std::string Description;
-    if (IsRethrow)
-      Description = "rethrow";
-    else {
-      const QualType CT = Throw->getSubExpr()->getType();
-      if (CT.isNull()) {
-        Description = "nulltype";
-      } else {
-        Description = CT.getAsString();
-      }
-    }
-    EI.Throws.push_back(
-        {Throw, Description, Throw->getSourceRange().printToString(SM), IsRethrow});
-  }
-}
-
-CaughtExceptions::CaughtExceptions(ExceptionInfo &EI, SourceManager &SM)
-    : ExceptionInfoConsumer(EI, SM) {}
-
-void CaughtExceptions::run(const MatchFinder::MatchResult &Result) {
-  if (const CXXCatchStmt *Catch =
-          Result.Nodes.getNodeAs<CXXCatchStmt>("catch")) {
-    bool IsCatchAll = Catch->getExceptionDecl() == nullptr;
-    std::string Description;
-    if (IsCatchAll)
-      Description = "...";
-    else {
-      const QualType CT = Catch->getExceptionDecl()->getType();
-      if (CT.isNull()) {
-        Description = "nulltype";
-      } else {
-        Description = CT.getAsString();
-      }
-    }
-    EI.Catches.push_back(
-        {Catch, Description, Catch->getSourceRange().printToString(SM), IsCatchAll});
-  }
-}
-
-TryBlocks::TryBlocks(ExceptionInfo &EI, SourceManager &SM)
-    : ExceptionInfoConsumer(EI, SM) {}
-
-void TryBlocks::run(const MatchFinder::MatchResult &Result) {
-  if (const CXXTryStmt *Try = Result.Nodes.getNodeAs<CXXTryStmt>("try")) {
-    EI.Tries.push_back({Try, Try->getSourceRange().printToString(SM)});
-  }
-}
-
-ExceptionInfoASTConsumer::ExceptionInfoASTConsumer(ASTContext &Context,
-                                                 ExceptionContext &EC)
-    : AC(Context), SM(Context.getSourceManager()), EC(EC) {}
-
-void ExceptionInfoASTConsumer::HandleTranslationUnit(ASTContext &Context) {
-  handleDecl(Context.getTranslationUnitDecl());
-}
-
-void ExceptionInfoASTConsumer::handleFunction(const FunctionDecl *FD) {
-  EC.FunctionsVisited.insert(FD);
-
-  std::optional<std::string> LookupName =
-      cross_tu::CrossTranslationUnitContext::getLookupName(FD);
-  std::string CallerName = LookupName.value_or("<no-name>");
-  EC.NameIndex[FD] = CallerName;
-  EC.ShortNameIndex[FD] = FD->getNameAsString();
-  Stmt *Body = FD->getBody();
-  if (!Body)
-    return;
-
-  auto BO = CFG::BuildOptions{};
-  BO.AddEHEdges = true;
-
-  std::unique_ptr<CFG> FDCFG = CFG::buildCFG(FD, Body, &AC, BO);
-
-  if (!FDCFG) {
-    return;
-  }
-
-  EC.BodyIndex[FD] = Body;
-  EC.IsInMainFileIndex[FD] = SM.isInMainFile(FD->getLocation());
-
-  MatchFinder MF;
-  ExceptionInfo EI;
-  auto CallAction = std::make_unique<CalledFunctions>(EI, SM);
-  auto ThrowAction = std::make_unique<ThrownExceptions>(EI, SM);
-  auto CatchAction = std::make_unique<CaughtExceptions>(EI, SM);
-  auto TryAction = std::make_unique<TryBlocks>(EI, SM);
-  MF.addMatcher(stmt().bind("invocation"), CallAction.get());
-  MF.addMatcher(cxxThrowExpr().bind("throw"), ThrowAction.get());
-  MF.addMatcher(cxxCatchStmt().bind("catch"), CatchAction.get());
-  MF.addMatcher(cxxTryStmt().bind("try"), TryAction.get());
-  MF.match(*Body, AC);
-
-  EC.ExInfoIndex[FD] = EI;
-
-  for (const CallInfo &CI : EI.Calls) {
-    const FunctionDecl *Callee = CI.Callee;
-    auto [_, emplaced] = SeenFunctions.insert(Callee);
-    if (emplaced) {
-      ExplorationWorklist.push(Callee);
+void clang::exception_scan::ExceptionInfoExtractor::HandleTranslationUnit(
+    ASTContext &Context) {
+  for (const Decl *TopLevelDecl : Context.getTranslationUnitDecl()->decls()) {
+    if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
+      std::optional<std::string> LookupName =
+          cross_tu::CrossTranslationUnitContext::getLookupName(FD);
+      if (not LookupName)
+        continue;
+      ExceptionAnalyzer FA;
+      EC.PFEI.push_back({EC.CurrentInfile, *LookupName, FA.analyze(FD),
+                         FD->getExceptionSpecType(),
+                         SM.isInMainFile(FD->getLocation())});
     }
   }
 }
 
-void ExceptionInfoASTConsumer::handleDecl(const Decl *D) {
-  if (!D)
-    return;
+using llvm::yaml::IO;
+using llvm::yaml::MappingTraits;
+using llvm::yaml::ScalarEnumerationTraits;
+using llvm::yaml::ScalarTraits;
+using llvm::yaml::SequenceTraits;
 
-  if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-    handleFunction(FD);
+template <> struct ScalarEnumerationTraits<ExceptionState> {
+  static void enumeration(IO &IO, ExceptionState &ES) {
+    IO.enumCase(ES, "Throwing", ExceptionState::Throwing);
+    IO.enumCase(ES, "NotThrowing", ExceptionState::NotThrowing);
+    IO.enumCase(ES, "Unknown", ExceptionState::Unknown);
+  }
+};
+
+using TypePtr = const clang::Type *;
+template <> struct ScalarTraits<TypePtr> {
+
+  // Function to write the value as a string:
+  static void output(const TypePtr &value, void *ctxt, llvm::raw_ostream &out) {
+    std::string Name;
+    llvm::raw_string_ostream SS(Name);
+    clang::ASTDumper Dumper(SS, false);
+    Dumper.Visit(value);
+    out << Name;
+  }
+  // Function to convert a string to a value.  Returns the empty
+  // StringRef on success or an error string if string is malformed:
+  static StringRef input(StringRef scalar, void *ctxt, TypePtr &value) {
+    value = nullptr;
+    return StringRef();
+  }
+  // Function to determine if the value should be quoted.
+  static QuotingType mustQuote(StringRef) { return QuotingType::None; }
+};
+
+using ExceptionTypesContainer = llvm::SmallVector<TypePtr, 2>;
+template <> struct SequenceTraits<ExceptionTypesContainer> {
+  static size_t size(IO &IO, ExceptionTypesContainer &Throwables) {
+    return Throwables.size();
+  }
+  static TypePtr &element(IO &IO, ExceptionTypesContainer &Throwables,
+                          size_t Index) {
+    return Throwables[Index];
+  }
+};
+
+template <> struct ScalarEnumerationTraits<clang::ExceptionSpecificationType> {
+  static void enumeration(IO &IO, clang::ExceptionSpecificationType &ES) {
+    IO.enumCase(ES, "None", clang::EST_None);
+    IO.enumCase(ES, "DynamicNone", clang::EST_DynamicNone);
+    IO.enumCase(ES, "Dynamic", clang::EST_Dynamic);
+    IO.enumCase(ES, "MSAny", clang::EST_MSAny);
+    IO.enumCase(ES, "NoThrow", clang::EST_NoThrow);
+    IO.enumCase(ES, "BasicNoexcept", clang::EST_BasicNoexcept);
+    IO.enumCase(ES, "DependentNoexcept", clang::EST_DependentNoexcept);
+    IO.enumCase(ES, "NoexceptFalse", clang::EST_NoexceptFalse);
+    IO.enumCase(ES, "NoexceptTrue", clang::EST_NoexceptTrue);
+    IO.enumCase(ES, "Unevaluated", clang::EST_Unevaluated);
+    IO.enumCase(ES, "Uninstantiated", clang::EST_Uninstantiated);
+    IO.enumCase(ES, "Unparsed", clang::EST_Unparsed);
+  }
+};
+
+template <>
+struct MappingTraits<clang::exception_scan::PerFunctionExceptionInfo> {
+  static void mapping(IO &IO,
+                      clang::exception_scan::PerFunctionExceptionInfo &EC) {
+    IO.mapRequired("Name", EC.FunctionUSRName);
+    IO.mapRequired("Behaviour", EC.AI.Behaviour);
+    IO.mapRequired("Exceptions", EC.AI.ThrownExceptions);
+    IO.mapRequired("ExceptionSpecification", EC.ES);
+    IO.mapRequired("IsInMainFile", EC.IsInMainFile);
+  }
+};
+
+template <> struct SequenceTraits<clang::exception_scan::ExceptionContext> {
+  static size_t size(IO &IO, clang::exception_scan::ExceptionContext &EC) {
+    return EC.PFEI.size();
+  }
+  static clang::exception_scan::PerFunctionExceptionInfo &
+  element(IO &IO, clang::exception_scan::ExceptionContext &EC, size_t Index) {
+    return EC.PFEI[Index];
+  }
+};
+
+void clang::exception_scan::reportFirstApproximation(ExceptionContext &EC,
+                                                     StringRef PathPrefix) {
+  SmallString<256> ReportPath(PathPrefix);
+  llvm::sys::path::append(ReportPath, "report.txt");
+
+  std::error_code FileOpenError;
+  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
+
+  if (FileOpenError) {
+    llvm::errs() << "Error opening file: " << ReportPath << '\n'
+                 << FileOpenError.message() << "\n";
+    return;
   }
 
-  if (const DeclContext *DC = dyn_cast<DeclContext>(D)) {
-    for (const Decl *SubDecl : DC->decls()) {
-      handleDecl(SubDecl);
+  OS << "Functions that could be marked noexcept, but are not:\n";
+  SmallString<256> FunctionList;
+  for (const auto &PFEI : EC.PFEI) {
+    if (PFEI.AI.Behaviour ==
+            clang::tidy::utils::ExceptionAnalyzer::State::NotThrowing &&
+        PFEI.ES == EST_None) {
+      FunctionList.append(PFEI.FunctionUSRName);
+      FunctionList.append(" in ");
+      FunctionList.append(PFEI.FileName);
+      FunctionList.append("\n");
     }
   }
+  OS << FunctionList;
+}
 
-  while (!ExplorationWorklist.empty()) {
-    const FunctionDecl *FD = ExplorationWorklist.front();
-    handleFunction(FD);
-    ExplorationWorklist.pop();
+void clang::exception_scan::serializeExceptionInfo(ExceptionContext &EC,
+                                                   StringRef PathPrefix) {
+  // open a file
+  SmallString<256> Path(PathPrefix);
+  llvm::sys::path::append(Path, EC.CurrentInfile);
+  StringRef Directory = llvm::sys::path::parent_path(Path);
+  llvm::sys::fs::create_directories(Directory);
+
+  std::error_code FileOpenError;
+  llvm::raw_fd_ostream OS(Path, FileOpenError);
+  if (FileOpenError) {
+    llvm::errs() << "Error opening file: " << Path << '\n'
+                 << FileOpenError.message() << "\n";
+    return;
   }
+
+  llvm::yaml::Output out(OS);
+  out << EC;
 }
 
-CollectExceptionInfoAction::CollectExceptionInfoAction(ExceptionContext &Index)
-    : Index(Index) {}
-
-std::unique_ptr<ASTConsumer>
-CollectExceptionInfoAction::CreateASTConsumer(CompilerInstance &CI,
-                                            StringRef) {
-  return std::make_unique<ExceptionInfoASTConsumer>(CI.getASTContext(), Index);
+std::unique_ptr<clang::ASTConsumer>
+clang::exception_scan::CollectExceptionInfoAction::CreateASTConsumer(
+    CompilerInstance &CI, StringRef InFile) {
+  EC.CurrentInfile = InFile;
+  return std::make_unique<ExceptionInfoExtractor>(CI.getASTContext(), EC);
 }
 
-std::unique_ptr<FrontendAction>
-CollectExceptionInfoActionFactory::create() {
+std::unique_ptr<clang::FrontendAction>
+clang::exception_scan::CollectExceptionInfoActionFactory::create() {
   return std::make_unique<CollectExceptionInfoAction>(EC);
 }
