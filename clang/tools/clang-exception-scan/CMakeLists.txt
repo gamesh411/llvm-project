@@ -27,6 +27,7 @@ target_link_libraries(clang-exception-scan
   clangTooling
   clangBasic
   clangAST
+  clangASTMatchers
   clangFrontend
   clangSerialization
 )
