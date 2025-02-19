@@ -16,11 +16,22 @@ void clang::exception_scan::ExceptionInfoExtractor::HandleTranslationUnit(
     ASTContext &Context) {
   for (const Decl *TopLevelDecl : Context.getTranslationUnitDecl()->decls()) {
     if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
+      auto SR = FD->getSourceRange();
+      if (SR.isInvalid()) {
+        continue;
+      }
+
+      if (FD->getASTContext().getSourceManager().isInMainFile(SR.getBegin())) {
+        continue;
+      }
+
       std::optional<std::string> LookupName =
           cross_tu::CrossTranslationUnitContext::getLookupName(FD);
       if (not LookupName)
         continue;
+
       ExceptionAnalyzer FA;
+      FA.ignoreBadAlloc(false);
       EC.PFEI.push_back({EC.CurrentInfile, *LookupName, FA.analyze(FD),
                          FD->getExceptionSpecType(),
                          SM.isInMainFile(FD->getLocation())});
@@ -47,11 +58,14 @@ template <> struct ScalarTraits<TypePtr> {
 
   // Function to write the value as a string:
   static void output(const TypePtr &value, void *ctxt, llvm::raw_ostream &out) {
-    std::string Name;
-    llvm::raw_string_ostream SS(Name);
-    clang::ASTDumper Dumper(SS, false);
-    Dumper.Visit(value);
-    out << Name;
+    // FIXME: This crashes for some types
+    //
+    // std::string Name;
+    // llvm::raw_string_ostream SS(Name);
+    // clang::ASTDumper Dumper(SS, false);
+    // Dumper.Visit(value);
+    // out << Name;
+    out << value;
   }
   // Function to convert a string to a value.  Returns the empty
   // StringRef on success or an error string if string is malformed:
@@ -134,8 +148,8 @@ void clang::exception_scan::reportFirstApproximation(ExceptionContext &EC,
             clang::tidy::utils::ExceptionAnalyzer::State::NotThrowing &&
         PFEI.ES == EST_None) {
       FunctionList.append(PFEI.FunctionUSRName);
-      FunctionList.append(" in ");
-      FunctionList.append(PFEI.FileName);
+      //FunctionList.append(" in ");
+      //FunctionList.append(PFEI.FileName);
       FunctionList.append("\n");
     }
   }
