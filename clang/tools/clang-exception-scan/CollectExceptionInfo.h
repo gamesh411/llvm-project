@@ -15,10 +15,14 @@ namespace clang {
 namespace exception_scan {
 
 struct PerFunctionExceptionInfo {
-  std::string FileName;
+  std::string FirstDeclaredInFile;
+  std::string DefinedInFile;
+  std::string FunctionName;
   std::string FunctionUSRName;
-  AnalysisInfo AI;
+  std::string ExceptionTypeList;
+  ExceptionState Behaviour;
   ExceptionSpecificationType ES;
+  bool ContainsUnknown;
   bool IsInMainFile;
 };
 
@@ -27,8 +31,10 @@ struct ExceptionContext {
   std::vector<PerFunctionExceptionInfo> PFEI;
 };
 
-
-void reportFirstApproximation(ExceptionContext &EC, StringRef PathPrefix);
+void reportAllFunctions(ExceptionContext &EC, StringRef PathPrefix);
+void reportFunctionDuplications(ExceptionContext &EC, StringRef PathPrefix);
+void reportDefiniteMatches(ExceptionContext &EC, StringRef PathPrefix);
+void reportUnknownCausedMisMatches(ExceptionContext &EC, StringRef PathPrefix);
 
 void serializeExceptionInfo(ExceptionContext &EC, StringRef PathPrefix);
 

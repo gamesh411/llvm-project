@@ -36,8 +36,8 @@ int main(int argc, const char **argv) {
   sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
 
-  if (argc != 2) {
-    llvm::errs() << "Usage: clang-exception-scan <compdb>";
+  if (argc != 3) {
+    llvm::errs() << "Usage: clang-exception-scan <compdb> <output-dir>";
     return 1;
   }
 
@@ -53,7 +53,7 @@ int main(int argc, const char **argv) {
     return 2;
   }
 
-  llvm::outs() << "Compilation database " << argv[1] << " loaded.\n";
+  llvm::outs() << "Compilation database " << CompDBPath << " loaded.\n";
 
   const auto &Files = CompDB->getAllFiles();
   const auto UniqueFiles = std::set<std::string>{Files.begin(), Files.end()};
@@ -77,9 +77,12 @@ int main(int argc, const char **argv) {
       std::make_unique<CollectExceptionInfoActionFactory>(EC);
   int result = Tool.run(ExceptionInfoCollectorFactory.get());
 
-  serializeExceptionInfo(EC, "/Users/efulop/exception_scan_output/");
-
-  reportFirstApproximation(EC, "/Users/efulop/exception_scan_output/");
+  const char* OutputDir = argv[2];
+  serializeExceptionInfo(EC, OutputDir);
+  reportAllFunctions(EC, OutputDir);
+  reportFunctionDuplications(EC, OutputDir);
+  reportDefiniteMatches(EC, OutputDir);
+  reportUnknownCausedMisMatches(EC, OutputDir);
 
   if (result != 0) {
     return result;
