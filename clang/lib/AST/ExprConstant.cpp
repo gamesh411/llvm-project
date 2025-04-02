@@ -15684,9 +15684,68 @@ bool FloatExprEvaluator::VisitCallExpr(const CallExpr *E) {
   case Builtin::BI__arithmetic_fence:
     return EvaluateFloat(E->getArg(0), Result, Info);
 
-  // FIXME: Builtin::BI__builtin_powi
-  // FIXME: Builtin::BI__builtin_powif
-  // FIXME: Builtin::BI__builtin_powil
+  case Builtin::BI__builtin_powi:
+  case Builtin::BI__builtin_powif:
+  case Builtin::BI__builtin_powil: {
+    APFloat Base(0.0);
+    APSInt Exponent;
+    
+    if (!EvaluateFloat(E->getArg(0), Base, Info) ||
+        !EvaluateInteger(E->getArg(1), Exponent, Info))
+      return false;
+    
+    // Handle special cases
+    if (Base.isZero()) {
+      if (Exponent.isNegative()) {
+        // 0^negative -> INF
+        const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(E->getType());
+        Result = llvm::APFloat::getInf(Sem);
+      } else if (Exponent.isZero()) {
+        // 0^0 -> 1
+        const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(E->getType());
+        Result = llvm::APFloat(Sem, 1);
+      } else {
+        // 0^positive -> 0
+        Result = Base;
+      }
+      return true;
+    }
+    
+    if (Exponent.isZero()) {
+      // x^0 -> 1 for any x
+      const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(E->getType());
+      Result = llvm::APFloat(Sem, 1);
+      return true;
+    }
+    
+    // For negative exponents: result = 1 / (base ^ |exponent|)
+    bool IsNegativeExponent = Exponent.isNegative();
+    if (IsNegativeExponent)
+      Exponent = -Exponent;
+    
+    // Compute base^exponent using repeated squaring
+    const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(E->getType());
+    Result = llvm::APFloat(Sem, 1);
+    APFloat BaseCopy = Base;
+    
+    while (Exponent != 0) {
+      if (Exponent.getBoolValue())
+        Result.multiply(BaseCopy, APFloat::rmNearestTiesToEven);
+      
+      Exponent = Exponent.ashr(1);
+      if (Exponent != 0)
+        BaseCopy.multiply(BaseCopy, APFloat::rmNearestTiesToEven);
+    }
+    
+    if (IsNegativeExponent) {
+      const llvm::fltSemantics &Sem = Info.Ctx.getFloatTypeSemantics(E->getType());
+      APFloat One(Sem, 1);
+      One.divide(Result, APFloat::rmNearestTiesToEven);
+      Result = One;
+    }
+    
+    return true;
+  }
 
   case Builtin::BI__builtin_copysign:
   case Builtin::BI__builtin_copysignf:
