@@ -1,15 +1,12 @@
 #include "CollectExceptionInfo.h"
-#include "clang/Analysis/CFG.h"
-#include "clang/Basic/ExceptionSpecificationType.h"
-#include "clang/Basic/LLVM.h"
-#include "clang/CrossTU/CrossTranslationUnit.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
+#include "ExceptionAnalyzer.h"
+#include "Serialization.h"
+
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/Decl.h"
+#include "clang/Basic/SourceLocation.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
-
-#include "ExceptionAnalyzer.cpp"
 
 #include <sstream>
 
@@ -17,9 +14,9 @@ void clang::exception_scan::ExceptionInfoExtractor::HandleTranslationUnit(
     ASTContext &Context) {
   for (auto const *TopLevelDecl : Context.getTranslationUnitDecl()->decls()) {
     if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
-      auto FA = ExceptionAnalyzer{};
+      auto FA = ExceptionAnalyzer{Context};
       FA.ignoreBadAlloc(false);
-      auto AI = FA.analyze(FD);
+      auto AI = FA.analyzeFunction(FD);
 
       // the the file in which the function was defined
       auto const *FirstDecl = FD->getFirstDecl();
@@ -40,8 +37,8 @@ void clang::exception_scan::ExceptionInfoExtractor::HandleTranslationUnit(
               "<no_usr_name>");
 
       auto ss = std::stringstream{};
-      for (auto const *T : AI.ThrownExceptions) {
-        std::string ExceptionTypeName = clang::QualType(T, 0).getAsString();
+      for (auto const &T : AI.ThrowEvents) {
+        std::string ExceptionTypeName = T.Type.getAsString();
         ss << ExceptionTypeName << ", ";
       }
       auto view = std::string_view{ss.str()};
@@ -49,75 +46,18 @@ void clang::exception_scan::ExceptionInfoExtractor::HandleTranslationUnit(
         view.remove_suffix(2);
       auto ExceptionTypeList = std::string{view};
 
-      auto Behaviour = AI.Behaviour;
+      auto Behaviour = AI.State;
       auto ES = FD->getExceptionSpecType();
       bool ContainsUnknown = AI.ContainsUnknown;
       bool IsInMainFile = SM.isInMainFile(FD->getOuterLocStart());
 
       // NOTE: optimization: we use more move semantics here
-      EC.PFEI.push_back({FirstDeclaredInFile, DefinedInFile, FunctionName,
-                         FunctionUSRName, ExceptionTypeList, Behaviour, ES,
-                         ContainsUnknown, IsInMainFile});
+      EC.InfoPerFunction.push_back(
+          {FirstDeclaredInFile, DefinedInFile, FunctionName, FunctionUSRName,
+           ExceptionTypeList, Behaviour, ES, ContainsUnknown, IsInMainFile});
     }
   }
 }
-
-template <> struct llvm::yaml::ScalarEnumerationTraits<ExceptionState> {
-  static void enumeration(llvm::yaml::IO &IO, ExceptionState &ES) {
-    IO.enumCase(ES, "Throwing", ExceptionState::Throwing);
-    IO.enumCase(ES, "NotThrowing", ExceptionState::NotThrowing);
-    IO.enumCase(ES, "Unknown", ExceptionState::Unknown);
-  }
-};
-
-template <>
-struct llvm::yaml::ScalarEnumerationTraits<clang::ExceptionSpecificationType> {
-  static void enumeration(llvm::yaml::IO &IO,
-                          clang::ExceptionSpecificationType &ES) {
-    IO.enumCase(ES, "None", clang::EST_None);
-    IO.enumCase(ES, "DynamicNone", clang::EST_DynamicNone);
-    IO.enumCase(ES, "Dynamic", clang::EST_Dynamic);
-    IO.enumCase(ES, "MSAny", clang::EST_MSAny);
-    IO.enumCase(ES, "NoThrow", clang::EST_NoThrow);
-    IO.enumCase(ES, "BasicNoexcept", clang::EST_BasicNoexcept);
-    IO.enumCase(ES, "DependentNoexcept", clang::EST_DependentNoexcept);
-    IO.enumCase(ES, "NoexceptFalse", clang::EST_NoexceptFalse);
-    IO.enumCase(ES, "NoexceptTrue", clang::EST_NoexceptTrue);
-    IO.enumCase(ES, "Unevaluated", clang::EST_Unevaluated);
-    IO.enumCase(ES, "Uninstantiated", clang::EST_Uninstantiated);
-    IO.enumCase(ES, "Unparsed", clang::EST_Unparsed);
-  }
-};
-
-template <>
-struct llvm::yaml::MappingTraits<
-    clang::exception_scan::PerFunctionExceptionInfo> {
-  static void mapping(llvm::yaml::IO &IO,
-                      clang::exception_scan::PerFunctionExceptionInfo &EC) {
-    IO.mapRequired("FirstDeclaredInFile", EC.FirstDeclaredInFile);
-    IO.mapRequired("DefinedInFile", EC.DefinedInFile);
-    IO.mapRequired("FunctionName", EC.FunctionName);
-    IO.mapRequired("FunctionUSRName", EC.FunctionUSRName);
-    IO.mapRequired("Behaviour", EC.Behaviour);
-    IO.mapRequired("ContainsUnknown", EC.ContainsUnknown);
-    IO.mapRequired("ExceptionTypeList", EC.ExceptionTypeList);
-    IO.mapRequired("ExceptionSpecification", EC.ES);
-    IO.mapRequired("IsInMainFile", EC.IsInMainFile);
-  }
-};
-
-template <>
-struct llvm::yaml::SequenceTraits<clang::exception_scan::ExceptionContext> {
-  static size_t size(llvm::yaml::IO &IO,
-                     clang::exception_scan::ExceptionContext &EC) {
-    return EC.PFEI.size();
-  }
-  static clang::exception_scan::PerFunctionExceptionInfo &
-  element(llvm::yaml::IO &IO, clang::exception_scan::ExceptionContext &EC,
-          size_t Index) {
-    return EC.PFEI[Index];
-  }
-};
 
 void clang::exception_scan::reportAllFunctions(ExceptionContext &EC,
                                                StringRef PathPrefix) {
@@ -133,7 +73,7 @@ void clang::exception_scan::reportAllFunctions(ExceptionContext &EC,
   }
 
   OS << "All functions:\n";
-  for (const auto &EI : EC.PFEI) {
+  for (const auto &EI : EC.InfoPerFunction) {
     OS << EI.FunctionUSRName << '\n';
   }
 }
@@ -143,10 +83,10 @@ void clang::exception_scan::reportFunctionDuplications(ExceptionContext &EC,
   std::vector<std::string> Functions;
   std::multiset<std::string> FunctionOccurence;
   std::map<std::string, std::multiset<std::string>> FunctionOccurenceForFile;
-  for (const auto &PFEI : EC.PFEI) {
-    Functions.push_back(PFEI.FunctionUSRName);
-    FunctionOccurence.insert(PFEI.FunctionUSRName);
-    FunctionOccurenceForFile[PFEI.DefinedInFile].insert(PFEI.FunctionUSRName);
+  for (const auto &Info : EC.InfoPerFunction) {
+    Functions.push_back(Info.FunctionUSRName);
+    FunctionOccurence.insert(Info.FunctionUSRName);
+    FunctionOccurenceForFile[Info.DefinedInFile].insert(Info.FunctionUSRName);
   }
 
   std::map<std::string, std::pair<std::string, int>> DuplicatedFunctionsPerFile;
@@ -217,15 +157,14 @@ void clang::exception_scan::reportDefiniteMatches(ExceptionContext &EC,
 
   OS << "Functions that could be marked noexcept, but are not:\n";
   SmallString<256> FunctionList;
-  for (const auto &PFEI : EC.PFEI) {
-    if (PFEI.Behaviour ==
-            clang::tidy::utils::ExceptionAnalyzer::State::NotThrowing &&
-        PFEI.ES == EST_None) {
-      FunctionList.append(PFEI.FunctionUSRName);
+  for (const auto &Info : EC.InfoPerFunction) {
+    if (Info.Behaviour == clang::exception_scan::ExceptionState::NotThrowing &&
+        Info.ExceptionSpecification == EST_None) {
+      FunctionList.append(Info.FunctionUSRName);
       FunctionList.append(" in ");
-      FunctionList.append(PFEI.DefinedInFile);
+      FunctionList.append(Info.DefinedInFile);
       FunctionList.append(" first declared in ");
-      FunctionList.append(PFEI.FirstDeclaredInFile);
+      FunctionList.append(Info.FirstDeclaredInFile);
       FunctionList.append("\n");
     }
   }
@@ -249,14 +188,13 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
   OS << "Functions that could NOT be marked noexcept, because they contain "
         "function calls with unknown behaviour:\n";
   SmallString<256> FunctionList;
-  for (const auto &PFEI : EC.PFEI) {
-    if (PFEI.Behaviour ==
-        clang::tidy::utils::ExceptionAnalyzer::State::Unknown) {
-      FunctionList.append(PFEI.FunctionUSRName);
+  for (const auto &Info : EC.InfoPerFunction) {
+    if (Info.Behaviour == clang::exception_scan::ExceptionState::Unknown) {
+      FunctionList.append(Info.FunctionUSRName);
       FunctionList.append(" in ");
-      FunctionList.append(PFEI.DefinedInFile);
+      FunctionList.append(Info.DefinedInFile);
       FunctionList.append(" first declared in ");
-      FunctionList.append(PFEI.FirstDeclaredInFile);
+      FunctionList.append(Info.FirstDeclaredInFile);
       FunctionList.append("\n");
     }
   }

@@ -21,15 +21,17 @@
 
 #include "CollectExceptionInfo.h"
 #include "ExceptionAnalyzer.cpp"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendAction.h"
+#include "clang/Tooling/CommonOptionsParser.h"
+#include <memory>
 
 using namespace llvm;
 using namespace clang;
-using namespace clang::ast_matchers;
 using namespace clang::tooling;
 using namespace clang::exception_scan;
-
-static cl::OptionCategory
-    ClangExtDefMapGenCategory("clang-extdefmapgen options");
 
 int main(int argc, const char **argv) {
   // Print a stack trace if we signal out.
@@ -77,7 +79,7 @@ int main(int argc, const char **argv) {
       std::make_unique<CollectExceptionInfoActionFactory>(EC);
   int result = Tool.run(ExceptionInfoCollectorFactory.get());
 
-  const char* OutputDir = argv[2];
+  const char *OutputDir = argv[2];
   serializeExceptionInfo(EC, OutputDir);
   reportAllFunctions(EC, OutputDir);
   reportFunctionDuplications(EC, OutputDir);

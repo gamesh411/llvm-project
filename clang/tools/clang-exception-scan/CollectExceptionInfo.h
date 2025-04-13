@@ -1,17 +1,22 @@
-#pragma once
-
-#include "clang/AST/Decl.h"
-#include "clang/Frontend/FrontendAction.h"
-#include "clang/Tooling/Tooling.h"
-#include <string>
+#ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_EXCEPTION_SCAN_COLLECT_EXCEPTIONINFO_H
+#define LLVM_CLANG_TOOLS_EXTRA_CLANG_EXCEPTION_SCAN_COLLECT_EXCEPTIONINFO_H
 
 #include "ExceptionAnalyzer.h"
 
-using ExceptionAnalyzer = clang::tidy::utils::ExceptionAnalyzer;
-using AnalysisInfo = clang::tidy::utils::ExceptionAnalyzer::ExceptionInfo;
-using ExceptionState = clang::tidy::utils::ExceptionAnalyzer::State;
+#include "clang/AST/ASTConsumer.h"
+#include "clang/CrossTU/CrossTranslationUnit.h"
+#include "clang/Frontend/FrontendAction.h"
+#include "clang/Tooling/Tooling.h"
+#include "llvm/ADT/DenseMap.h"
+
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace clang {
+class ASTContext;
+class SourceManager;
+class Stmt;
 namespace exception_scan {
 
 struct PerFunctionExceptionInfo {
@@ -21,14 +26,16 @@ struct PerFunctionExceptionInfo {
   std::string FunctionUSRName;
   std::string ExceptionTypeList;
   ExceptionState Behaviour;
-  ExceptionSpecificationType ES;
+  ExceptionSpecificationType ExceptionSpecification;
   bool ContainsUnknown;
   bool IsInMainFile;
+  // TODO: add conditions for each throw statement something like this:
+  // llvm::DenseMap<const Stmt *, ExceptionCondition> Conditions;
 };
 
 struct ExceptionContext {
   std::string CurrentInfile;
-  std::vector<PerFunctionExceptionInfo> PFEI;
+  std::vector<PerFunctionExceptionInfo> InfoPerFunction;
 };
 
 void reportAllFunctions(ExceptionContext &EC, StringRef PathPrefix);
@@ -74,3 +81,5 @@ public:
 
 } // namespace exception_scan
 } // namespace clang
+
+#endif
