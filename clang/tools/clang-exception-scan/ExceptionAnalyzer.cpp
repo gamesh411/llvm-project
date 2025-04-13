@@ -48,7 +48,7 @@ ExceptionAnalyzer::ExceptionAnalyzer(ASTContext &Context)
 FunctionExceptionInfo
 ExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   if (!Func || !Func->hasBody())
-    return FunctionExceptionInfo{Func, ExceptionState::Unknown, true, {}, {}};
+    return FunctionExceptionInfo{Func, ExceptionState::Unknown, true, {}};
 
   auto It = FunctionCache_.find(Func);
   if (It != FunctionCache_.end())
@@ -57,9 +57,8 @@ ExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   // Build parent map for this function
   ParentMap_ = BuildParentMap(Func->getBody());
 
-  FunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}, {}};
+  FunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}};
   analyzeStatement(Func->getBody(), Info);
-  buildCallGraph(Func, Info);
   FunctionCache_[Func] = Info;
   return Info;
 }
@@ -77,7 +76,7 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
   // Handle try-catch blocks
   if (const CXXTryStmt *Try = dyn_cast<CXXTryStmt>(S)) {
     FunctionExceptionInfo TryInfo = {
-        nullptr, ExceptionState::NotThrowing, false, {}, {}};
+        nullptr, ExceptionState::NotThrowing, false, {}};
     analyzeStatement(Try->getTryBlock(), TryInfo);
 
     if (TryInfo.State == ExceptionState::Throwing) {
@@ -90,7 +89,7 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
         if (!Handler->getExceptionDecl()) {
           AllCaught = true;
           FunctionExceptionInfo HandlerInfo = {
-              nullptr, ExceptionState::NotThrowing, false, {}, {}};
+              nullptr, ExceptionState::NotThrowing, false, {}};
           analyzeStatement(Handler->getHandlerBlock(), HandlerInfo);
           if (HandlerInfo.State == ExceptionState::Throwing) {
             AnyRethrows = true;
@@ -127,7 +126,7 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
                 (Thrown->isDerivedFrom(Caught) || Thrown == Caught)) {
               HandlerCaughtSomething = true;
               FunctionExceptionInfo HandlerInfo = {
-                  nullptr, ExceptionState::NotThrowing, false, {}, {}};
+                  nullptr, ExceptionState::NotThrowing, false, {}};
               analyzeStatement(Handler->getHandlerBlock(), HandlerInfo);
               if (HandlerInfo.State == ExceptionState::Throwing) {
                 AnyRethrows = true;
@@ -259,38 +258,6 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
       }
     }
   }
-}
-
-void ExceptionAnalyzer::buildCallGraph(const FunctionDecl *Func,
-                                       FunctionExceptionInfo &Info) {
-  if (!Func || !Func->hasBody())
-    return;
-
-  class CallGraphVisitor : public RecursiveASTVisitor<CallGraphVisitor> {
-  public:
-    explicit CallGraphVisitor(FunctionExceptionInfo &Info) : Info_(Info) {}
-
-    bool VisitCallExpr(CallExpr *Call) {
-      if (const FunctionDecl *Callee = Call->getDirectCallee()) {
-        Info_.CallGraph.insert(Callee);
-      }
-      return true;
-    }
-
-  private:
-    FunctionExceptionInfo &Info_;
-  };
-
-  CallGraphVisitor Visitor(Info);
-  Visitor.TraverseDecl(const_cast<FunctionDecl *>(Func));
-}
-
-llvm::SmallSet<const FunctionDecl *, 8>
-ExceptionAnalyzer::getCallGraph(const FunctionDecl *Func) const {
-  auto It = CallGraphCache_.find(Func);
-  if (It != CallGraphCache_.end())
-    return It->second;
-  return llvm::SmallSet<const FunctionDecl *, 8>();
 }
 
 std::vector<ExceptionCondition>

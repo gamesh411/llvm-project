@@ -46,23 +46,17 @@ struct FunctionExceptionInfo {
   bool ContainsUnknown; ///< Whether the function contains unknown elements
   std::vector<ThrowInfo>
       ThrowEvents; ///< Types of exceptions that can be thrown
-  llvm::SmallSet<const FunctionDecl *, 8>
-      CallGraph; ///< Functions called by this function
 };
 
-/// Enhanced exception analyzer that includes call graph analysis and condition
-/// tracking
+/// Enhanced exception analyzer that includes condition tracking
 class ExceptionAnalyzer {
 public:
   explicit ExceptionAnalyzer(ASTContext &Context);
   FunctionExceptionInfo analyzeFunction(const FunctionDecl *Func);
   FunctionExceptionInfo analyzeStatement(const Stmt *S);
-  llvm::SmallSet<const FunctionDecl *, 8>
-  getCallGraph(const FunctionDecl *Func) const;
   std::vector<ExceptionCondition>
   getExceptionConditions(const FunctionDecl *Func) const;
   ExceptionCondition getConditionInfo(const Expr *Cond) const;
-  void buildCallGraph(const FunctionDecl *Func);
   FunctionExceptionInfo analyzeFunctionImpl(const FunctionDecl *Func);
   FunctionExceptionInfo analyzeStatementImpl(const Stmt *S);
 
@@ -78,9 +72,6 @@ private:
   /// Analyze a statement and update the exception information
   void analyzeStatement(const Stmt *S, FunctionExceptionInfo &Info);
 
-  /// Build a call graph for a function
-  void buildCallGraph(const FunctionDecl *Func, FunctionExceptionInfo &Info);
-
   /// Get conditions under which a throw expression occurs
   std::vector<ExceptionCondition> getConditions(const Stmt *Throw);
 
@@ -91,8 +82,6 @@ private:
   bool IgnoreBadAlloc_ = false; ///< Whether to ignore std::bad_alloc
   std::vector<std::string> IgnoredExceptions_; ///< Exception types to ignore
   llvm::DenseMap<const FunctionDecl *, FunctionExceptionInfo> FunctionCache_;
-  llvm::DenseMap<const FunctionDecl *, llvm::SmallSet<const FunctionDecl *, 8>>
-      CallGraphCache_;
   llvm::DenseMap<const FunctionDecl *, std::vector<ExceptionCondition>>
       ConditionCache_;
   llvm::DenseMap<const Stmt *, const Stmt *>

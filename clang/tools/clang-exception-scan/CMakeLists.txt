@@ -6,6 +6,7 @@ set(LLVM_LINK_COMPONENTS
 add_clang_library(clangExceptionScan
   CollectExceptionInfo.cpp
   ExceptionAnalyzer.cpp
+  CallGraphGeneratorConsumer.cpp
   PARTIAL_SOURCES_INTENDED
   LINK_LIBS
   clangAST
@@ -15,12 +16,14 @@ add_clang_library(clangExceptionScan
   clangCrossTU
   clangFrontend
   clangTooling
+  clangIndex
 )
 
 install(FILES
   ExceptionAnalyzer.h
   CollectExceptionInfo.h
   Serialization.h
+  CallGraphGeneratorConsumer.h
   DESTINATION include/clang/Tooling/clang-exception-scan
 )
 

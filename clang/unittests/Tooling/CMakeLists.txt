@@ -7,13 +7,14 @@ set(LLVM_LINK_COMPONENTS
   TargetParser
   )
 
-
 add_clang_unittest(ToolingTests
   ASTSelectionTest.cpp
   CastExprTest.cpp
   CommentHandlerTest.cpp
   CompilationDatabaseTest.cpp
   DiagnosticsYamlTest.cpp
+  ExceptionAnalyzerTest.cpp
+  CallGraphGeneratorTest.cpp
   ExecutionTest.cpp
   FixItTest.cpp
   HeaderAnalysisTest.cpp
@@ -21,6 +22,7 @@ add_clang_unittest(ToolingTests
   StandardLibraryTest.cpp
   LexicallyOrderedRecursiveASTVisitorTest.cpp
   LookupTest.cpp
+  USRMappingConsumerTest.cpp
   QualTypeNamesTest.cpp
   RangeSelectorTest.cpp
   DependencyScanning/DependencyScannerTest.cpp
@@ -71,6 +73,10 @@ add_clang_unittest(ToolingTests
   TransformerTest.cpp
   )
 
+target_include_directories(ToolingTests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/clang-exception-scan
+)
+
 clang_target_link_libraries(ToolingTests
   PRIVATE
   clangAST
@@ -89,6 +95,7 @@ clang_target_link_libraries(ToolingTests
   clangToolingInclusionsStdlib
   clangToolingRefactoring
   clangTransformer
+  clangExceptionScan
   )
 
 target_link_libraries(ToolingTests
