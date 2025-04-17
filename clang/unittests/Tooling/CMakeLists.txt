@@ -71,6 +71,7 @@ add_clang_unittest(ToolingTests
   StencilTest.cpp
   ToolingTest.cpp
   TransformerTest.cpp
+  NoexceptDependeeTest.cpp
   )
 
 target_include_directories(ToolingTests PRIVATE
