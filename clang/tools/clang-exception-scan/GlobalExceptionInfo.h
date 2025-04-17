@@ -33,10 +33,10 @@ struct CallDependency {
 
 /// Information about a function that appears in a noexcept clause
 struct NoexceptDependeeInfo {
-  std::string USR;           ///< USR of the function
-  std::string TU;            ///< Translation unit containing the function
-  std::string FunctionName;  ///< Name of the function
-  clang::SourceLocation Loc; ///< Location of the function
+  std::string USR;             ///< USR of the function
+  std::string TU;              ///< Translation unit containing the function
+  std::string FunctionName;    ///< Name of the function
+  clang::SourceLocation Loc;   ///< Location of the function
   std::string NoexceptLocFile; ///< File containing the noexcept clause
   unsigned NoexceptLocLine;    ///< Line number of the noexcept clause
   unsigned NoexceptLocColumn;  ///< Column number of the noexcept clause
@@ -72,10 +72,11 @@ struct GlobalExceptionInfo {
   std::mutex TUDependenciesMutex;      ///< Mutex for TU dependencies
   std::mutex USRToDefinedInTUMapMutex; ///< Mutex for USR to TU map
   std::mutex TUToUSRMapMutex;          ///< Mutex for TU to USR map
-  
+
   // Data structures for noexcept-dependee functions
-  std::vector<NoexceptDependeeInfo> NoexceptDependees; ///< Functions that appear in noexcept clauses
-  std::mutex NoexceptDependeesMutex;                   ///< Mutex for noexcept dependees
+  std::vector<NoexceptDependeeInfo>
+      NoexceptDependees; ///< Functions that appear in noexcept clauses
+  std::mutex NoexceptDependeesMutex; ///< Mutex for noexcept dependees
 };
 
 } // namespace exception_scan

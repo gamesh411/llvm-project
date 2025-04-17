@@ -4,7 +4,6 @@
 #include "ExceptionAnalyzer.h"
 
 #include "clang/AST/ASTConsumer.h"
-#include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/DenseMap.h"
@@ -14,10 +13,14 @@
 #include <vector>
 
 namespace clang {
+
 class ASTContext;
 class SourceManager;
 class Stmt;
+
 namespace exception_scan {
+
+struct GlobalExceptionInfo;
 
 struct PerFunctionExceptionInfo {
   std::string FirstDeclaredInFile;
@@ -42,6 +45,11 @@ void reportAllFunctions(ExceptionContext &EC, StringRef PathPrefix);
 void reportFunctionDuplications(ExceptionContext &EC, StringRef PathPrefix);
 void reportDefiniteMatches(ExceptionContext &EC, StringRef PathPrefix);
 void reportUnknownCausedMisMatches(ExceptionContext &EC, StringRef PathPrefix);
+void reportNoexceptDependees(const GlobalExceptionInfo &GCG,
+                             StringRef PathPrefix);
+void reportCallDependencies(const GlobalExceptionInfo &GCG,
+                            StringRef PathPrefix);
+void reportTUDependencies(const GlobalExceptionInfo &GCG, StringRef PathPrefix);
 
 void serializeExceptionInfo(ExceptionContext &EC, StringRef PathPrefix);
 

@@ -1,10 +1,12 @@
 #include "CollectExceptionInfo.h"
 #include "ExceptionAnalyzer.h"
+#include "GlobalExceptionInfo.h"
 #include "Serialization.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/Basic/SourceLocation.h"
+#include "clang/CrossTU/CrossTranslationUnit.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -220,6 +222,71 @@ void clang::exception_scan::serializeExceptionInfo(ExceptionContext &EC,
 
   llvm::yaml::Output out(OS);
   out << EC;
+}
+
+// New reporting functions for the additional data
+void clang::exception_scan::reportNoexceptDependees(
+    const GlobalExceptionInfo &GCG, StringRef PathPrefix) {
+  SmallString<256> ReportPath(PathPrefix);
+  llvm::sys::path::append(ReportPath, "noexcept_dependees.txt");
+  std::error_code FileOpenError;
+  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
+
+  if (FileOpenError) {
+    llvm::errs() << "Error opening file: " << ReportPath << '\n'
+                 << FileOpenError.message() << "\n";
+    return;
+  }
+
+  OS << "Functions that appear in noexcept clauses:\n";
+  for (const auto &Info : GCG.NoexceptDependees) {
+    OS << "Function: " << Info.FunctionName << "\n";
+    OS << "  USR: " << Info.USR << "\n";
+    OS << "  TU: " << Info.TU << "\n";
+    OS << "  Location: " << Info.NoexceptLocFile << ":" << Info.NoexceptLocLine
+       << ":" << Info.NoexceptLocColumn << "\n\n";
+  }
+}
+
+void clang::exception_scan::reportCallDependencies(
+    const GlobalExceptionInfo &GCG, StringRef PathPrefix) {
+  SmallString<256> ReportPath(PathPrefix);
+  llvm::sys::path::append(ReportPath, "call_dependencies.txt");
+  std::error_code FileOpenError;
+  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
+
+  if (FileOpenError) {
+    llvm::errs() << "Error opening file: " << ReportPath << '\n'
+                 << FileOpenError.message() << "\n";
+    return;
+  }
+
+  OS << "Function call dependencies:\n";
+  for (const auto &Call : GCG.CallDependencies) {
+    OS << "Caller: " << Call.CallerUSR << "\n";
+    OS << "Callee: " << Call.CalleeUSR << "\n";
+    OS << "Location: " << Call.CallLocFile << ":" << Call.CallLocLine << ":"
+       << Call.CallLocColumn << "\n\n";
+  }
+}
+
+void clang::exception_scan::reportTUDependencies(const GlobalExceptionInfo &GCG,
+                                                 StringRef PathPrefix) {
+  SmallString<256> ReportPath(PathPrefix);
+  llvm::sys::path::append(ReportPath, "tu_dependencies.txt");
+  std::error_code FileOpenError;
+  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
+
+  if (FileOpenError) {
+    llvm::errs() << "Error opening file: " << ReportPath << '\n'
+                 << FileOpenError.message() << "\n";
+    return;
+  }
+
+  OS << "Translation unit dependencies:\n";
+  for (const auto &Dep : GCG.TUDependencies) {
+    OS << Dep.SourceTU << " -> " << Dep.TargetTU << "\n";
+  }
 }
 
 std::unique_ptr<clang::ASTConsumer>
