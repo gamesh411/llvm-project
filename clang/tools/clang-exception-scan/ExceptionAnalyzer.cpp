@@ -47,18 +47,47 @@ ExceptionAnalyzer::ExceptionAnalyzer(ASTContext &Context)
 
 FunctionExceptionInfo
 ExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
-  if (!Func || !Func->hasBody())
-    return FunctionExceptionInfo{Func, ExceptionState::Unknown, true, {}};
+  if (!Func) {
+    // Handle null function declarations (should never happen in practice)
+    return FunctionExceptionInfo{nullptr, ExceptionState::Unknown, true, {}};
+  }
 
+  // Check if we've already analyzed this function
   auto It = FunctionCache_.find(Func);
   if (It != FunctionCache_.end())
     return It->second;
 
+  // Handle functions without a body (declarations only)
+  if (!Func->hasBody()) {
+    // For functions without a body, we need to check if they're marked as
+    // noexcept or if they have an exception specification
+    FunctionExceptionInfo Info{Func, ExceptionState::Unknown, true, {}};
+    // If the function has an exception specification, we can determine its
+    // state
+    if (Func->getExceptionSpecType() == EST_None ||
+        Func->getExceptionSpecType() == EST_Dynamic) {
+      Info.State = ExceptionState::Throwing;
+    } else if (Func->getExceptionSpecType() == EST_NoexceptTrue ||
+               Func->getExceptionSpecType() == EST_NoexceptFalse ||
+               Func->getExceptionSpecType() == EST_NoThrow) {
+      Info.State = ExceptionState::NotThrowing;
+    }
+
+    // Cache the result
+    FunctionCache_[Func] = Info;
+    return Info;
+  }
+
   // Build parent map for this function
   ParentMap_ = BuildParentMap(Func->getBody());
 
+  // Start with NotThrowing and no unknown elements
   FunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}};
+
+  // Analyze the function body
   analyzeStatement(Func->getBody(), Info);
+
+  // Cache the result
   FunctionCache_[Func] = Info;
   return Info;
 }
@@ -250,12 +279,29 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
       }
 
       FunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
+
+      // If the callee can throw, this function can throw
       if (CalleeInfo.State == ExceptionState::Throwing) {
         Info.State = ExceptionState::Throwing;
         Info.ThrowEvents.insert(Info.ThrowEvents.end(),
                                 CalleeInfo.ThrowEvents.begin(),
                                 CalleeInfo.ThrowEvents.end());
       }
+
+      // If the callee has unknown behavior, this function has unknown behavior
+      if (CalleeInfo.ContainsUnknown) {
+        Info.ContainsUnknown = true;
+        // If we don't know if the callee throws, we should mark this function
+        // as unknown
+        if (CalleeInfo.State == ExceptionState::Unknown) {
+          Info.State = ExceptionState::Unknown;
+        }
+      }
+    } else {
+      // Handle indirect function calls (function pointers, etc.)
+      // We can't determine the callee, so mark as unknown
+      Info.ContainsUnknown = true;
+      Info.State = ExceptionState::Unknown;
     }
   }
 }
