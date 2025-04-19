@@ -63,6 +63,82 @@ void catches_wrong_exception() {
   }
 }
 
-void function_with_unknown_implementation();
+int function_with_unknown_implementation();
 
+// This function is unknown because it calls a function with an unknown
+// implementation.
+//
+// CHECK-NOT: c:@F@calls_unknown_function# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
 void calls_unknown_function() { function_with_unknown_implementation(); }
+
+// This function is known to be non-throwing because it calls a builtin
+// function that is known to be non-throwing.
+//
+// CHECK: c:@F@uses_builtin#I# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
+int uses_builtin(int x) {
+  return __builtin_bswap32(x);
+}
+
+// This function is unknown because it calls a function with an unknown
+// implementation.
+//
+// CHECK-NOT: c:@F@uses_builtin_with_unknown#I# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
+int uses_builtin_with_unknown(int x) {
+  int y = __builtin_bswap32(x);
+  function_with_unknown_implementation();
+  return y;
+}
+
+// Check that the order of different kinds of function calls is not important.
+//
+// CHECK-NOT: c:@F@order_of_function_calls#I# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
+int order_of_function_calls() {
+  int a = function_with_unknown_implementation();
+  return __builtin_bswap32(a);
+}
+
+// Check nested try-catch blocks.
+//
+// TODO: This is not detected as noexcept. Once fixed, add a check here for:
+// c:@F@nested_try_catch# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
+void nested_try_catch() {
+  try {
+    try {
+      throw_runtime_error();
+    } catch (std::runtime_error) {
+    }
+  } catch (std::runtime_error) {
+  }
+}
+
+// Check nested try-catch blocks with rethrow-catch chain
+//
+// TODO: This is not detected as noexcept. Once fixed, add a check here for:
+// c:@F@nested_try_catch_with_rethrow_catch_chain# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
+void nested_try_catch_with_rethrow_catch_chain() {
+  try {
+    throw_runtime_error();
+  } catch (std::runtime_error) {
+    throw 42;
+  } catch (int) {
+  }
+}
+
+// Check nested try-catch blocks with rethrows.
+//
+// TODO: This is not detected as noexcept. Once fixed, add a check here for:
+// CHECK: c:@F@nested_try_catch_with_rethrows# in {{.*}}basic_function_marking.cpp first declared in
+// {{.*}}basic_function_marking.cpp
+void nested_try_catch_with_rethrows() {
+  try {
+    throw_runtime_error();
+  } catch (std::runtime_error) {
+    throw;
+  }
+}

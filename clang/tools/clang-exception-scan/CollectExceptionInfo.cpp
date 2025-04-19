@@ -161,7 +161,7 @@ void clang::exception_scan::reportDefiniteMatches(ExceptionContext &EC,
   SmallString<256> FunctionList;
   for (const auto &Info : EC.InfoPerFunction) {
     if (Info.Behaviour == clang::exception_scan::ExceptionState::NotThrowing &&
-        Info.ExceptionSpecification == EST_None) {
+        Info.ExceptionSpecification == EST_None && !Info.ContainsUnknown) {
       FunctionList.append(Info.FunctionUSRName);
       FunctionList.append(" in ");
       FunctionList.append(Info.DefinedInFile);

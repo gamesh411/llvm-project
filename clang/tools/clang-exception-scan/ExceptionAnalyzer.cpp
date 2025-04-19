@@ -45,6 +45,18 @@ static auto BuildParentMap(const Stmt *S)
 ExceptionAnalyzer::ExceptionAnalyzer(ASTContext &Context)
     : Context_(Context), IgnoreBadAlloc_(true) {}
 
+bool ExceptionAnalyzer::isNoexceptBuiltin(const FunctionDecl *FD) const {
+  if (!FD)
+    return false;
+
+  // Check if this is a builtin function
+  unsigned BI = FD->getBuiltinID();
+  if (BI != 0)
+    return true;
+
+  return false;
+}
+
 FunctionExceptionInfo
 ExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   if (!Func) {
@@ -74,6 +86,13 @@ ExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
     }
 
     // Cache the result
+    FunctionCache_[Func] = Info;
+    return Info;
+  }
+
+  // Check if this is a noexcept builtin
+  if (isNoexceptBuiltin(Func)) {
+    FunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}};
     FunctionCache_[Func] = Info;
     return Info;
   }
@@ -247,6 +266,12 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
   // Handle function calls
   if (const CallExpr *Call = dyn_cast<CallExpr>(S)) {
     if (const FunctionDecl *Callee = Call->getDirectCallee()) {
+      // Handle builtin functions first
+      if (isNoexceptBuiltin(Callee)) {
+        // Known non-throwing builtin, no need to analyze further
+        return;
+      }
+
       // Handle template instantiations
       if (const FunctionTemplateSpecializationInfo *TSI =
               Callee->getTemplateSpecializationInfo()) {

@@ -68,6 +68,8 @@ public:
     IgnoredExceptions_ = Types;
   }
 
+  bool isNoexceptBuiltin(const FunctionDecl *FD) const;
+
 private:
   /// Analyze a statement and update the exception information
   void analyzeStatement(const Stmt *S, FunctionExceptionInfo &Info);
