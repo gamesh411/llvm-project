@@ -1,6 +1,5 @@
 set(LLVM_LINK_COMPONENTS
   Support
-  Core
 )
 
 add_clang_library(clangExceptionScan
@@ -40,23 +39,6 @@ add_clang_tool(clang-exception-scan
 target_link_libraries(clang-exception-scan
   PRIVATE
   clangCrossTU
-  clangExceptionScan
-  clangTooling
-  clangBasic
-  clangAST
-  clangASTMatchers
-  clangFrontend
-  clangSerialization
-)
-
-# Add the example tool
-add_clang_tool(clang-exception-analyzer-example
-  ExceptionAnalyzerExample.cpp
-  PARTIAL_SOURCES_INTENDED
-)
-
-target_link_libraries(clang-exception-analyzer-example
-  PRIVATE
   clangExceptionScan
   clangTooling
   clangBasic

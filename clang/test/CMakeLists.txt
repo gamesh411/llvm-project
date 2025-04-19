@@ -66,6 +66,7 @@ list(APPEND CLANG_TEST_DEPS
   apinotes-test
   c-index-test
   clang
+  clang-exception-scan
   clang-fuzzer-dictionary
   clang-resource-headers
   clang-format
