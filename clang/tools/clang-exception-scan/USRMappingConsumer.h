@@ -33,15 +33,17 @@ public:
 /// Frontend action to create USRMappingConsumer
 class USRMappingAction : public ASTFrontendAction {
 public:
-  USRMappingAction(GlobalExceptionInfo &GCG) : GCG_(GCG) {}
+  USRMappingAction(GlobalExceptionInfo &GCG) : GCG_(GCG), CurrentTU_("") {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
-    return std::make_unique<USRMappingConsumer>(InFile.str(), GCG_);
+    CurrentTU_ = InFile.str();
+    return std::make_unique<USRMappingConsumer>(CurrentTU_, GCG_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
+  std::string CurrentTU_;
 };
 
 class USRMappingActionFactory : public tooling::FrontendActionFactory {
