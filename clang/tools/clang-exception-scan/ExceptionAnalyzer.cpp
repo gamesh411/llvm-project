@@ -331,14 +331,6 @@ void ExceptionAnalyzer::analyzeStatement(const Stmt *S,
   }
 }
 
-std::vector<ExceptionCondition>
-ExceptionAnalyzer::getExceptionConditions(const FunctionDecl *Func) const {
-  auto It = ConditionCache_.find(Func);
-  if (It != ConditionCache_.end())
-    return It->second;
-  return std::vector<ExceptionCondition>();
-}
-
 ExceptionCondition ExceptionAnalyzer::getConditionInfo(const Expr *Cond) const {
   ExceptionCondition Result;
   if (!Cond)

@@ -19,6 +19,7 @@
 #include <clang/CrossTU/CrossTranslationUnit.h>
 #include <string>
 
+#include "ASTBasedExceptionAnalyzer.h"
 #include "CallGraphGeneratorConsumer.h"
 #include "CollectExceptionInfo.h"
 #include "ExceptionAnalyzer.h"
@@ -48,12 +49,15 @@ static cl::opt<std::string>
 static cl::opt<std::string> OutputDir("output-dir", cl::Positional,
                                       cl::desc("<output-directory>"),
                                       cl::Required);
+static cl::opt<bool> UseASTBased("ast-based", cl::init(false),
+                                 cl::desc("Use AST-based exception analyzer"));
 
 // Custom FrontendAction that runs multiple consumers in sequence
 class MultiConsumerAction : public clang::ASTFrontendAction {
 public:
-  MultiConsumerAction(GlobalExceptionInfo &GCG, ExceptionContext &EC)
-      : GCG_(GCG), EC_(EC) {}
+  MultiConsumerAction(GlobalExceptionInfo &GCG, ExceptionContext &EC,
+                      bool UseASTBased)
+      : GCG_(GCG), EC_(EC), UseASTBased_(UseASTBased) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
@@ -61,8 +65,10 @@ public:
     class SequentialConsumer : public clang::ASTConsumer {
     public:
       SequentialConsumer(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                         CompilerInstance &CI, StringRef InFile)
-          : GCG_(GCG), EC_(EC), CI_(CI), InFile_(InFile) {}
+                         CompilerInstance &CI, StringRef InFile,
+                         bool UseASTBased)
+          : GCG_(GCG), EC_(EC), CI_(CI), InFile_(InFile),
+            UseASTBased_(UseASTBased) {}
 
       void HandleTranslationUnit(ASTContext &Context) override {
         // Run USRMappingConsumer first
@@ -73,52 +79,104 @@ public:
         CallGraphGeneratorConsumer CallGraphConsumer(InFile_.str(), GCG_);
         CallGraphConsumer.HandleTranslationUnit(Context);
 
-        // Then run ExceptionAnalyzer
-        ExceptionAnalyzer ExceptionAnalyzer(Context);
-        for (auto const *TopLevelDecl :
-             Context.getTranslationUnitDecl()->decls()) {
-          if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
-            auto AI = ExceptionAnalyzer.analyzeFunction(FD);
+        // Then run the appropriate ExceptionAnalyzer
+        if (UseASTBased_) {
+          // Use AST-based analyzer
+          ASTBasedExceptionAnalyzer ExceptionAnalyzer(Context);
+          for (auto const *TopLevelDecl :
+               Context.getTranslationUnitDecl()->decls()) {
+            if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
+              auto AI = ExceptionAnalyzer.analyzeFunction(FD);
 
-            // Collect exception info
-            auto const *FirstDecl = FD->getFirstDecl();
-            auto FirstDeclaredInFile = std::string{
-                CI_.getSourceManager().getFilename(FirstDecl->getLocation())};
-            auto const *Definition = FD->getDefinition();
+              // Collect exception info
+              auto const *FirstDecl = FD->getFirstDecl();
+              auto FirstDeclaredInFile = std::string{
+                  CI_.getSourceManager().getFilename(FirstDecl->getLocation())};
+              auto const *Definition = FD->getDefinition();
 
-            auto DefinedInFile = std::string{};
-            if (Definition)
-              DefinedInFile = std::string{CI_.getSourceManager().getFilename(
-                  Definition->getLocation())};
-            auto *Identifier = FirstDecl->getIdentifier();
-            auto FunctionName = std::string{};
-            if (Identifier)
-              FunctionName = std::string{Identifier->getName()};
+              auto DefinedInFile = std::string{};
+              if (Definition)
+                DefinedInFile = std::string{CI_.getSourceManager().getFilename(
+                    Definition->getLocation())};
+              auto *Identifier = FirstDecl->getIdentifier();
+              auto FunctionName = std::string{};
+              if (Identifier)
+                FunctionName = std::string{Identifier->getName()};
 
-            auto FunctionUSRName =
-                cross_tu::CrossTranslationUnitContext::getLookupName(FD)
-                    .value_or("<no_usr_name>");
+              auto FunctionUSRName =
+                  cross_tu::CrossTranslationUnitContext::getLookupName(FD)
+                      .value_or("<no_usr_name>");
 
-            auto ss = std::stringstream{};
-            for (auto const &T : AI.ThrowEvents) {
-              std::string ExceptionTypeName = T.Type.getAsString();
-              ss << ExceptionTypeName << ", ";
+              auto ss = std::stringstream{};
+              for (auto const &T : AI.ThrowEvents) {
+                std::string ExceptionTypeName = T.Type.getAsString();
+                ss << ExceptionTypeName << ", ";
+              }
+              auto view = std::string_view{ss.str()};
+              if (view.size() > 2)
+                view.remove_suffix(2);
+              auto ExceptionTypeList = std::string{view};
+
+              auto Behaviour = AI.State;
+              auto ES = FD->getExceptionSpecType();
+              bool ContainsUnknown = AI.ContainsUnknown;
+              bool IsInMainFile =
+                  CI_.getSourceManager().isInMainFile(FD->getOuterLocStart());
+
+              EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
+                                             FunctionName, FunctionUSRName,
+                                             ExceptionTypeList, Behaviour, ES,
+                                             ContainsUnknown, IsInMainFile});
             }
-            auto view = std::string_view{ss.str()};
-            if (view.size() > 2)
-              view.remove_suffix(2);
-            auto ExceptionTypeList = std::string{view};
+          }
+        } else {
+          // Use original analyzer
+          ExceptionAnalyzer ExceptionAnalyzer(Context);
+          for (auto const *TopLevelDecl :
+               Context.getTranslationUnitDecl()->decls()) {
+            if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
+              auto AI = ExceptionAnalyzer.analyzeFunction(FD);
 
-            auto Behaviour = AI.State;
-            auto ES = FD->getExceptionSpecType();
-            bool ContainsUnknown = AI.ContainsUnknown;
-            bool IsInMainFile =
-                CI_.getSourceManager().isInMainFile(FD->getOuterLocStart());
+              // Collect exception info
+              auto const *FirstDecl = FD->getFirstDecl();
+              auto FirstDeclaredInFile = std::string{
+                  CI_.getSourceManager().getFilename(FirstDecl->getLocation())};
+              auto const *Definition = FD->getDefinition();
 
-            EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
-                                           FunctionName, FunctionUSRName,
-                                           ExceptionTypeList, Behaviour, ES,
-                                           ContainsUnknown, IsInMainFile});
+              auto DefinedInFile = std::string{};
+              if (Definition)
+                DefinedInFile = std::string{CI_.getSourceManager().getFilename(
+                    Definition->getLocation())};
+              auto *Identifier = FirstDecl->getIdentifier();
+              auto FunctionName = std::string{};
+              if (Identifier)
+                FunctionName = std::string{Identifier->getName()};
+
+              auto FunctionUSRName =
+                  cross_tu::CrossTranslationUnitContext::getLookupName(FD)
+                      .value_or("<no_usr_name>");
+
+              auto ss = std::stringstream{};
+              for (auto const &T : AI.ThrowEvents) {
+                std::string ExceptionTypeName = T.Type.getAsString();
+                ss << ExceptionTypeName << ", ";
+              }
+              auto view = std::string_view{ss.str()};
+              if (view.size() > 2)
+                view.remove_suffix(2);
+              auto ExceptionTypeList = std::string{view};
+
+              auto Behaviour = AI.State;
+              auto ES = FD->getExceptionSpecType();
+              bool ContainsUnknown = AI.ContainsUnknown;
+              bool IsInMainFile =
+                  CI_.getSourceManager().isInMainFile(FD->getOuterLocStart());
+
+              EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
+                                             FunctionName, FunctionUSRName,
+                                             ExceptionTypeList, Behaviour, ES,
+                                             ContainsUnknown, IsInMainFile});
+            }
           }
         }
 
@@ -132,30 +190,35 @@ public:
       ExceptionContext &EC_;
       CompilerInstance &CI_;
       StringRef InFile_;
+      bool UseASTBased_;
     };
 
-    return std::make_unique<SequentialConsumer>(GCG_, EC_, CI, InFile);
+    return std::make_unique<SequentialConsumer>(GCG_, EC_, CI, InFile,
+                                                UseASTBased_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
   ExceptionContext &EC_;
+  bool UseASTBased_;
 };
 
 // Factory for our custom action
 class MultiConsumerActionFactory
     : public clang::tooling::FrontendActionFactory {
 public:
-  MultiConsumerActionFactory(GlobalExceptionInfo &GCG, ExceptionContext &EC)
-      : GCG_(GCG), EC_(EC) {}
+  MultiConsumerActionFactory(GlobalExceptionInfo &GCG, ExceptionContext &EC,
+                             bool UseASTBased)
+      : GCG_(GCG), EC_(EC), UseASTBased_(UseASTBased) {}
 
   std::unique_ptr<clang::FrontendAction> create() override {
-    return std::make_unique<MultiConsumerAction>(GCG_, EC_);
+    return std::make_unique<MultiConsumerAction>(GCG_, EC_, UseASTBased_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
   ExceptionContext &EC_;
+  bool UseASTBased_;
 };
 
 int main(int argc, const char **argv) {
@@ -194,7 +257,8 @@ int main(int argc, const char **argv) {
   ExceptionContext EC;
 
   // Create our custom action factory that will run all consumers
-  auto ActionFactory = std::make_unique<MultiConsumerActionFactory>(GEI, EC);
+  auto ActionFactory =
+      std::make_unique<MultiConsumerActionFactory>(GEI, EC, UseASTBased);
 
   // Create and run the tool
   ClangTool Tool(*Compilations, SourcePaths);

@@ -1,11 +1,14 @@
 #ifndef LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_EXCEPTIONANALYZER_H
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_EXCEPTIONANALYZER_H
 
+#include "ExceptionAnalysisInfo.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/Basic/SourceLocation.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
@@ -14,51 +17,14 @@
 namespace clang {
 namespace exception_scan {
 
-/// Represents the state of a function regarding its exception behavior
-enum class ExceptionState {
-  NotThrowing = 0, ///< Function does not throw exceptions
-  Throwing = 1,    ///< Function can throw exceptions
-  Unknown = 2      ///< Function's exception behavior is unknown
-};
-
-/// Represents a condition under which an exception might be thrown
-struct ExceptionCondition {
-  std::string Condition; ///< String representation of the condition
-  SourceLocation Loc;    ///< Source location of the condition
-  std::string File;      ///< File containing the condition
-  unsigned Line;         ///< Line number of the condition
-  unsigned Column;       ///< Column number of the condition
-};
-
-/// Represents information about a specific exception type
-struct ThrowInfo {
-  const Stmt *ThrowStmt;
-  QualType Type;        ///< The exception type
-  std::string TypeName; ///< String representation of the type
-  std::vector<ExceptionCondition>
-      Conditions; ///< Conditions under which this type is thrown
-};
-
-/// Represents detailed exception information for a function
-struct FunctionExceptionInfo {
-  const FunctionDecl *Function; ///< The function declaration
-  ExceptionState State;         ///< The function's exception state
-  bool ContainsUnknown; ///< Whether the function contains unknown elements
-  std::vector<ThrowInfo>
-      ThrowEvents; ///< Types of exceptions that can be thrown
-};
-
-/// Enhanced exception analyzer that includes condition tracking
+/// Exception analyzer that focuses on function calls and exception
+/// specifications
 class ExceptionAnalyzer {
 public:
   explicit ExceptionAnalyzer(ASTContext &Context);
+
+  /// Analyze a function and determine its exception behavior
   FunctionExceptionInfo analyzeFunction(const FunctionDecl *Func);
-  FunctionExceptionInfo analyzeStatement(const Stmt *S);
-  std::vector<ExceptionCondition>
-  getExceptionConditions(const FunctionDecl *Func) const;
-  ExceptionCondition getConditionInfo(const Expr *Cond) const;
-  FunctionExceptionInfo analyzeFunctionImpl(const FunctionDecl *Func);
-  FunctionExceptionInfo analyzeStatementImpl(const Stmt *S);
 
   /// Configure the analyzer to ignore std::bad_alloc exceptions
   void ignoreBadAlloc(bool Value) { IgnoreBadAlloc_ = Value; }
@@ -68,24 +34,32 @@ public:
     IgnoredExceptions_ = Types;
   }
 
+  /// Check if a function is a builtin that doesn't throw
   bool isNoexceptBuiltin(const FunctionDecl *FD) const;
 
 private:
   /// Analyze a statement and update the exception information
   void analyzeStatement(const Stmt *S, FunctionExceptionInfo &Info);
 
-  /// Get conditions under which a throw expression occurs
-  std::vector<ExceptionCondition> getConditions(const Stmt *Throw);
+  /// Analyze a function call
+  void analyzeCallExpr(const CallExpr *Call, FunctionExceptionInfo &Info);
+
+  /// Analyze a throw expression
+  void analyzeThrowExpr(const CXXThrowExpr *Throw, FunctionExceptionInfo &Info);
+
+  /// Get condition information from an expression
+  ExceptionCondition getConditionInfo(const Expr *Cond) const;
 
   /// Get the parent statement of a given statement
   const Stmt *getParentStmt(const Stmt *S) const;
+
+  /// Build a map of statements to their parents
+  void buildParentMap(const Stmt *S);
 
   ASTContext &Context_;         ///< AST context
   bool IgnoreBadAlloc_ = false; ///< Whether to ignore std::bad_alloc
   std::vector<std::string> IgnoredExceptions_; ///< Exception types to ignore
   llvm::DenseMap<const FunctionDecl *, FunctionExceptionInfo> FunctionCache_;
-  llvm::DenseMap<const FunctionDecl *, std::vector<ExceptionCondition>>
-      ConditionCache_;
   llvm::DenseMap<const Stmt *, const Stmt *>
       ParentMap_; ///< Maps statements to their parents
 };
