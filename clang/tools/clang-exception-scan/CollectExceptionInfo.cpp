@@ -161,9 +161,9 @@ void clang::exception_scan::reportDefiniteMatches(ExceptionContext &EC,
   SmallString<256> FunctionList;
   for (const auto &Info : EC.InfoPerFunction) {
     if (Info.Behaviour == clang::exception_scan::ExceptionState::NotThrowing &&
-        Info.ExceptionSpecification == EST_None && !Info.ContainsUnknown) {
+        Info.ExceptionSpecification == EST_None) {
       FunctionList.append(Info.FunctionUSRName);
-      FunctionList.append(" in ");
+      FunctionList.append(" defined in ");
       FunctionList.append(Info.DefinedInFile);
       FunctionList.append(" first declared in ");
       FunctionList.append(Info.FirstDeclaredInFile);
@@ -191,9 +191,10 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
         "function calls with unknown behaviour:\n";
   SmallString<256> FunctionList;
   for (const auto &Info : EC.InfoPerFunction) {
-    if (Info.Behaviour == clang::exception_scan::ExceptionState::Unknown) {
+    if (Info.Behaviour == clang::exception_scan::ExceptionState::Unknown &&
+        Info.ExceptionSpecification == EST_None) {
       FunctionList.append(Info.FunctionUSRName);
-      FunctionList.append(" in ");
+      FunctionList.append(" defined in ");
       FunctionList.append(Info.DefinedInFile);
       FunctionList.append(" first declared in ");
       FunctionList.append(Info.FirstDeclaredInFile);

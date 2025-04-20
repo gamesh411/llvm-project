@@ -8,13 +8,13 @@
 
 // CHECK: Functions that could be marked noexcept, but are not:
 
-// CHECK: c:@F@empty# in {{.*}}basic_function_marking.cpp first declared in
+// CHECK: c:@F@empty# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 void empty() {}
 
 void empty_already_noexcept() noexcept {}
 
-// CHECK: c:@F@return_int# in {{.*}}basic_function_marking.cpp first declared in
+// CHECK: c:@F@return_int# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 int return_int() { return 0; }
 
@@ -22,7 +22,7 @@ int return_int_already_noexcept() noexcept { return 0; }
 
 void throw_runtime_error() { throw std::runtime_error("error"); }
 
-// CHECK: c:@F@catches_all_thrown_exceptions# in
+// CHECK: c:@F@catches_all_thrown_exceptions# defined in
 // {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 void catches_all_thrown_exceptions() {
@@ -39,7 +39,7 @@ void catches_all_thrown_exceptions_already_noexcept() noexcept {
   }
 }
 
-// CHECK: c:@F@catches_all_thrown_exceptions_with_catch_all# in
+// CHECK: c:@F@catches_all_thrown_exceptions_with_catch_all# defined in
 // {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 void catches_all_thrown_exceptions_with_catch_all() {
@@ -68,14 +68,14 @@ int function_with_unknown_implementation();
 // This function is unknown because it calls a function with an unknown
 // implementation.
 //
-// CHECK-NOT: c:@F@calls_unknown_function# in {{.*}}basic_function_marking.cpp first declared in
+// CHECK-NOT: c:@F@calls_unknown_function# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 void calls_unknown_function() { function_with_unknown_implementation(); }
 
 // This function is known to be non-throwing because it calls a builtin
 // function that is known to be non-throwing.
 //
-// CHECK: c:@F@uses_builtin#I# in {{.*}}basic_function_marking.cpp first declared in
+// CHECK: c:@F@uses_builtin#I# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 int uses_builtin(int x) {
   return __builtin_bswap32(x);
@@ -84,7 +84,7 @@ int uses_builtin(int x) {
 // This function is unknown because it calls a function with an unknown
 // implementation.
 //
-// CHECK-NOT: c:@F@uses_builtin_with_unknown#I# in {{.*}}basic_function_marking.cpp first declared in
+// CHECK-NOT: c:@F@uses_builtin_with_unknown#I# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 int uses_builtin_with_unknown(int x) {
   int y = __builtin_bswap32(x);
@@ -94,7 +94,7 @@ int uses_builtin_with_unknown(int x) {
 
 // Check that the order of different kinds of function calls is not important.
 //
-// CHECK-NOT: c:@F@order_of_function_calls#I# in {{.*}}basic_function_marking.cpp first declared in
+// CHECK-NOT: c:@F@order_of_function_calls#I# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 int order_of_function_calls() {
   int a = function_with_unknown_implementation();
@@ -104,7 +104,7 @@ int order_of_function_calls() {
 // Check nested try-catch blocks.
 //
 // TODO: This is not detected as noexcept. Once fixed, add a check here for:
-// c:@F@nested_try_catch# in {{.*}}basic_function_marking.cpp first declared in
+// c:@F@nested_try_catch# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 void nested_try_catch() {
   try {
@@ -133,7 +133,7 @@ void nested_try_catch_with_rethrow_catch_chain() {
 // Check nested try-catch blocks with rethrows.
 //
 // TODO: This is not detected as noexcept. Once fixed, add a check here for:
-// CHECK: c:@F@nested_try_catch_with_rethrows# in {{.*}}basic_function_marking.cpp first declared in
+// c:@F@nested_try_catch_with_rethrows# defined in {{.*}}basic_function_marking.cpp first declared in
 // {{.*}}basic_function_marking.cpp
 void nested_try_catch_with_rethrows() {
   try {
