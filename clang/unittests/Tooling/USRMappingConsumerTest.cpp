@@ -27,54 +27,18 @@ protected:
 
   void runToolOnCode(const std::string &Code, const std::string &FileName) {
     std::vector<std::string> Args = {"-std=c++17", "-fsyntax-only"};
-
-    // Create a fixed compilation database
-    std::string BuildDir = ".";
-    auto Compilations =
-        std::make_unique<FixedCompilationDatabase>(BuildDir, Args);
-
-    // Create a clang tool and run it
-    ClangTool Tool(*Compilations, {FileName});
-
-    // Write the code to a temporary file
-    std::error_code EC;
-    llvm::raw_fd_ostream OS(FileName, EC, llvm::sys::fs::OF_None);
-    if (EC) {
-      llvm::errs() << "Error: " << EC.message() << "\n";
-      return;
-    }
-    OS << Code;
-    OS.close();
-
-    Tool.run(std::make_unique<USRMappingActionFactory>(GEI).get());
+    tooling::runToolOnCodeWithArgs(std::make_unique<USRMappingAction>(GEI),
+                                   Code, Args, FileName);
   }
 
   void runToolOnMultipleFiles(const std::vector<std::string> &Codes,
                               const std::vector<std::string> &FileNames) {
     std::vector<std::string> Args = {"-std=c++17", "-fsyntax-only"};
 
-    std::string BuildDir = ".";
-    auto Compilations =
-        std::make_unique<FixedCompilationDatabase>(BuildDir, Args);
-
-    // Write the codes to temporary files
-    for (size_t i = 0; i < Codes.size(); ++i) {
-      std::error_code EC;
-      llvm::raw_fd_ostream OS(FileNames[i], EC, llvm::sys::fs::OF_None);
-      if (EC) {
-        llvm::errs() << "Error: " << EC.message() << "\n";
-        continue;
-      }
-      OS << Codes[i];
-      OS.close();
-    }
-
     // Run the tool for each file individually
     for (size_t i = 0; i < FileNames.size(); ++i) {
-      // Create a clang tool for just this file
-      ClangTool Tool(*Compilations, {FileNames[i]});
-
-      Tool.run(std::make_unique<USRMappingActionFactory>(GEI).get());
+      tooling::runToolOnCodeWithArgs(std::make_unique<USRMappingAction>(GEI),
+                                     Codes[i], Args, FileNames[i]);
     }
   }
 
