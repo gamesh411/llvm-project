@@ -27,10 +27,12 @@ public:
   /// Helper struct to represent a try-catch block and its containment
   /// relationships
   struct TryCatchInfo {
-    const CXXTryStmt *TryStmt;
+    const CXXTryStmt *TryStmt = nullptr;
     std::vector<TryCatchInfo> InnerTryCatches;
-    SourceLocation Loc;
-    unsigned int Depth;
+    SourceLocation Loc = SourceLocation();
+    unsigned int Depth = 0u;
+
+    TryCatchInfo() = default;
 
     TryCatchInfo(const CXXTryStmt *TS, SourceLocation L, unsigned int D = 0)
         : TryStmt(TS), Loc(L), Depth(D) {}

@@ -72,97 +72,38 @@ ASTBasedExceptionAnalyzer::buildTransitiveParentMap(
 static ASTBasedExceptionAnalyzer::AnalysisOrderedTryCatches
 findTryCatchBlocksImpl(
     const Stmt *S, const SourceManager &SM,
-    const llvm::DenseMap<const Stmt *, llvm::SmallSet<const Stmt *, 4>>
-        &TransitiveParentMap,
-    const llvm::DenseMap<const Stmt *, const Stmt *> &ParentMap,
-    llvm::DenseMap<const CXXTryStmt *, ASTBasedExceptionAnalyzer::TryCatchInfo>
-        &TryInfoMap) {
+    ASTBasedExceptionAnalyzer::TryCatchInfo *Parent = nullptr,
+    unsigned Depth = 0u) {
   ASTBasedExceptionAnalyzer::AnalysisOrderedTryCatches TryCatches;
   if (!S)
     return TryCatches;
 
-  if (const CXXTryStmt *Try = dyn_cast<CXXTryStmt>(S)) {
-    llvm::errs() << "\nProcessing try block at "
-                 << Try->getBeginLoc().printToString(SM) << "\n";
+  const CXXTryStmt *Try = dyn_cast<CXXTryStmt>(S);
+  unsigned NewDepth = Try ? Depth + 1 : Depth;
 
-    // Calculate depth by finding the closest try ancestor
-    unsigned Depth = 0;
-    const CXXTryStmt *ParentTry = nullptr;
-    auto AncestorsIt = TransitiveParentMap.find(Try);
-    if (AncestorsIt != TransitiveParentMap.end()) {
-      llvm::errs() << "Found " << AncestorsIt->second.size() << " ancestors\n";
+  // If this is a try statement, create its info before processing children
+  ASTBasedExceptionAnalyzer::TryCatchInfo *CurrentTryInfo = nullptr;
+  if (Try) {
+    auto [It, Inserted] = TryCatches.emplace(Try, Try->getBeginLoc(), Depth);
+    // std::set returns a const iterator to prevent modification of the
+    // elements, because that would affect ordering.
+    // It is safe to cast away the constness because we started with a non-const
+    // TryCatchInfo object.
+    CurrentTryInfo =
+        const_cast<ASTBasedExceptionAnalyzer::TryCatchInfo *>(&*It);
 
-      // Find all try ancestors and count them to get depth
-      for (const Stmt *Ancestor : AncestorsIt->second) {
-        if (const auto *TryAncestor = dyn_cast<CXXTryStmt>(Ancestor)) {
-          llvm::errs() << "  Found ancestor try at "
-                       << TryAncestor->getBeginLoc().printToString(SM) << "\n";
-          Depth++;
-
-          // Track closest parent try for hierarchy building
-          if (!ParentTry ||
-              SM.isBeforeInTranslationUnit(ParentTry->getBeginLoc(),
-                                           TryAncestor->getBeginLoc())) {
-            ParentTry = TryAncestor;
-            llvm::errs() << "    This is now the closest parent try\n";
-          }
-        }
-      }
-    }
-
-    llvm::errs() << "Final depth: " << Depth << "\n";
-    if (ParentTry) {
-      llvm::errs() << "Parent try: "
-                   << ParentTry->getBeginLoc().printToString(SM) << "\n";
-    } else {
-      llvm::errs() << "No parent try found\n";
-    }
-
-    // Create TryCatchInfo for this try block
-    auto [It, Inserted] =
-        TryInfoMap.try_emplace(Try, Try, Try->getBeginLoc(), Depth);
-    llvm::errs() << "Created TryCatchInfo "
-                 << (Inserted ? "(new)" : "(existing)") << "\n";
-
-    // If we found a parent try, add this try block to its inner try-catches
-    if (ParentTry) {
-      auto ParentIt = TryInfoMap.find(ParentTry);
-      if (ParentIt != TryInfoMap.end()) {
-        ParentIt->second.InnerTryCatches.push_back(It->second);
-        llvm::errs() << "Added to parent's inner try-catches (now has "
-                     << ParentIt->second.InnerTryCatches.size()
-                     << " children)\n";
-      } else {
-        llvm::errs() << "Parent try not found in map!\n";
-      }
+    // Link with parent if we have one
+    if (Parent) {
+      Parent->InnerTryCatches.push_back(*CurrentTryInfo);
     }
   }
 
-  // Process children
+  // Process all children with the current try as their parent (if it exists)
   for (const Stmt *Child : S->children()) {
     if (Child) {
       auto ChildTryCatches = findTryCatchBlocksImpl(
-          Child, SM, TransitiveParentMap, ParentMap, TryInfoMap);
+          Child, SM, CurrentTryInfo ? CurrentTryInfo : Parent, NewDepth);
       TryCatches.merge(ChildTryCatches);
-    }
-  }
-
-  // After processing all children, if this is a try statement, add its info to
-  // the result set
-  if (const CXXTryStmt *Try = dyn_cast<CXXTryStmt>(S)) {
-    auto It = TryInfoMap.find(Try);
-    if (It != TryInfoMap.end()) {
-      llvm::errs() << "Finalizing try block at "
-                   << Try->getBeginLoc().printToString(SM) << "\n";
-      llvm::errs() << "Has " << It->second.InnerTryCatches.size()
-                   << " inner try-catches\n";
-
-      // Sort inner try-catches by source location
-      std::sort(It->second.InnerTryCatches.begin(),
-                It->second.InnerTryCatches.end(),
-                [](const auto &A, const auto &B) { return A.Loc < B.Loc; });
-      TryCatches.insert(It->second);
-      llvm::errs() << "Added to result set\n";
     }
   }
 
@@ -172,19 +113,9 @@ findTryCatchBlocksImpl(
 ASTBasedExceptionAnalyzer::AnalysisOrderedTryCatches
 ASTBasedExceptionAnalyzer::findTryCatchBlocks(const Stmt *S,
                                               const SourceManager &SM) {
-  // First build the parent map
-  auto ParentMap = buildParentMap(S);
-
-  // Then build the transitive parent map
-  auto TransitiveParentMap = buildTransitiveParentMap(ParentMap, S);
-
   llvm::errs() << "\n=== Starting try-catch block analysis ===\n";
 
-  // Map to store TryCatchInfo objects while building the hierarchy
-  llvm::DenseMap<const CXXTryStmt *, TryCatchInfo> TryInfoMap;
-
-  auto Result =
-      findTryCatchBlocksImpl(S, SM, TransitiveParentMap, ParentMap, TryInfoMap);
+  auto Result = findTryCatchBlocksImpl(S, SM);
 
   llvm::errs() << "\n=== Final try-catch block count: " << Result.size()
                << " ===\n";
