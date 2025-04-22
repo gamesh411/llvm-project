@@ -1,7 +1,7 @@
 // RUN: %gen_compdb %s > %t.json
 // RUN: rm -rf %t.output
 // RUN: mkdir -p %t.output
-// RUN: %clang_exception_scan --ast-based %t.json %t.output
+// RUN: %clang_exception_scan %t.json %t.output
 // RUN: cat %t.output/definite_results.txt | FileCheck %s
 
 #include "Inputs/stdexcept.h"

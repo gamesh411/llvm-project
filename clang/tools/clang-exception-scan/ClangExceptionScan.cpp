@@ -49,18 +49,16 @@ static cl::opt<std::string>
 static cl::opt<std::string> OutputDir("output-dir", cl::Positional,
                                       cl::desc("<output-directory>"),
                                       cl::Required);
-static cl::opt<bool> UseASTBased("ast-based", cl::init(false),
-                                 cl::desc("Use AST-based exception analyzer"));
-static cl::opt<std::string> FileSelector("file-selector", cl::init(""),
-                                        cl::desc("Only analyze files containing this string"));
+static cl::opt<std::string>
+    FileSelector("file-selector", cl::init(""),
+                 cl::desc("Only analyze files containing this string"));
 
 // Custom FrontendAction that runs multiple consumers in sequence
 class MultiConsumerAction : public clang::ASTFrontendAction {
 public:
   MultiConsumerAction(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                      bool UseASTBased, bool PreAnalysisOnly = false)
-      : GCG_(GCG), EC_(EC), UseASTBased_(UseASTBased),
-        PreAnalysisOnly_(PreAnalysisOnly) {}
+                      bool PreAnalysisOnly = false)
+      : GCG_(GCG), EC_(EC), PreAnalysisOnly_(PreAnalysisOnly) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
@@ -69,9 +67,9 @@ public:
     public:
       SequentialConsumer(GlobalExceptionInfo &GCG, ExceptionContext &EC,
                          CompilerInstance &CI, StringRef InFile,
-                         bool UseASTBased, bool PreAnalysisOnly)
+                         bool PreAnalysisOnly)
           : GCG_(GCG), EC_(EC), CI_(CI), InFile_(InFile),
-            UseASTBased_(UseASTBased), PreAnalysisOnly_(PreAnalysisOnly) {}
+            PreAnalysisOnly_(PreAnalysisOnly) {}
 
       bool isSystemHeader(const SourceManager &SM, SourceLocation Loc) {
         if (Loc.isInvalid())
@@ -81,26 +79,17 @@ public:
         if (SM.isInSystemHeader(Loc))
           return true;
 
-        // Get the filename
-        StringRef Filename = SM.getFilename(Loc);
-        
-        // Check for system paths
-        if (Filename.starts_with_insensitive("/Applications/Xcode.app") ||
-            Filename.starts_with_insensitive("/Library/Developer") ||
-            Filename.starts_with_insensitive("/usr/include"))
-          return true;
-
         return false;
       }
 
       void HandleTranslationUnit(ASTContext &Context) override {
-        Context_ = &Context;  // Store for use in isSystemHeader
+        Context_ = &Context; // Store for use in isSystemHeader
         // Get canonical file path
         auto &SM = Context.getSourceManager();
         auto MainFileID = SM.getMainFileID();
         auto MainFileLoc = SM.getLocForStartOfFile(MainFileID);
         StringRef MainFileName = SM.getFilename(MainFileLoc);
-        
+
         if (MainFileName.empty()) {
           llvm::errs() << "Warning: Empty translation unit name, skipping\n";
           return;
@@ -110,133 +99,72 @@ public:
         USRMappingConsumer USRConsumer(MainFileName.str(), GCG_);
         USRConsumer.HandleTranslationUnit(Context);
 
-        // For pre-analysis phase, we only need USR mapping and call graph
-        if (PreAnalysisOnly_) {
-          // Then run CallGraphGeneratorConsumer
-          CallGraphGeneratorConsumer CallGraphConsumer(MainFileName.str(), GCG_);
-          CallGraphConsumer.HandleTranslationUnit(Context);
-          return;
-        }
-
-        // For full analysis, run all consumers
+        // Then run CallGraphGeneratorConsumer
         CallGraphGeneratorConsumer CallGraphConsumer(MainFileName.str(), GCG_);
         CallGraphConsumer.HandleTranslationUnit(Context);
 
+        // For pre-analysis phase, we only need USR mapping and call graph
+        if (PreAnalysisOnly_) {
+          return;
+        }
+
         // Then run the appropriate ExceptionAnalyzer
-        if (UseASTBased_) {
-          // Use AST-based analyzer
-          ASTBasedExceptionAnalyzer ExceptionAnalyzer(Context);
-          for (auto const *TopLevelDecl :
-               Context.getTranslationUnitDecl()->decls()) {
-            if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
-              // Skip system header functions
-              if (isSystemHeader(SM, FD->getLocation()))
-                continue;
+        // Use AST-based analyzer
+        ASTBasedExceptionAnalyzer ExceptionAnalyzer(Context);
+        for (auto const *TopLevelDecl :
+             Context.getTranslationUnitDecl()->decls()) {
+          if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
+            // Skip system header functions
+            if (isSystemHeader(SM, FD->getLocation()))
+              continue;
 
-              auto AI = ExceptionAnalyzer.analyzeFunction(FD);
+            auto AI = ExceptionAnalyzer.analyzeFunction(FD);
 
-              // Get canonical file paths for function locations
-              auto FirstDeclLoc = FD->getFirstDecl()->getLocation();
-              auto FirstDeclaredInFile = std::string{SM.getFilename(FirstDeclLoc)};
-              
-              auto const *Definition = FD->getDefinition();
-              auto DefinedInFile = std::string{};
-              if (Definition) {
-                auto DefinitionLoc = Definition->getLocation();
-                DefinedInFile = std::string{SM.getFilename(DefinitionLoc)};
-              }
+            // Get canonical file paths for function locations
+            auto FirstDeclLoc = FD->getFirstDecl()->getLocation();
+            auto FirstDeclaredInFile =
+                std::string{SM.getFilename(FirstDeclLoc)};
 
-              // In single-TU mode (with file-selector), only report functions from the main file
-              // In multi-TU mode, report functions in their declared location
-              bool IsMainFileDecl = SM.isInMainFile(FirstDeclLoc);
-              if (PreAnalysisOnly_ || IsMainFileDecl) {
-                auto *Identifier = FD->getIdentifier();
-                auto FunctionName = std::string{};
-                if (Identifier)
-                  FunctionName = std::string{Identifier->getName()};
-
-                auto FunctionUSRName =
-                    cross_tu::CrossTranslationUnitContext::getLookupName(FD)
-                        .value_or("<no_usr_name>");
-
-                auto ss = std::stringstream{};
-                for (auto const &T : AI.ThrowEvents) {
-                  std::string ExceptionTypeName = T.Type.getAsString();
-                  ss << ExceptionTypeName << ", ";
-                }
-                auto view = std::string_view{ss.str()};
-                if (view.size() > 2)
-                  view.remove_suffix(2);
-                auto ExceptionTypeList = std::string{view};
-
-                auto Behaviour = AI.State;
-                auto ES = FD->getExceptionSpecType();
-                bool ContainsUnknown = AI.ContainsUnknown;
-                bool IsInMainFile = SM.isInMainFile(FD->getOuterLocStart());
-
-                EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
-                                               FunctionName, FunctionUSRName,
-                                               ExceptionTypeList, Behaviour, ES,
-                                               ContainsUnknown, IsInMainFile});
-              }
+            auto const *Definition = FD->getDefinition();
+            auto DefinedInFile = std::string{};
+            if (Definition) {
+              auto DefinitionLoc = Definition->getLocation();
+              DefinedInFile = std::string{SM.getFilename(DefinitionLoc)};
             }
-          }
-        } else {
-          // Use original analyzer
-          ExceptionAnalyzer ExceptionAnalyzer(Context);
-          for (auto const *TopLevelDecl :
-               Context.getTranslationUnitDecl()->decls()) {
-            if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
-              // Skip system header functions
-              if (isSystemHeader(SM, FD->getLocation()))
-                continue;
 
-              auto AI = ExceptionAnalyzer.analyzeFunction(FD);
+            // In single-TU mode (with file-selector), only report functions
+            // from the main file In multi-TU mode, report functions in their
+            // declared location
+            bool IsMainFileDecl = SM.isInMainFile(FirstDeclLoc);
+            if (PreAnalysisOnly_ || IsMainFileDecl) {
+              auto *Identifier = FD->getIdentifier();
+              auto FunctionName = std::string{};
+              if (Identifier)
+                FunctionName = std::string{Identifier->getName()};
 
-              // Get canonical file paths for function locations
-              auto FirstDeclLoc = FD->getFirstDecl()->getLocation();
-              auto FirstDeclaredInFile = std::string{SM.getFilename(FirstDeclLoc)};
-              
-              auto const *Definition = FD->getDefinition();
-              auto DefinedInFile = std::string{};
-              if (Definition) {
-                auto DefinitionLoc = Definition->getLocation();
-                DefinedInFile = std::string{SM.getFilename(DefinitionLoc)};
+              auto FunctionUSRName =
+                  cross_tu::CrossTranslationUnitContext::getLookupName(FD)
+                      .value_or("<no_usr_name>");
+
+              auto ss = std::stringstream{};
+              for (auto const &T : AI.ThrowEvents) {
+                std::string ExceptionTypeName = T.Type.getAsString();
+                ss << ExceptionTypeName << ", ";
               }
+              auto view = std::string_view{ss.str()};
+              if (view.size() > 2)
+                view.remove_suffix(2);
+              auto ExceptionTypeList = std::string{view};
 
-              // In single-TU mode (with file-selector), only report functions from the main file
-              // In multi-TU mode, report functions in their declared location
-              bool IsMainFileDecl = SM.isInMainFile(FirstDeclLoc);
-              if (PreAnalysisOnly_ || IsMainFileDecl) {
-                auto *Identifier = FD->getIdentifier();
-                auto FunctionName = std::string{};
-                if (Identifier)
-                  FunctionName = std::string{Identifier->getName()};
+              auto Behaviour = AI.State;
+              auto ES = FD->getExceptionSpecType();
+              bool ContainsUnknown = AI.ContainsUnknown;
+              bool IsInMainFile = SM.isInMainFile(FD->getOuterLocStart());
 
-                auto FunctionUSRName =
-                    cross_tu::CrossTranslationUnitContext::getLookupName(FD)
-                        .value_or("<no_usr_name>");
-
-                auto ss = std::stringstream{};
-                for (auto const &T : AI.ThrowEvents) {
-                  std::string ExceptionTypeName = T.Type.getAsString();
-                  ss << ExceptionTypeName << ", ";
-                }
-                auto view = std::string_view{ss.str()};
-                if (view.size() > 2)
-                  view.remove_suffix(2);
-                auto ExceptionTypeList = std::string{view};
-
-                auto Behaviour = AI.State;
-                auto ES = FD->getExceptionSpecType();
-                bool ContainsUnknown = AI.ContainsUnknown;
-                bool IsInMainFile = SM.isInMainFile(FD->getOuterLocStart());
-
-                EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
-                                               FunctionName, FunctionUSRName,
-                                               ExceptionTypeList, Behaviour, ES,
-                                               ContainsUnknown, IsInMainFile});
-              }
+              EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
+                                             FunctionName, FunctionUSRName,
+                                             ExceptionTypeList, Behaviour, ES,
+                                             ContainsUnknown, IsInMainFile});
             }
           }
         }
@@ -251,19 +179,17 @@ public:
       ExceptionContext &EC_;
       CompilerInstance &CI_;
       StringRef InFile_;
-      bool UseASTBased_;
       bool PreAnalysisOnly_;
-      ASTContext *Context_;  // Added to support isSystemHeader
+      ASTContext *Context_; // Added to support isSystemHeader
     };
 
     return std::make_unique<SequentialConsumer>(GCG_, EC_, CI, InFile,
-                                                UseASTBased_, PreAnalysisOnly_);
+                                                PreAnalysisOnly_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
   ExceptionContext &EC_;
-  bool UseASTBased_;
   bool PreAnalysisOnly_;
 };
 
@@ -272,19 +198,16 @@ class MultiConsumerActionFactory
     : public clang::tooling::FrontendActionFactory {
 public:
   MultiConsumerActionFactory(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                             bool UseASTBased, bool PreAnalysisOnly = false)
-      : GCG_(GCG), EC_(EC), UseASTBased_(UseASTBased),
-        PreAnalysisOnly_(PreAnalysisOnly) {}
+                             bool PreAnalysisOnly = false)
+      : GCG_(GCG), EC_(EC), PreAnalysisOnly_(PreAnalysisOnly) {}
 
   std::unique_ptr<clang::FrontendAction> create() override {
-    return std::make_unique<MultiConsumerAction>(GCG_, EC_, UseASTBased_,
-                                                PreAnalysisOnly_);
+    return std::make_unique<MultiConsumerAction>(GCG_, EC_, PreAnalysisOnly_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
   ExceptionContext &EC_;
-  bool UseASTBased_;
   bool PreAnalysisOnly_;
 };
 
@@ -325,7 +248,8 @@ int main(int argc, const char **argv) {
       }
     }
     if (FilteredPaths.empty()) {
-      llvm::errs() << "Error: No source files match the file-selector pattern\n";
+      llvm::errs()
+          << "Error: No source files match the file-selector pattern\n";
       return 1;
     }
     SourcePaths = std::move(FilteredPaths);
@@ -341,11 +265,12 @@ int main(int argc, const char **argv) {
   GlobalExceptionInfo GEI;
   ExceptionContext EC;
 
-  // First run: Pre-analysis on all files to build complete USR and call graph info
+  // First run: Pre-analysis on all files to build complete USR and call graph
+  // info
   if (!FileSelector.empty()) {
     llvm::outs() << "Running pre-analysis on all files...\n";
     auto PreAnalysisFactory =
-        std::make_unique<MultiConsumerActionFactory>(GEI, EC, UseASTBased, true);
+        std::make_unique<MultiConsumerActionFactory>(GEI, EC, true);
     ClangTool PreAnalysisTool(*Compilations, AllPaths);
     int preResult = PreAnalysisTool.run(PreAnalysisFactory.get());
     if (preResult != 0) {
@@ -357,7 +282,7 @@ int main(int argc, const char **argv) {
   // Second run: Detailed analysis on selected files
   llvm::outs() << "Running detailed analysis on selected files...\n";
   auto ActionFactory =
-      std::make_unique<MultiConsumerActionFactory>(GEI, EC, UseASTBased, false);
+      std::make_unique<MultiConsumerActionFactory>(GEI, EC, false);
   ClangTool Tool(*Compilations, SourcePaths);
   int result = Tool.run(ActionFactory.get());
 

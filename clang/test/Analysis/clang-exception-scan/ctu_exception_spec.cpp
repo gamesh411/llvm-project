@@ -1,10 +1,10 @@
 // RUN: %gen_compdb %s %S/Inputs/ctu_exception_spec_impl.cpp > %t.json
 // RUN: rm -rf %t.output
 // RUN: mkdir -p %t.output
-// RUN: %clang_exception_scan --ast-based --file-selector=%s %t.json %t.output
+// RUN: %clang_exception_scan --file-selector=%s %t.json %t.output
 // RUN: cat %t.output/definite_results.txt | FileCheck %s --check-prefix=CHECK-SINGLE
-// RUN: %clang_exception_scan --ast-based %t.json %t.output
-// RUN: cat %t.output/definite_results.txt | FileCheck %s --check-prefix=CHECK-MULTI
+// RUN: %clang_exception_scan %t.json %t.output/../MultiOutput
+// RUN: cat %t.output/../MultiOutput/definite_results.txt | FileCheck %s --check-prefix=CHECK-MULTI
 
 // CHECK-SINGLE: Functions that could be marked noexcept, but are not:
 // CHECK-MULTI: Functions that could be marked noexcept, but are not:
