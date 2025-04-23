@@ -68,7 +68,7 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
 
   {
     std::lock_guard<std::mutex> Lock(GCG_.CallDependenciesMutex);
-    GCG_.CallDependencies.push_back(CD);
+    GCG_.CallDependencies.insert(CD);
     llvm::errs() << "Added call dependency (total: "
                  << GCG_.CallDependencies.size() << ")\n";
   }
@@ -84,14 +84,20 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
   // Add the TU dependency if the callee is defined in a different TU
   auto CalleeTU = GCG_.USRToDefinedInTUMap.find(*CalleeUSR);
   if (CalleeTU != GCG_.USRToDefinedInTUMap.end()) {
-    llvm::errs() << "Found callee TU: " << CalleeTU->second << "\n";
-    if (CalleeTU->second != CurrentTU_) {
-      std::lock_guard<std::mutex> Lock(GCG_.TUDependenciesMutex);
-      GCG_.TUDependencies.push_back({CurrentTU_, CalleeTU->second});
-      llvm::errs() << "Added TU dependency: " << CurrentTU_ << " -> "
-                   << CalleeTU->second << "\n";
-    } else {
-      llvm::errs() << "Skipping TU dependency (same TU)\n";
+    // TODO: From the build system, we could narrow the set of potential TUs
+    // that are linked together with the current TU. For now, we use all TUs
+    // that have a function definition for the callee.
+    for (const auto &DefiningTUEntry : CalleeTU->getValue()) {
+      const StringRef DefiningTU = DefiningTUEntry.getKey();
+      llvm::errs() << "Found potential defining TU: " << DefiningTU << "\n";
+      if (DefiningTU != CurrentTU_) {
+        std::lock_guard<std::mutex> Lock(GCG_.TUDependenciesMutex);
+        GCG_.TUDependencies.insert({CurrentTU_, DefiningTU});
+        llvm::errs() << "Added TU dependency: " << CurrentTU_ << " -> "
+                     << DefiningTU << "\n";
+      } else {
+        llvm::errs() << "Skipping TU dependency (same TU)\n";
+      }
     }
   } else {
     llvm::errs() << "Callee TU not found in USRToDefinedInTUMap\n";
@@ -161,8 +167,12 @@ bool CallGraphVisitor::VisitLambdaExpr(LambdaExpr *Lambda) {
     if (std::optional<std::string> CallOperatorUSR =
             cross_tu::CrossTranslationUnitContext::getLookupName(
                 CallOperator)) {
-      std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
-      GCG_.USRToDefinedInTUMap[*CallOperatorUSR] = CurrentTU_;
+      // Add the lambda's call operator to the USRToDefinedInTUMap
+      {
+        std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
+        auto &TUSet = GCG_.USRToDefinedInTUMap[*CallOperatorUSR];
+        TUSet.insert(CurrentTU_);
+      }
 
       // Also add it to the USRToFunctionMap
       FunctionMappingInfo Info;
@@ -303,10 +313,10 @@ clang::exception_scan::detectTUCycles(const GlobalExceptionInfo &GCG) {
 
   // Initialize with all TUs
   llvm::errs() << "All TUs:\n";
-  for (const auto &TU : GCG.TUs) {
+  for (const auto &[TU, _] : GCG.TUs) {
     llvm::errs() << "  " << TU << "\n";
-    if (TUDeps.find(TU) == TUDeps.end()) {
-      TUDeps[TU] = std::set<std::string>();
+    if (TUDeps.find(TU.str()) == TUDeps.end()) {
+      TUDeps[TU.str()] = {};
     }
   }
 
@@ -353,27 +363,31 @@ buildTUDependencyGraph(const GlobalExceptionInfo &GCG) {
 
   // First, add all TUs to the dependency map to ensure they're all represented
   llvm::errs() << "Found TUs:\n";
-  for (const auto &TU : GCG.TUs) {
-    TUDependencies[TU] = std::set<std::string>();
+  for (const auto &[TU, _] : GCG.TUs) {
+    TUDependencies[TU.str()] = std::set<std::string>();
     llvm::errs() << "- " << TU << "\n";
   }
   llvm::errs() << "\n";
 
   // Debug output for function definitions
   llvm::errs() << "Function definitions in USRToFunctionMap:\n";
-  for (const auto &Entry : GCG.USRToFunctionMap) {
-    llvm::errs() << "- USR: " << Entry.first << "\n"
-                 << "  Name: " << Entry.second.FunctionName << "\n"
-                 << "  TU: " << Entry.second.TU << "\n"
-                 << "  IsDefinition: " << Entry.second.IsDefinition << "\n";
+  for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
+    llvm::errs() << "- USR: " << USR << "\n"
+                 << "  Name: " << Info.FunctionName << "\n"
+                 << "  TU: " << Info.TU << "\n"
+                 << "  IsDefinition: " << Info.IsDefinition << "\n";
   }
   llvm::errs() << "\n";
 
   // Debug output for TU definitions
   llvm::errs() << "TU definitions in USRToDefinedInTUMap:\n";
-  for (const auto &Entry : GCG.USRToDefinedInTUMap) {
-    llvm::errs() << "- USR: " << Entry.first << "\n"
-                 << "  TU: " << Entry.second << "\n";
+  for (const auto &[USR, TUs] : GCG.USRToDefinedInTUMap) {
+    llvm::errs() << "- USR: " << USR << "\n"
+                 << "  TUs: ";
+    for (const auto &[TU, _] : TUs) {
+      llvm::errs() << TU << " ";
+    }
+    llvm::errs() << "\n";
   }
   llvm::errs() << "\n";
 
@@ -385,8 +399,6 @@ buildTUDependencyGraph(const GlobalExceptionInfo &GCG) {
                  << "- Callee USR: " << Call.CalleeUSR << "\n";
 
     auto CallerIt = GCG.USRToFunctionMap.find(Call.CallerUSR);
-    auto CalleeDefTU = GCG.USRToDefinedInTUMap.find(Call.CalleeUSR);
-
     if (CallerIt != GCG.USRToFunctionMap.end()) {
       llvm::errs() << "Found caller in USRToFunctionMap:\n"
                    << "- Name: " << CallerIt->second.FunctionName << "\n"
@@ -395,33 +407,30 @@ buildTUDependencyGraph(const GlobalExceptionInfo &GCG) {
       llvm::errs() << "WARNING: Caller USR not found in USRToFunctionMap\n";
     }
 
+    auto CalleeDefTU = GCG.USRToDefinedInTUMap.find(Call.CalleeUSR);
     if (CalleeDefTU != GCG.USRToDefinedInTUMap.end()) {
-      llvm::errs() << "Found callee TU in USRToDefinedInTUMap: "
-                   << CalleeDefTU->second << "\n";
+      for (const auto &[CalleeTU, _] : CalleeDefTU->getValue()) {
+        llvm::errs() << "Found callee TU in USRToDefinedInTUMap: " << CalleeTU
+                     << "\n";
+      }
     } else {
       llvm::errs() << "WARNING: Callee USR not found in USRToDefinedInTUMap\n";
     }
 
     if (CallerIt != GCG.USRToFunctionMap.end() &&
         CalleeDefTU != GCG.USRToDefinedInTUMap.end()) {
-      // Skip self-dependencies
-      if (CallerIt->second.TU == CalleeDefTU->second) {
-        llvm::errs() << "Skipping self-dependency in " << CallerIt->second.TU
+      const auto &CallerTU = CallerIt->getValue().TU;
+      const auto &CalleeDefTUValue = CalleeDefTU->getValue();
+      for (const auto &[CalleeTU, _] : CalleeDefTUValue) {
+        // Skip self-dependencies
+        if (CallerTU == CalleeTU) {
+          llvm::errs() << "Skipping self-dependency in " << CallerTU << "\n";
+          continue;
+        }
+        llvm::errs() << "Adding dependency: " << CallerTU << " -> " << CalleeTU
                      << "\n";
-        continue;
-      }
-
-      llvm::errs() << "Adding dependency: " << CallerIt->second.TU << " -> "
-                   << CalleeDefTU->second << "\n";
-
-      // Add the callee's TU to the caller's dependencies
-      TUDependencies[CallerIt->second.TU].insert(CalleeDefTU->second);
-
-      // Also ensure the callee's TU exists in the map
-      if (TUDependencies.find(CalleeDefTU->second) == TUDependencies.end()) {
-        TUDependencies[CalleeDefTU->second] = std::set<std::string>();
-        llvm::errs() << "Added empty dependency set for TU: "
-                     << CalleeDefTU->second << "\n";
+        // Add the callee's TU to the caller's dependencies
+        TUDependencies[CallerTU.str().str()].emplace(CalleeTU.str());
       }
     }
   }
@@ -476,15 +485,15 @@ void clang::exception_scan::generateDependencyDotFile(
   auto Graph = buildTUDependencyGraph(GCG);
 
   // Write nodes
-  for (const auto &TU : GCG.TUs) {
+  for (const auto &[TU, _] : GCG.TUs) {
     // Extract just the filename from the path
-    std::string ShortName = TU;
+    std::string ShortName = TU.str();
     size_t LastSlash = ShortName.find_last_of("/\\");
     if (LastSlash != std::string::npos) {
       ShortName = ShortName.substr(LastSlash + 1);
     }
 
-    OutFile << "  \"" << TU << "\" [label=\"" << ShortName << "\"];\n";
+    OutFile << "  \"" << TU.str() << "\" [label=\"" << ShortName << "\"];\n";
   }
 
   OutFile << "\n";

@@ -60,7 +60,7 @@ public:
 
       {
         std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
-        GCG_.USRToDefinedInTUMap[Info.USR] = Info.TU;
+        GCG_.USRToDefinedInTUMap[Info.USR].insert(Info.TU);
       }
     }
 

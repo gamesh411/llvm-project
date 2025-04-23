@@ -70,7 +70,7 @@ TEST_F(NoexceptDependeeTest, NestedNoexceptDependee) {
   // Check the function names
   std::set<std::string> FunctionNames;
   for (const auto &Info : NoexceptDependees) {
-    FunctionNames.insert(Info.FunctionName);
+    FunctionNames.insert(Info.FunctionName.str().str());
   }
 
   EXPECT_TRUE(FunctionNames.count("g") > 0);
@@ -93,7 +93,7 @@ TEST_F(NoexceptDependeeTest, ComplexNoexceptExpression) {
   // Check the function names
   std::set<std::string> FunctionNames;
   for (const auto &Info : NoexceptDependees) {
-    FunctionNames.insert(Info.FunctionName);
+    FunctionNames.insert(Info.FunctionName.str().str());
   }
 
   EXPECT_TRUE(FunctionNames.count("g") > 0);

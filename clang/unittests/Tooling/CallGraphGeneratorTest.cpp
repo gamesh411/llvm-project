@@ -8,6 +8,7 @@
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
+#include "llvm/ADT/SetOperations.h"
 
 #include <fstream>
 #include <map>
@@ -162,8 +163,15 @@ TEST_F(CallGraphGeneratorTest, CollectCrossTUCalls) {
         foundTu2ToTu1 = true;
 
         // Check that they are defined in different TUs
-        auto CalleeDefTU = GEI.USRToDefinedInTUMap.find(Call.CalleeUSR);
-        EXPECT_NE(CallerIt->second.TU, CalleeDefTU->second);
+        auto CalleeDefTUs = GEI.USRToDefinedInTUMap.find(Call.CalleeUSR);
+        auto CallerDefTUs = GEI.USRToDefinedInTUMap.find(Call.CallerUSR);
+
+        // Assert that CallerDefTUs and CalleeDefTUs sets do NOT have common
+        // elements
+        // calculate set intersection and assert that it is empty
+        auto intersection =
+            llvm::set_intersection(CallerDefTUs->second, CalleeDefTUs->second);
+        EXPECT_TRUE(intersection.empty());
       }
     }
   }
@@ -233,20 +241,20 @@ TEST_F(CallGraphGeneratorTest, BuildTUDependencyGraphFromData) {
   TestGEI.USRToFunctionMap[Func3USR] = Func3Info;
 
   // Add function definitions to the USRToDefinedInTUMap
-  TestGEI.USRToDefinedInTUMap[Func1USR] = TU1;
-  TestGEI.USRToDefinedInTUMap[Func2USR] = TU2;
-  TestGEI.USRToDefinedInTUMap[Func3USR] = TU3;
+  TestGEI.USRToDefinedInTUMap[Func1USR].insert(TU1);
+  TestGEI.USRToDefinedInTUMap[Func2USR].insert(TU2);
+  TestGEI.USRToDefinedInTUMap[Func3USR].insert(TU3);
 
   // Add call dependencies
   CallDependency Call1;
   Call1.CallerUSR = Func2USR;
   Call1.CalleeUSR = Func1USR;
-  TestGEI.CallDependencies.push_back(Call1);
+  TestGEI.CallDependencies.insert(Call1);
 
   CallDependency Call2;
   Call2.CallerUSR = Func3USR;
   Call2.CalleeUSR = Func2USR;
-  TestGEI.CallDependencies.push_back(Call2);
+  TestGEI.CallDependencies.insert(Call2);
 
   // Build the TU dependency graph
   auto TUDependencies = buildTUDependencyGraph(TestGEI);
@@ -432,19 +440,19 @@ TEST_F(CallGraphGeneratorTest, DetectTUCyclesFromData) {
   TestGEI.USRToFunctionMap[Func2USR] = Func2Info;
 
   // Add function definitions to the USRToDefinedInTUMap
-  TestGEI.USRToDefinedInTUMap[Func1USR] = TU1;
-  TestGEI.USRToDefinedInTUMap[Func2USR] = TU2;
+  TestGEI.USRToDefinedInTUMap[Func1USR].insert(TU1);
+  TestGEI.USRToDefinedInTUMap[Func2USR].insert(TU2);
 
   // Add call dependencies to create a cycle
   CallDependency Call1;
   Call1.CallerUSR = Func1USR;
   Call1.CalleeUSR = Func2USR;
-  TestGEI.CallDependencies.push_back(Call1);
+  TestGEI.CallDependencies.insert(Call1);
 
   CallDependency Call2;
   Call2.CallerUSR = Func2USR;
   Call2.CalleeUSR = Func1USR;
-  TestGEI.CallDependencies.push_back(Call2);
+  TestGEI.CallDependencies.insert(Call2);
 
   // Detect TU cycles
   auto Cycles = detectTUCycles(TestGEI);

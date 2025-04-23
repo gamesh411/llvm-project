@@ -77,6 +77,9 @@ void clang::exception_scan::reportAllFunctions(ExceptionContext &EC,
   OS << "All functions:\n";
   for (const auto &EI : EC.InfoPerFunction) {
     OS << EI.FunctionUSRName << '\n';
+    OS << " defined in " << EI.DefinedInFile;
+    OS << " first declared in " << EI.FirstDeclaredInFile;
+    OS << '\n';
   }
 }
 
@@ -245,7 +248,7 @@ void clang::exception_scan::reportNoexceptDependees(
     OS << "  USR: " << Info.USR << "\n";
     OS << "  TU: " << Info.TU << "\n";
     OS << "  Location: " << Info.NoexceptLocFile << ":" << Info.NoexceptLocLine
-       << ":" << Info.NoexceptLocColumn << "\n\n";
+       << ":" << Info.NoexceptLocColumn << "\n";
   }
 }
 
@@ -267,7 +270,7 @@ void clang::exception_scan::reportCallDependencies(
     OS << "Caller: " << Call.CallerUSR << "\n";
     OS << "Callee: " << Call.CalleeUSR << "\n";
     OS << "Location: " << Call.CallLocFile << ":" << Call.CallLocLine << ":"
-       << Call.CallLocColumn << "\n\n";
+       << Call.CallLocColumn << "\n";
   }
 }
 
@@ -285,8 +288,8 @@ void clang::exception_scan::reportTUDependencies(const GlobalExceptionInfo &GCG,
   }
 
   OS << "Translation unit dependencies:\n";
-  for (const auto &Dep : GCG.TUDependencies) {
-    OS << Dep.SourceTU << " -> " << Dep.TargetTU << "\n";
+  for (const auto &[Src, Dest] : GCG.TUDependencies) {
+    OS << Src << " -> " << Dest << "\n";
   }
 }
 

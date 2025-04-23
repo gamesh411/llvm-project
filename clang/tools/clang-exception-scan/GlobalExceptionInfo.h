@@ -3,80 +3,123 @@
 
 #include "clang/AST/Decl.h"
 #include "clang/Basic/SourceLocation.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 
 #include <mutex>
-#include <set>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 namespace clang {
 namespace exception_scan {
 
+using OwningStringTy = llvm::SmallString<128>;
+using USRTy = OwningStringTy;
+using PathTy = OwningStringTy;
+
 /// Information about a function definition or declaration
 struct FunctionMappingInfo {
-  std::string USR;
-  std::string TU;
-  std::string FunctionName;
+  USRTy USR;
+  PathTy TU;
+  OwningStringTy FunctionName;
   clang::SourceLocation Loc;
   bool IsDefinition;
 };
 
 /// Information about a function call
 struct CallDependency {
-  std::string CallerUSR;   ///< USR of the calling function
-  std::string CalleeUSR;   ///< USR of the called function
-  std::string CallLocFile; ///< File containing the call
-  unsigned CallLocLine;    ///< Line number of the call
-  unsigned CallLocColumn;  ///< Column number of the call
+  USRTy CallerUSR;        ///< USR of the calling function
+  USRTy CalleeUSR;        ///< USR of the called function
+  PathTy CallLocFile;     ///< File containing the call
+  unsigned CallLocLine;   ///< Line number of the call
+  unsigned CallLocColumn; ///< Column number of the call
+
+  bool operator==(const CallDependency &other) const {
+    return CallerUSR == other.CallerUSR && CalleeUSR == other.CalleeUSR &&
+           CallLocFile == other.CallLocFile &&
+           CallLocLine == other.CallLocLine &&
+           CallLocColumn == other.CallLocColumn;
+  }
 };
+
+} // namespace exception_scan
+} // namespace clang
+
+// implement DenseMapInfo for CallDependency
+namespace llvm {
+template <> struct DenseMapInfo<clang::exception_scan::CallDependency> {
+  static inline clang::exception_scan::CallDependency getEmptyKey() {
+    return clang::exception_scan::CallDependency{};
+  }
+  static inline clang::exception_scan::CallDependency getTombstoneKey() {
+    return clang::exception_scan::CallDependency{
+        clang::exception_scan::USRTy(),
+        clang::exception_scan::USRTy(),
+        clang::exception_scan::PathTy(),
+        UINT_MAX,
+        UINT_MAX,
+    };
+  }
+  static unsigned
+  getHashValue(const clang::exception_scan::CallDependency &Val) {
+    return llvm::hash_combine(Val.CallerUSR, Val.CalleeUSR, Val.CallLocFile,
+                              Val.CallLocLine, Val.CallLocColumn);
+  }
+  static bool isEqual(const clang::exception_scan::CallDependency &LHS,
+                      const clang::exception_scan::CallDependency &RHS) {
+    return LHS == RHS;
+  }
+};
+} // namespace llvm
+
+namespace clang {
+namespace exception_scan {
 
 /// Information about a function that appears in a noexcept clause
 struct NoexceptDependeeInfo {
-  std::string USR;             ///< USR of the function
-  std::string TU;              ///< Translation unit containing the function
-  std::string FunctionName;    ///< Name of the function
+  USRTy USR;                   ///< USR of the function
+  PathTy TU;                   ///< Translation unit containing the function
+  OwningStringTy FunctionName; ///< Name of the function
   clang::SourceLocation Loc;   ///< Location of the function
-  std::string NoexceptLocFile; ///< File containing the noexcept clause
+  PathTy NoexceptLocFile;      ///< File containing the noexcept clause
   unsigned NoexceptLocLine;    ///< Line number of the noexcept clause
   unsigned NoexceptLocColumn;  ///< Column number of the noexcept clause
 };
 
-/// Represents a translation unit dependency
-struct TUDependency {
-  std::string SourceTU; ///< Source translation unit
-  std::string TargetTU; ///< Target translation unit
-};
-
 /// Global call graph data structure
 struct GlobalExceptionInfo {
-  std::vector<CallDependency> CallDependencies; ///< Function call dependencies
-  std::unordered_map<std::string, FunctionMappingInfo>
+  llvm::DenseSet<CallDependency>
+      CallDependencies; ///< Function call dependencies
+  llvm::StringMap<FunctionMappingInfo>
       USRToFunctionMap; ///< Map from USR to function info
   // Data structures for cross-TU analysis
-  std::set<std::string> TUs;                ///< Set of all TUs
-  std::vector<TUDependency> TUDependencies; ///< Translation unit dependencies
+  llvm::StringSet<> TUs;                  ///< Set of all TUs
+  llvm::StringMap<PathTy> TUDependencies; ///< Translation unit dependencies
 
   // TODO: Handle functions defined in multiple TUs and use build
   // information to determine which TU should be considered when looking
   // for the definition of a function. A function can be defined in
   // multiple TUs without violating the one definition rule. These TUs are
   // not necessarily used together.
-  std::unordered_map<std::string, std::string>
+  llvm::StringMap<llvm::StringSet<>>
       USRToDefinedInTUMap; ///< Map from USR to list of TUs
-  std::unordered_map<std::string, std::set<std::string>>
-      TUToUSRMap;                      ///< Map from TU to list of USRs
+  llvm::StringMap<llvm::StringSet<>>
+      TUToUSRMap; ///< Map from TU to list of USRs
+
+  // NoexceptDependeeInfo is too big for SmallVector, the instantiation
+  // of the SmallVector template asserts that sizeof(T) <= 256. We could force
+  // by providing the number or explicit elements.
+  std::vector<NoexceptDependeeInfo>
+      NoexceptDependees; ///< Functions that appear in noexcept clauses
+
   std::mutex CallDependenciesMutex;    ///< Mutex for call dependencies
   std::mutex USRToFunctionMapMutex;    ///< Mutex for USR map
   std::mutex TUsMutex;                 ///< Mutex for TUs
   std::mutex TUDependenciesMutex;      ///< Mutex for TU dependencies
   std::mutex USRToDefinedInTUMapMutex; ///< Mutex for USR to TU map
   std::mutex TUToUSRMapMutex;          ///< Mutex for TU to USR map
-
-  // Data structures for noexcept-dependee functions
-  std::vector<NoexceptDependeeInfo>
-      NoexceptDependees; ///< Functions that appear in noexcept clauses
-  std::mutex NoexceptDependeesMutex; ///< Mutex for noexcept dependees
+  std::mutex NoexceptDependeesMutex;   ///< Mutex for noexcept dependees
 };
 
 } // namespace exception_scan
