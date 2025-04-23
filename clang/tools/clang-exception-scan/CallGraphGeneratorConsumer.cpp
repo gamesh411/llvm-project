@@ -91,10 +91,10 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
       const StringRef DefiningTU = DefiningTUEntry.getKey();
       llvm::errs() << "Found potential defining TU: " << DefiningTU << "\n";
       if (DefiningTU != CurrentTU_) {
-        std::lock_guard<std::mutex> Lock(GCG_.TUDependenciesMutex);
-        GCG_.TUDependencies.insert({CurrentTU_, DefiningTU});
-        llvm::errs() << "Added TU dependency: " << CurrentTU_ << " -> "
-                     << DefiningTU << "\n";
+        // Add the dependency to the TUDependencyGraph
+        GCG_.TUDependencies.addDependency(CurrentTU_, DefiningTU.str());
+        llvm::errs() << "Added TU dependency to TUDependencyGraph: "
+                     << CurrentTU_ << " -> " << DefiningTU << "\n";
       } else {
         llvm::errs() << "Skipping TU dependency (same TU)\n";
       }

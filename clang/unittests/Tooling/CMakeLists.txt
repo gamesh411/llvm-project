@@ -5,7 +5,7 @@ set(LLVM_LINK_COMPONENTS
   FrontendOpenMP
   Support
   TargetParser
-  )
+)
 
 add_clang_unittest(ToolingTests
   ASTBasedExceptionAnalyzerTest.cpp
@@ -26,6 +26,7 @@ add_clang_unittest(ToolingTests
   USRMappingConsumerTest.cpp
   QualTypeNamesTest.cpp
   RangeSelectorTest.cpp
+  TUDependencyGraphTest.cpp
   DependencyScanning/DependencyScannerTest.cpp
   DependencyScanning/DependencyScanningFilesystemTest.cpp
   RecursiveASTVisitorTests/Attr.cpp
@@ -73,7 +74,7 @@ add_clang_unittest(ToolingTests
   ToolingTest.cpp
   TransformerTest.cpp
   NoexceptDependeeTest.cpp
-  )
+)
 
 target_include_directories(ToolingTests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/clang-exception-scan
@@ -98,7 +99,7 @@ clang_target_link_libraries(ToolingTests
   clangToolingRefactoring
   clangTransformer
   clangExceptionScan
-  )
+)
 
 target_link_libraries(ToolingTests
   PRIVATE

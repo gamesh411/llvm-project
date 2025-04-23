@@ -288,8 +288,10 @@ void clang::exception_scan::reportTUDependencies(const GlobalExceptionInfo &GCG,
   }
 
   OS << "Translation unit dependencies:\n";
-  for (const auto &[Src, Dest] : GCG.TUDependencies) {
-    OS << Src << " -> " << Dest << "\n";
+  for (const auto &[Dependent, _] : GCG.TUs) {
+    for (const auto &Dependee : GCG.TUDependencies.getDependencies(Dependent)) {
+      OS << Dependent << " -> " << Dependee << "\n";
+    }
   }
 }
 

@@ -9,6 +9,7 @@ add_clang_library(clangExceptionScan
   CallGraphGeneratorConsumer.cpp
   USRMappingConsumer.cpp
   NoexceptDependeeConsumer.cpp
+  TUDependencyGraph.cpp
   PARTIAL_SOURCES_INTENDED
   LINK_LIBS
   clangAST
@@ -30,6 +31,7 @@ install(FILES
   USRMappingConsumer.h
   NoexceptDependeeConsumer.h
   GlobalExceptionInfo.h
+  TUDependencyGraph.h
   DESTINATION include/clang/Tooling/clang-exception-scan
 )
 

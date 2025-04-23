@@ -1,6 +1,9 @@
 #ifndef LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_GLOBAL_EXCEPTION_INFO_H
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_GLOBAL_EXCEPTION_INFO_H
 
+#include "CommonTypes.h"
+#include "TUDependencyGraph.h"
+
 #include "clang/AST/Decl.h"
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/DenseSet.h"
@@ -13,10 +16,6 @@
 
 namespace clang {
 namespace exception_scan {
-
-using OwningStringTy = llvm::SmallString<128>;
-using USRTy = OwningStringTy;
-using PathTy = OwningStringTy;
 
 /// Information about a function definition or declaration
 struct FunctionMappingInfo {
@@ -90,12 +89,20 @@ struct NoexceptDependeeInfo {
 /// Global call graph data structure
 struct GlobalExceptionInfo {
   llvm::DenseSet<CallDependency>
-      CallDependencies; ///< Function call dependencies
+      CallDependencies;             ///< Function call dependencies
+  std::mutex CallDependenciesMutex; ///< Mutex for call dependencies
+
   llvm::StringMap<FunctionMappingInfo>
-      USRToFunctionMap; ///< Map from USR to function info
+      USRToFunctionMap;             ///< Map from USR to function info
+  std::mutex USRToFunctionMapMutex; ///< Mutex for USR map
+
   // Data structures for cross-TU analysis
-  llvm::StringSet<> TUs;                  ///< Set of all TUs
-  llvm::StringMap<PathTy> TUDependencies; ///< Translation unit dependencies
+  llvm::StringSet<> TUs; ///< Set of all TUs
+  std::mutex TUsMutex;   ///< Mutex for TUs
+
+  TUDependencyGraph TUDependencies; ///< Translation unit dependencies
+  // TUDependencyGraph handles synchronized access to its internal data,
+  // that is why we don't need a mutex here.
 
   // TODO: Handle functions defined in multiple TUs and use build
   // information to determine which TU should be considered when looking
@@ -103,23 +110,19 @@ struct GlobalExceptionInfo {
   // multiple TUs without violating the one definition rule. These TUs are
   // not necessarily used together.
   llvm::StringMap<llvm::StringSet<>>
-      USRToDefinedInTUMap; ///< Map from USR to list of TUs
+      USRToDefinedInTUMap;             ///< Map from USR to list of TUs
+  std::mutex USRToDefinedInTUMapMutex; ///< Mutex for USR to TU map
+
   llvm::StringMap<llvm::StringSet<>>
-      TUToUSRMap; ///< Map from TU to list of USRs
+      TUToUSRMap;             ///< Map from TU to list of USRs
+  std::mutex TUToUSRMapMutex; ///< Mutex for TU to USR map
 
   // NoexceptDependeeInfo is too big for SmallVector, the instantiation
   // of the SmallVector template asserts that sizeof(T) <= 256. We could force
   // by providing the number or explicit elements.
   std::vector<NoexceptDependeeInfo>
       NoexceptDependees; ///< Functions that appear in noexcept clauses
-
-  std::mutex CallDependenciesMutex;    ///< Mutex for call dependencies
-  std::mutex USRToFunctionMapMutex;    ///< Mutex for USR map
-  std::mutex TUsMutex;                 ///< Mutex for TUs
-  std::mutex TUDependenciesMutex;      ///< Mutex for TU dependencies
-  std::mutex USRToDefinedInTUMapMutex; ///< Mutex for USR to TU map
-  std::mutex TUToUSRMapMutex;          ///< Mutex for TU to USR map
-  std::mutex NoexceptDependeesMutex;   ///< Mutex for noexcept dependees
+  std::mutex NoexceptDependeesMutex; ///< Mutex for noexcept dependees
 };
 
 } // namespace exception_scan
