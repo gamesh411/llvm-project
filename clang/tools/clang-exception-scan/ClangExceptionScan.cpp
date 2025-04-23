@@ -66,21 +66,9 @@ public:
     class SequentialConsumer : public clang::ASTConsumer {
     public:
       SequentialConsumer(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                         CompilerInstance &CI, StringRef InFile,
-                         bool PreAnalysisOnly)
-          : GCG_(GCG), EC_(EC), CI_(CI), InFile_(InFile),
+                         StringRef InFile, bool PreAnalysisOnly)
+          : GCG_(GCG), EC_(EC), InFile_(InFile),
             PreAnalysisOnly_(PreAnalysisOnly) {}
-
-      bool isSystemHeader(const SourceManager &SM, SourceLocation Loc) {
-        if (Loc.isInvalid())
-          return false;
-
-        // Check if it's in a system header
-        if (SM.isInSystemHeader(Loc))
-          return true;
-
-        return false;
-      }
 
       void HandleTranslationUnit(ASTContext &Context) override {
         Context_ = &Context; // Store for use in isSystemHeader
@@ -115,7 +103,7 @@ public:
              Context.getTranslationUnitDecl()->decls()) {
           if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
             // Skip system header functions
-            if (isSystemHeader(SM, FD->getLocation()))
+            if (SM.isInSystemHeader(FD->getLocation()))
               continue;
 
             auto AI = ExceptionAnalyzer.analyzeFunction(FD);
@@ -177,13 +165,12 @@ public:
     private:
       GlobalExceptionInfo &GCG_;
       ExceptionContext &EC_;
-      CompilerInstance &CI_;
       StringRef InFile_;
       bool PreAnalysisOnly_;
       ASTContext *Context_; // Added to support isSystemHeader
     };
 
-    return std::make_unique<SequentialConsumer>(GCG_, EC_, CI, InFile,
+    return std::make_unique<SequentialConsumer>(GCG_, EC_, InFile,
                                                 PreAnalysisOnly_);
   }
 
