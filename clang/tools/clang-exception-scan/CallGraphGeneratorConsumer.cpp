@@ -230,11 +230,7 @@ void CallGraphGeneratorConsumer::HandleTranslationUnit(ASTContext &Context) {
     GCG_.TUs.insert(CurrentTU);
   }
 
-  // First, use USRMappingConsumer to collect function definitions
-  USRMappingConsumer USRConsumer(CurrentTU, GCG_);
-  USRConsumer.HandleTranslationUnit(Context);
 
-  // Then, use CallGraphVisitor to collect function calls
   CallGraphVisitor Visitor(Context, GCG_, CurrentTU);
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
 }

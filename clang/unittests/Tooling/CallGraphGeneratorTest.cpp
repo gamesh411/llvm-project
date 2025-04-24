@@ -1,5 +1,6 @@
 #include "CallGraphGeneratorConsumer.h"
 #include "GlobalExceptionInfo.h"
+#include "USRMappingConsumer.h"
 #include "gtest/gtest.h"
 
 #include "clang/AST/ASTContext.h"
@@ -39,6 +40,10 @@ protected:
   // Helper function to run the tool on a single file
   void runToolOnCode(const std::string &Code, const std::string &FileName) {
     std::vector<std::string> Args = {"-std=c++17", "-fsyntax-only"};
+    // run USR mapping step as it is a prerequisite for call graph generation
+    tooling::runToolOnCodeWithArgs(std::make_unique<USRMappingAction>(GEI),
+                                   Code, Args, FileName);
+    // run call graph generation step
     tooling::runToolOnCodeWithArgs(
         std::make_unique<CallGraphGeneratorAction>(GEI), Code, Args, FileName);
   }
@@ -50,6 +55,10 @@ protected:
 
     // Run the tool for each file individually
     for (size_t i = 0; i < FileNames.size(); ++i) {
+      // run USR mapping step as it is a prerequisite for call graph generation
+      tooling::runToolOnCodeWithArgs(std::make_unique<USRMappingAction>(GEI),
+                                     Codes[i], Args, FileNames[i]);
+      // run call graph generation step
       tooling::runToolOnCodeWithArgs(
           std::make_unique<CallGraphGeneratorAction>(GEI), Codes[i], Args,
           FileNames[i]);
