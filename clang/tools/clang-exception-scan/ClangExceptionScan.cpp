@@ -57,8 +57,8 @@ static cl::opt<std::string>
 class MultiConsumerAction : public clang::ASTFrontendAction {
 public:
   MultiConsumerAction(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                      bool PreAnalysisOnly = false)
-      : GCG_(GCG), EC_(EC), PreAnalysisOnly_(PreAnalysisOnly) {}
+                      bool PreAnalysis = false)
+      : GCG_(GCG), EC_(EC), PreAnalysis_(PreAnalysis) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
@@ -66,9 +66,8 @@ public:
     class SequentialConsumer : public clang::ASTConsumer {
     public:
       SequentialConsumer(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                         StringRef InFile, bool PreAnalysisOnly)
-          : GCG_(GCG), EC_(EC), InFile_(InFile),
-            PreAnalysisOnly_(PreAnalysisOnly) {}
+                         StringRef InFile, bool PreAnalysis)
+          : GCG_(GCG), EC_(EC), InFile_(InFile), PreAnalysis_(PreAnalysis) {}
 
       void HandleTranslationUnit(ASTContext &Context) override {
         Context_ = &Context; // Store for use in isSystemHeader
@@ -83,28 +82,44 @@ public:
           return;
         }
 
-        // Run USRMappingConsumer first
-        USRMappingConsumer USRConsumer(MainFileName.str(), GCG_);
-        USRConsumer.HandleTranslationUnit(Context);
+        if (PreAnalysis_) {
+          // Run USRMappingConsumer first
+          USRMappingConsumer USRConsumer(MainFileName.str(), GCG_);
+          USRConsumer.HandleTranslationUnit(Context);
 
-        // Then run CallGraphGeneratorConsumer
-        CallGraphGeneratorConsumer CallGraphConsumer(MainFileName.str(), GCG_);
-        CallGraphConsumer.HandleTranslationUnit(Context);
+          // Then run CallGraphGeneratorConsumer
+          bool Stabilized = false;
+          unsigned Iteration = 0;
+          do {
+            llvm::errs() << "Running CallGraphGeneratorConsumer iteration "
+                         << Iteration << "\n";
+            CallGraphGeneratorConsumer CallGraphConsumer(MainFileName.str(),
+                                                         GCG_);
+            CallGraphConsumer.HandleTranslationUnit(Context);
+            Stabilized = !CallGraphConsumer.ChangesMade();
+            Iteration++;
+          } while (!Stabilized && Iteration < 10);
 
-        // For pre-analysis phase, we only need USR mapping and call graph
-        if (PreAnalysisOnly_) {
+          if (!Stabilized) {
+            llvm::errs()
+                << "CallGraphGeneratorConsumer did not stabilize after "
+                << Iteration << " iterations\n";
+          }
           return;
         }
 
-        // Then run the appropriate ExceptionAnalyzer
-        // Use AST-based analyzer
-        ASTBasedExceptionAnalyzer ExceptionAnalyzer(Context);
+        // In the main analysis run, use the AST-based analyzer
+        ASTBasedExceptionAnalyzer ExceptionAnalyzer(Context, GCG_);
         for (auto const *TopLevelDecl :
              Context.getTranslationUnitDecl()->decls()) {
           if (auto *FD = dyn_cast<FunctionDecl>(TopLevelDecl)) {
             // Skip system header functions
-            if (SM.isInSystemHeader(FD->getLocation()))
+            llvm::errs() << "Analyzing function: " << FD->getNameAsString()
+                         << "\n";
+            if (SM.isInSystemHeader(FD->getLocation())) {
+              llvm::errs() << "Skipping system header function...\n";
               continue;
+            }
 
             auto AI = ExceptionAnalyzer.analyzeFunction(FD);
 
@@ -113,18 +128,21 @@ public:
             auto FirstDeclaredInFile =
                 std::string{SM.getFilename(FirstDeclLoc)};
 
-            auto const *Definition = FD->getDefinition();
-            auto DefinedInFile = std::string{};
-            if (Definition) {
-              auto DefinitionLoc = Definition->getLocation();
-              DefinedInFile = std::string{SM.getFilename(DefinitionLoc)};
-            }
+            auto DefinedInFile = [&FD, &SM]() {
+              std::string Result = "<unknown>";
+              auto const *Definition = FD->getDefinition();
+              if (Definition) {
+                auto DefinitionLoc = Definition->getLocation();
+                Result = std::string{SM.getFilename(DefinitionLoc)};
+              }
+              return Result;
+            }();
 
             // In single-TU mode (with file-selector), only report functions
             // from the main file In multi-TU mode, report functions in their
             // declared location
             bool IsMainFileDecl = SM.isInMainFile(FirstDeclLoc);
-            if (PreAnalysisOnly_ || IsMainFileDecl) {
+            if (IsMainFileDecl) {
               auto *Identifier = FD->getIdentifier();
               auto FunctionName = std::string{};
               if (Identifier)
@@ -166,18 +184,18 @@ public:
       GlobalExceptionInfo &GCG_;
       ExceptionContext &EC_;
       StringRef InFile_;
-      bool PreAnalysisOnly_;
+      bool PreAnalysis_;
       ASTContext *Context_; // Added to support isSystemHeader
     };
 
     return std::make_unique<SequentialConsumer>(GCG_, EC_, InFile,
-                                                PreAnalysisOnly_);
+                                                PreAnalysis_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
   ExceptionContext &EC_;
-  bool PreAnalysisOnly_;
+  bool PreAnalysis_;
 };
 
 // Factory for our custom action
@@ -223,54 +241,63 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  // Store original paths for pre-analysis
-  std::vector<std::string> AllPaths = SourcePaths;
-
   // Filter source paths based on file-selector if provided
   if (!FileSelector.empty()) {
-    std::vector<std::string> FilteredPaths;
-    for (const auto &Path : SourcePaths) {
-      if (Path.find(FileSelector) != std::string::npos) {
-        FilteredPaths.push_back(Path);
-      }
-    }
-    if (FilteredPaths.empty()) {
-      llvm::errs()
-          << "Error: No source files match the file-selector pattern\n";
-      return 1;
-    }
-    SourcePaths = std::move(FilteredPaths);
+    llvm::erase_if(SourcePaths, [](const std::string &Path) {
+      return Path.find(FileSelector) == std::string::npos;
+    });
   }
 
-  llvm::outs() << "Files to analyze:\n";
-  for (const auto &F : SourcePaths) {
-    llvm::outs() << F << '\n';
+  if (SourcePaths.empty()) {
+    llvm::errs() << "Error: No source files match the file-selector pattern '"
+                 << FileSelector << "'\n";
+    return 1;
   }
-  llvm::outs() << "\n";
+
+  llvm::errs() << "Files to analyze:\n";
+  for (const auto &F : SourcePaths) {
+    llvm::errs() << F << '\n';
+  }
+  llvm::errs() << "\n";
 
   // Create global exception info and exception context
   GlobalExceptionInfo GEI;
   ExceptionContext EC;
 
-  // First run: Pre-analysis on all files to build complete USR and call graph
+  // First run: Pre-analysis on build complete USR and call graph
   // info
-  if (!FileSelector.empty()) {
-    llvm::outs() << "Running pre-analysis on all files...\n";
-    auto PreAnalysisFactory =
-        std::make_unique<MultiConsumerActionFactory>(GEI, EC, true);
-    ClangTool PreAnalysisTool(*Compilations, AllPaths);
-    int preResult = PreAnalysisTool.run(PreAnalysisFactory.get());
-    if (preResult != 0) {
-      llvm::errs() << "Error: Pre-analysis failed\n";
-      return preResult;
-    }
+  llvm::errs() << "Running pre-analysis on all files...\n";
+  auto PreAnalysisFactory =
+      std::make_unique<MultiConsumerActionFactory>(GEI, EC, true);
+  ClangTool PreAnalysisTool(*Compilations, SourcePaths);
+  int preResult = PreAnalysisTool.run(PreAnalysisFactory.get());
+  if (preResult != 0) {
+    llvm::errs() << "Error: Pre-analysis failed\n";
+    return preResult;
   }
 
-  // Second run: Detailed analysis on selected files
-  llvm::outs() << "Running detailed analysis on selected files...\n";
+  // Order SourcePaths topologically based on the results of the pre-analysis
+  const std::vector<std::string> SortedSourcePaths = [&GEI]() {
+    llvm::SmallVector<PathTy, 0> SortedSourcePaths;
+    GEI.TUDependencies.topologicalSort(SortedSourcePaths);
+    std::vector<std::string> Result;
+    // iterate in reverse order and add to Result
+    for (auto it = SortedSourcePaths.rbegin(); it != SortedSourcePaths.rend();
+         ++it) {
+      Result.push_back(it->str().str());
+    }
+    return Result;
+  }();
+  llvm::errs() << "Reverse topologically sorted TU dependencies:\n";
+  for (const auto &Path : SortedSourcePaths) {
+    llvm::errs() << Path << '\n';
+  }
+
+  // Second run: Detailed analysis
+  llvm::errs() << "Running detailed analysis on selected files...\n";
   auto ActionFactory =
       std::make_unique<MultiConsumerActionFactory>(GEI, EC, false);
-  ClangTool Tool(*Compilations, SourcePaths);
+  ClangTool Tool(*Compilations, SortedSourcePaths);
   int result = Tool.run(ActionFactory.get());
 
   if (result != 0) {
@@ -300,18 +327,18 @@ int main(int argc, const char **argv) {
   // Detect and report cycles
   auto Cycles = detectTUCycles(GEI);
   if (!Cycles.empty()) {
-    llvm::outs() << "Detected translation unit dependency cycles:\n";
+    llvm::errs() << "Detected translation unit dependency cycles:\n";
     for (const auto &Cycle : Cycles) {
-      llvm::outs() << "  Cycle: ";
+      llvm::errs() << "  Cycle: ";
       for (size_t i = 0; i < Cycle.size(); ++i) {
         if (i > 0)
-          llvm::outs() << " -> ";
-        llvm::outs() << Cycle[i];
+          llvm::errs() << " -> ";
+        llvm::errs() << Cycle[i];
       }
-      llvm::outs() << "\n";
+      llvm::errs() << "\n";
     }
   } else {
-    llvm::outs() << "No translation unit dependency cycles detected.\n";
+    llvm::errs() << "No translation unit dependency cycles detected.\n";
   }
 
   return result;

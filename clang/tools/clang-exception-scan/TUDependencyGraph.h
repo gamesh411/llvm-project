@@ -23,8 +23,10 @@ struct StronglyConnectedComponent {
 /// A graph representing dependencies between translation units
 class TUDependencyGraph {
 public:
+  bool addIndependentTU(llvm::StringRef TU);
+
   /// Add a dependency from one TU to another
-  void addDependency(llvm::StringRef From, llvm::StringRef To);
+  bool addDependency(llvm::StringRef From, llvm::StringRef To);
 
   /// Check if a dependency exists
   bool hasDependency(llvm::StringRef From, llvm::StringRef To) const;
@@ -53,7 +55,7 @@ private:
   llvm::StringMap<llvm::StringSet<>> AdjacencyList;
 
   /// Mutex for thread safety
-  mutable std::mutex GraphMutex;
+  mutable std::recursive_mutex GraphMutex;
 
   /// Helper function for Tarjan's algorithm to find SCCs
   void tarjanDFS(llvm::StringRef TU, llvm::StringMap<unsigned> &Index,

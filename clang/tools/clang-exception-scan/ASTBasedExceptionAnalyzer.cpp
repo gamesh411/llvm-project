@@ -1,4 +1,5 @@
 #include "ASTBasedExceptionAnalyzer.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclCXX.h"
@@ -7,11 +8,15 @@
 #include "clang/AST/Type.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/CrossTU/CrossTranslationUnit.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
+
 #include <functional>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -128,8 +133,9 @@ ASTBasedExceptionAnalyzer::findTryCatchBlocks(const Stmt *S,
   return Result;
 }
 
-ASTBasedExceptionAnalyzer::ASTBasedExceptionAnalyzer(ASTContext &Context)
-    : Context_(Context), IgnoreBadAlloc_(true) {}
+ASTBasedExceptionAnalyzer::ASTBasedExceptionAnalyzer(ASTContext &Context,
+                                                     GlobalExceptionInfo &GEI)
+    : Context_(Context), GEI_(GEI), IgnoreBadAlloc_(true) {}
 
 bool ASTBasedExceptionAnalyzer::isNoexceptBuiltin(
     const FunctionDecl *FD) const {
@@ -151,10 +157,28 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
     return FunctionExceptionInfo{nullptr, ExceptionState::Unknown, true, {}};
   }
 
-  // Check if we've already analyzed this function
+  // Check if we've already analyzed this function in our local cache
   auto It = FunctionCache_.find(Func);
   if (It != FunctionCache_.end())
     return It->second;
+
+  // Get the USR for this function
+  std::optional<std::string> USR =
+      cross_tu::CrossTranslationUnitContext::getLookupName(Func);
+  if (USR) {
+    // Check if we have exception info for this USR in the global cache
+    std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
+    auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
+    if (GlobalIt != GEI_.USRToExceptionMap.end()) {
+      // Convert the global exception info to our local format
+      FunctionExceptionInfo LocalInfo{Func, GlobalIt->second.State,
+                                      GlobalIt->second.ContainsUnknown,
+                                      GlobalIt->second.ThrowEvents};
+      // Cache the result locally
+      FunctionCache_[Func] = LocalInfo;
+      return LocalInfo;
+    }
+  }
 
   // Handle functions without a body (declarations only)
   if (!Func->hasBody()) {
@@ -172,8 +196,20 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
       Info.State = ExceptionState::NotThrowing;
     }
 
-    // Cache the result
+    // Cache the result locally
     FunctionCache_[Func] = Info;
+
+    // If we have a USR, cache in the global map as well
+    if (USR) {
+      std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
+      FunctionExceptionMappingInfo GlobalInfo;
+      GlobalInfo.USR = *USR;
+      GlobalInfo.State = Info.State;
+      GlobalInfo.ContainsUnknown = Info.ContainsUnknown;
+      GlobalInfo.ThrowEvents = Info.ThrowEvents;
+      GEI_.USRToExceptionMap[*USR] = GlobalInfo;
+    }
+
     return Info;
   }
 
@@ -226,8 +262,19 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
                                                           : "NotThrowing")
                << ", throw events: " << Info.ThrowEvents.size() << "\n";
 
-  // Cache the result
+  // Cache the result locally
   FunctionCache_[Func] = Info;
+
+  // If we have a USR, cache in the global map as well
+  if (USR) {
+    std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
+    FunctionExceptionMappingInfo GlobalInfo;
+    GlobalInfo.USR = *USR;
+    GlobalInfo.State = Info.State;
+    GlobalInfo.ContainsUnknown = Info.ContainsUnknown;
+    GlobalInfo.ThrowEvents = Info.ThrowEvents;
+    GEI_.USRToExceptionMap[*USR] = GlobalInfo;
+  }
 
   // Restore the previous try block cache and parent map
   TryBlockCache_ = std::move(SavedTryBlockCache);
@@ -558,7 +605,32 @@ void ASTBasedExceptionAnalyzer::analyzeCallExpr(const CallExpr *Call,
       return;
     }
 
-    // Analyze the callee
+    // Get the USR for the callee
+    std::optional<std::string> USR =
+        cross_tu::CrossTranslationUnitContext::getLookupName(Callee);
+    if (USR) {
+      // Check if we have exception info for this USR in the global cache
+      std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
+      auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
+      if (GlobalIt != GEI_.USRToExceptionMap.end()) {
+        // Use the global exception info directly
+        if (GlobalIt->second.State == ExceptionState::Throwing) {
+          Info.State = ExceptionState::Throwing;
+          Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                                  GlobalIt->second.ThrowEvents.begin(),
+                                  GlobalIt->second.ThrowEvents.end());
+        }
+        if (GlobalIt->second.ContainsUnknown) {
+          Info.ContainsUnknown = true;
+          if (GlobalIt->second.State == ExceptionState::Unknown) {
+            Info.State = ExceptionState::Unknown;
+          }
+        }
+        return;
+      }
+    }
+
+    // If not found in global cache, analyze the callee
     FunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
 
     // If the callee can throw, this function can throw

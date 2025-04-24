@@ -2,6 +2,7 @@
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_ASTBASEDEXCEPTIONANALYZER_H
 
 #include "ExceptionAnalysisInfo.h"
+#include "GlobalExceptionInfo.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
@@ -22,7 +23,8 @@ namespace exception_scan {
 /// statements
 class ASTBasedExceptionAnalyzer {
 public:
-  explicit ASTBasedExceptionAnalyzer(ASTContext &Context);
+  /// Constructor
+  ASTBasedExceptionAnalyzer(ASTContext &Context, GlobalExceptionInfo &GEI);
 
   /// Helper struct to represent a try-catch block and its containment
   /// relationships
@@ -115,8 +117,9 @@ private:
   /// Build a map of statements to their parents
   void updateParentMap(const Stmt *S);
 
-  ASTContext &Context_;         ///< AST context
-  bool IgnoreBadAlloc_ = false; ///< Whether to ignore std::bad_alloc
+  ASTContext &Context_; ///< AST context
+  GlobalExceptionInfo &GEI_;
+  bool IgnoreBadAlloc_; ///< Whether to ignore std::bad_alloc
   std::vector<std::string> IgnoredExceptions_; ///< Exception types to ignore
   llvm::DenseMap<const FunctionDecl *, FunctionExceptionInfo> FunctionCache_;
   llvm::DenseMap<const Stmt *, const Stmt *>

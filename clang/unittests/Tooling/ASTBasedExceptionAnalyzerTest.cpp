@@ -410,7 +410,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, BasicFunctionAnalysis) {
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
 
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   // Test noThrow function
   const FunctionDecl *NoThrow = findFunction(AST.get(), "noThrow");
@@ -465,7 +466,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, TryCatchAnalysis) {
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
 
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   // Test catchAndRethrow function
   const FunctionDecl *CatchRethrow = findFunction(AST.get(), "catchAndRethrow");
@@ -500,7 +502,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, IgnoredExceptions) {
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
 
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
   Analyzer.ignoreBadAlloc(true);
   Analyzer.ignoreExceptions({"runtime_error"});
 
@@ -604,7 +607,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, BuiltinFunctionAnalysis) {
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
 
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   // Test uses_builtin function
   const FunctionDecl *UsesBuiltin = findFunction(AST.get(), "uses_builtin");
@@ -645,7 +649,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, NestedFunctionCalls) {
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
 
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   // Test inner function
   const FunctionDecl *Inner = findFunction(AST.get(), "inner");
@@ -695,7 +700,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, NestedTryCatchInTryBlock) {
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
 
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   // Test inner function
   const FunctionDecl *Inner = findFunction(AST.get(), "inner");
@@ -745,7 +751,9 @@ TEST_F(ASTBasedExceptionAnalyzerTest, PointerAndNullptrHandling) {
   auto AST = buildASTFromCode(Code);
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   const FunctionDecl *CatchPointers = findFunction(AST.get(), "catchPointers");
   ASSERT_TRUE(CatchPointers != nullptr);
@@ -818,7 +826,9 @@ TEST_F(ASTBasedExceptionAnalyzerTest, InheritanceEdgeCases) {
   auto AST = buildASTFromCode(Code);
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   const FunctionDecl *CatchAmbiguous =
       findFunction(AST.get(), "catchAmbiguous");
@@ -886,7 +896,9 @@ TEST_F(ASTBasedExceptionAnalyzerTest, RethrowExpressions) {
   auto AST = buildASTFromCode(Code);
   ASSERT_TRUE(AST != nullptr);
   auto &Context = AST->getASTContext();
-  ASTBasedExceptionAnalyzer Analyzer(Context);
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
 
   const FunctionDecl *RethrowInCatch =
       findFunction(AST.get(), "rethrowInCatch");

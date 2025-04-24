@@ -54,6 +54,8 @@ public:
   bool VisitLambdaExpr(LambdaExpr *LE);
   bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *Call);
 
+  bool ChangesMade() const { return ChangesMade_; }
+
 private:
   void addCall(const FunctionDecl *Caller, const FunctionDecl *Callee,
                const Expr *E);
@@ -62,6 +64,7 @@ private:
   GlobalExceptionInfo &GCG_;
   const std::string &CurrentTU_;
   const FunctionDecl *CurrentFunction_ = nullptr;
+  bool ChangesMade_ = false;
 };
 
 /// AST consumer for generating the call graph
@@ -73,9 +76,12 @@ public:
 
   void HandleTranslationUnit(ASTContext &Context) override;
 
+  bool ChangesMade() const { return ChangesMade_; }
+
 private:
   std::string CurrentTU_;
   GlobalExceptionInfo &GCG_;
+  bool ChangesMade_ = false;
 };
 
 // FrontendAction that uses CallGraphGeneratorConsumer

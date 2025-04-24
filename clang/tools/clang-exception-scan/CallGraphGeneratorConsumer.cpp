@@ -20,13 +20,21 @@ using namespace clang::exception_scan;
 
 void CallGraphVisitor::addCall(const FunctionDecl *Caller,
                                const FunctionDecl *Callee, const Expr *E) {
-  llvm::errs() << "\n=== Starting addCall ===\n";
+  // TODO: Implement a proper logging system with log levels to reduce the
+  // noise, and eliminate this hack.
+  const SourceManager &SM = Context_.getSourceManager();
+  const bool IsCallerInMainFile = SM.isInMainFile(Caller->getOuterLocStart());
+  const bool IsCalleeInMainFile = SM.isInMainFile(Callee->getOuterLocStart());
+  auto &LOG =
+      IsCallerInMainFile || IsCalleeInMainFile ? llvm::errs() : llvm::nulls();
+
+  LOG << "\n=== Starting addCall ===\n";
   if (!Caller || !Callee) {
-    llvm::errs() << "Failed to add call - null pointer:\n"
-                 << "Caller: "
-                 << (Caller ? Caller->getNameAsString() : "<nullptr>") << "\n"
-                 << "Callee: "
-                 << (Callee ? Callee->getNameAsString() : "<nullptr>") << "\n";
+    LOG << "Failed to add call - null pointer:\n"
+        << "Caller: " << (Caller ? Caller->getNameAsString() : "<nullptr>")
+        << "\n"
+        << "Callee: " << (Callee ? Callee->getNameAsString() : "<nullptr>")
+        << "\n";
     return;
   }
 
@@ -38,22 +46,19 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
   std::optional<std::string> CalleeUSR =
       cross_tu::CrossTranslationUnitContext::getLookupName(Callee);
 
-  llvm::errs() << "Call details:\n"
-               << "- Caller name: " << Caller->getNameAsString() << "\n"
-               << "- Callee name: " << Callee->getNameAsString() << "\n"
-               << "- Current TU: " << CurrentTU_ << "\n"
-               << "- Caller USR: " << (CallerUSR ? *CallerUSR : "<failed>")
-               << "\n"
-               << "- Callee USR: " << (CalleeUSR ? *CalleeUSR : "<failed>")
-               << "\n";
+  LOG << "Call details:\n"
+      << "- Caller name: " << Caller->getNameAsString() << "\n"
+      << "- Callee name: " << Callee->getNameAsString() << "\n"
+      << "- Current TU: " << CurrentTU_ << "\n"
+      << "- Caller USR: " << (CallerUSR ? *CallerUSR : "<failed>") << "\n"
+      << "- Callee USR: " << (CalleeUSR ? *CalleeUSR : "<failed>") << "\n";
 
   if (!CallerUSR || !CalleeUSR) {
-    llvm::errs() << "Failed to generate USR for caller or callee\n";
+    LOG << "Failed to generate USR for caller or callee\n";
     return;
   }
 
   // Store the call dependency
-  const SourceManager &SM = Context_.getSourceManager();
   CallDependency CD;
   CD.CallerUSR = *CallerUSR;
   CD.CalleeUSR = *CalleeUSR;
@@ -61,25 +66,41 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
   CD.CallLocLine = SM.getSpellingLineNumber(E->getBeginLoc());
   CD.CallLocColumn = SM.getSpellingColumnNumber(E->getBeginLoc());
 
-  llvm::errs() << "Call location:\n"
-               << "- File: " << CD.CallLocFile << "\n"
-               << "- Line: " << CD.CallLocLine << "\n"
-               << "- Column: " << CD.CallLocColumn << "\n";
+  LOG << "Call location:\n"
+      << "- File: " << CD.CallLocFile << "\n"
+      << "- Line: " << CD.CallLocLine << "\n"
+      << "- Column: " << CD.CallLocColumn << "\n";
 
   {
     std::lock_guard<std::mutex> Lock(GCG_.CallDependenciesMutex);
-    GCG_.CallDependencies.insert(CD);
-    llvm::errs() << "Added call dependency (total: "
-                 << GCG_.CallDependencies.size() << ")\n";
+    const auto Result = GCG_.CallDependencies.insert(CD);
+    if (Result.second) {
+      LOG << "Added call dependency (total: " << GCG_.CallDependencies.size()
+          << ")\n";
+      ChangesMade_ = true;
+    } else {
+      LOG << "Skipping already added call dependency\n";
+    }
   }
 
-  // Add the caller and callee to the TU to USR map
-  {
-    std::lock_guard<std::mutex> Lock(GCG_.TUToUSRMapMutex);
-    GCG_.TUToUSRMap[CurrentTU_].insert(*CallerUSR);
-    llvm::errs() << "Added caller USR to TUToUSRMap for TU: " << CurrentTU_
-                 << "\n";
-  }
+  // This is not needed if we presuppose the USRMappingConsumer has already
+  // added the caller USR to the TUToUSRMap
+  //
+  // NOTE: If we were to merge the USRMappingConsumer and
+  // CallGraphGeneratorConsumer, we could add the caller USR to the TUToUSRMap
+  // here with an implementation like this:
+  //
+  // {
+  // std::lock_guard<std::mutex> Lock(GCG_.TUToUSRMapMutex);
+  // const auto Result = GCG_.TUToUSRMap[CurrentTU_].insert(*CallerUSR);
+  // if (Result.second) {
+  //   llvm::errs() << "Added caller USR to TUToUSRMap for TU: " << CurrentTU_
+  //   << "\n"; ChangesMade_ = true;
+  // } else {
+  //   llvm::errs() << "Skipping already added caller USR to TUToUSRMap for TU:
+  //   <<  " << CurrentTU_ << "\n";
+  // }
+  // }
 
   // Add the TU dependency if the callee is defined in a different TU
   auto CalleeTU = GCG_.USRToDefinedInTUMap.find(*CalleeUSR);
@@ -89,21 +110,28 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
     // that have a function definition for the callee.
     for (const auto &DefiningTUEntry : CalleeTU->getValue()) {
       const StringRef DefiningTU = DefiningTUEntry.getKey();
-      llvm::errs() << "Found potential defining TU: " << DefiningTU << "\n";
+      LOG << "Found potential defining TU: " << DefiningTU << "\n";
       if (DefiningTU != CurrentTU_) {
         // Add the dependency to the TUDependencyGraph
-        GCG_.TUDependencies.addDependency(CurrentTU_, DefiningTU.str());
-        llvm::errs() << "Added TU dependency to TUDependencyGraph: "
-                     << CurrentTU_ << " -> " << DefiningTU << "\n";
+        const auto &Result =
+            GCG_.TUDependencies.addDependency(CurrentTU_, DefiningTU.str());
+        if (Result) {
+          LOG << "Added TU dependency to TUDependencyGraph: " << CurrentTU_
+              << " -> " << DefiningTU << "\n";
+          ChangesMade_ = true;
+        } else {
+          LOG << "Skipping already added TU dependency to TUDependencyGraph: "
+              << CurrentTU_ << " -> " << DefiningTU << "\n";
+        }
       } else {
-        llvm::errs() << "Skipping TU dependency (same TU)\n";
+        LOG << "Skipping TU dependency (same TU)\n";
       }
     }
   } else {
-    llvm::errs() << "Callee TU not found in USRToDefinedInTUMap\n";
+    LOG << "Callee TU not found in USRToDefinedInTUMap\n";
   }
 
-  llvm::errs() << "=== Finished addCall ===\n\n";
+  LOG << "=== Finished addCall ===\n\n";
 }
 
 bool CallGraphVisitor::VisitCallExpr(CallExpr *Call) {
@@ -161,8 +189,14 @@ bool CallGraphVisitor::VisitCXXMethodDecl(CXXMethodDecl *MD) {
 }
 
 bool CallGraphVisitor::VisitLambdaExpr(LambdaExpr *Lambda) {
-  // First, track the lambda's call operator as the current function
   if (const CXXMethodDecl *CallOperator = Lambda->getCallOperator()) {
+    // NOTE: Adding the call operator of the lambda to the mentioned and the
+    // defined TU maps is needed *EVEN IF* the USRMappingConsumer was already
+    // run. This may be because USRMappingConsumer only handles function
+    // declarations, not LambdaExprs, bit we should verify this claim.
+
+    // TODO: Migrate this to the USRMappingConsumer.
+
     // Register the lambda's call operator in the USRToDefinedInTUMap
     if (std::optional<std::string> CallOperatorUSR =
             cross_tu::CrossTranslationUnitContext::getLookupName(
@@ -170,8 +204,11 @@ bool CallGraphVisitor::VisitLambdaExpr(LambdaExpr *Lambda) {
       // Add the lambda's call operator to the USRToDefinedInTUMap
       {
         std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
-        auto &TUSet = GCG_.USRToDefinedInTUMap[*CallOperatorUSR];
-        TUSet.insert(CurrentTU_);
+        const auto Result =
+            GCG_.USRToDefinedInTUMap[*CallOperatorUSR].insert(CurrentTU_);
+        if (Result.second) {
+          ChangesMade_ = true;
+        }
       }
 
       // Also add it to the USRToFunctionMap
@@ -183,10 +220,13 @@ bool CallGraphVisitor::VisitLambdaExpr(LambdaExpr *Lambda) {
       Info.IsDefinition = true; // Lambda call operators are always definitions
       {
         std::lock_guard<std::mutex> Lock(GCG_.USRToFunctionMapMutex);
-        GCG_.USRToFunctionMap[*CallOperatorUSR] = Info;
+        const auto Result =
+            GCG_.USRToFunctionMap.insert({*CallOperatorUSR, Info});
+        if (Result.second) {
+          ChangesMade_ = true;
+        }
       }
     }
-
     // Store the previous current function
     const FunctionDecl *PreviousFunction = CurrentFunction_;
 
@@ -227,12 +267,22 @@ void CallGraphGeneratorConsumer::HandleTranslationUnit(ASTContext &Context) {
   {
     llvm::errs() << "Inserting TU: " << CurrentTU << "\n";
     std::lock_guard<std::mutex> Lock(GCG_.TUsMutex);
-    GCG_.TUs.insert(CurrentTU);
+    const auto Result = GCG_.TUs.insert(CurrentTU);
+    if (Result.second) {
+      ChangesMade_ = true;
+    }
   }
 
+  llvm::errs() << "Adding independent TU to TUDependencyGraph: " << CurrentTU
+               << "\n";
+  GCG_.TUDependencies.addIndependentTU(CurrentTU);
 
   CallGraphVisitor Visitor(Context, GCG_, CurrentTU);
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+
+  if (Visitor.ChangesMade()) {
+    ChangesMade_ = true;
+  }
 }
 
 // Helper function for cycle detection using DFS
@@ -433,10 +483,9 @@ buildTUDependencyGraph(const GlobalExceptionInfo &GCG) {
 
   // Debug output final TU dependency graph
   llvm::errs() << "\nFinal TU Dependency Graph:\n";
-  for (const auto &Entry : TUDependencies) {
-    llvm::errs() << "TU: " << Entry.first << "\n";
-    llvm::errs() << "Dependencies:\n";
-    for (const auto &Dep : Entry.second) {
+  for (const auto &[TU, Dependencies] : TUDependencies) {
+    llvm::errs() << "TU: " << TU << "\n";
+    for (const auto &Dep : Dependencies) {
       llvm::errs() << "  -> " << Dep << "\n";
     }
   }

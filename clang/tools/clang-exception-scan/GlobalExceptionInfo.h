@@ -2,6 +2,7 @@
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_GLOBAL_EXCEPTION_INFO_H
 
 #include "CommonTypes.h"
+#include "ExceptionAnalysisInfo.h"
 #include "TUDependencyGraph.h"
 
 #include "clang/AST/Decl.h"
@@ -40,6 +41,14 @@ struct CallDependency {
            CallLocLine == other.CallLocLine &&
            CallLocColumn == other.CallLocColumn;
   }
+};
+
+/// Information about a function's exception behavior
+struct FunctionExceptionMappingInfo {
+  USRTy USR;                  ///< USR of the function
+  ExceptionState State;       ///< The function's exception state
+  bool ContainsUnknown;       ///< Whether the function contains unknown elements
+  std::vector<ThrowInfo> ThrowEvents; ///< Types of exceptions that can be thrown
 };
 
 } // namespace exception_scan
@@ -95,6 +104,10 @@ struct GlobalExceptionInfo {
   llvm::StringMap<FunctionMappingInfo>
       USRToFunctionMap;             ///< Map from USR to function info
   std::mutex USRToFunctionMapMutex; ///< Mutex for USR map
+
+  llvm::StringMap<FunctionExceptionMappingInfo>
+      USRToExceptionMap;             ///< Map from USR to exception info
+  std::mutex USRToExceptionMapMutex; ///< Mutex for exception map
 
   // Data structures for cross-TU analysis
   llvm::StringSet<> TUs; ///< Set of all TUs
