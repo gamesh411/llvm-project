@@ -216,7 +216,12 @@ bool CallGraphVisitor::VisitLambdaExpr(LambdaExpr *Lambda) {
       Info.USR = *CallOperatorUSR;
       Info.TU = CurrentTU_;
       Info.FunctionName = CallOperator->getNameAsString();
-      Info.Loc = CallOperator->getLocation();
+      const SourceManager &SM = Context_.getSourceManager();
+      Info.SourceLocFile = SM.getBufferName(CallOperator->getOuterLocStart());
+      Info.SourceLocLine =
+          SM.getSpellingLineNumber(CallOperator->getOuterLocStart());
+      Info.SourceLocColumn =
+          SM.getSpellingColumnNumber(CallOperator->getOuterLocStart());
       Info.IsDefinition = true; // Lambda call operators are always definitions
       {
         std::lock_guard<std::mutex> Lock(GCG_.USRToFunctionMapMutex);

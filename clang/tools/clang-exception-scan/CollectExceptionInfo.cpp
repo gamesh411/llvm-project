@@ -1,12 +1,16 @@
 #include "CollectExceptionInfo.h"
 #include "GlobalExceptionInfo.h"
-#include "Serialization.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -16,7 +20,8 @@ using namespace llvm;
 using namespace clang;
 
 void clang::exception_scan::reportAllFunctions(
-    clang::exception_scan::ExceptionContext &EC, StringRef PathPrefix) {
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
   llvm::SmallString<256> ReportPath(PathPrefix);
   llvm::sys::path::append(ReportPath, "all_functions.txt");
   std::error_code FileOpenError;
@@ -29,45 +34,25 @@ void clang::exception_scan::reportAllFunctions(
   }
 
   OS << "All functions:\n";
-  for (const auto &EI : EC.InfoPerFunction) {
-    OS << EI.FunctionUSRName << '\n';
-    OS << " defined in " << EI.DefinedInFile;
-    OS << " first declared in " << EI.FirstDeclaredInFile;
-    OS << '\n';
+  {
+    std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
+    for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
+      OS << USR << " defined in " << Info.TU << '\n';
+    }
   }
 }
 
 void clang::exception_scan::reportFunctionDuplications(
-    clang::exception_scan::ExceptionContext &EC, StringRef PathPrefix) {
-  std::vector<std::string> Functions;
-  std::multiset<std::string> FunctionOccurence;
-  std::map<std::string, std::multiset<std::string>> FunctionOccurenceForFile;
-  for (const auto &Info : EC.InfoPerFunction) {
-    Functions.push_back(Info.FunctionUSRName);
-    FunctionOccurence.insert(Info.FunctionUSRName);
-    FunctionOccurenceForFile[Info.DefinedInFile].insert(Info.FunctionUSRName);
-  }
-
-  std::map<std::string, std::pair<std::string, int>> DuplicatedFunctionsPerFile;
-  for (const auto &[FileName, FunctionsInFile] : FunctionOccurenceForFile) {
-    for (auto It = FunctionsInFile.begin(), End = FunctionsInFile.end();
-         It != End;) {
-      auto OccurenceCountInFile = FunctionsInFile.count(*It);
-      if (OccurenceCountInFile > 1) {
-        DuplicatedFunctionsPerFile[FileName].first = *It;
-        DuplicatedFunctionsPerFile[FileName].second += OccurenceCountInFile;
-      }
-      std::advance(It, OccurenceCountInFile);
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
+  // Count occurrences of each function
+  llvm::StringMap<unsigned> FunctionOccurrence;
+  {
+    std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
+    for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
+      ++FunctionOccurrence[USR];
     }
   }
-
-  std::vector<std::string> TotalDuplicatedFunctions;
-  TotalDuplicatedFunctions.reserve(Functions.size());
-  std::copy_if(Functions.begin(), Functions.end(),
-               std::back_inserter(TotalDuplicatedFunctions),
-               [&FunctionOccurence](const std::string &FunctionUSRName) {
-                 return FunctionOccurence.count(FunctionUSRName) > 1;
-               });
 
   SmallString<256> ReportPath(PathPrefix);
   llvm::sys::path::append(ReportPath, "function_duplications.txt");
@@ -80,31 +65,23 @@ void clang::exception_scan::reportFunctionDuplications(
     return;
   }
 
-  OS << "Functions that occur more than once:\n";
-  for (auto It = FunctionOccurence.begin(), End = FunctionOccurence.end();
-       It != End;) {
-    auto OccurenceCount = FunctionOccurence.count(*It);
-    if (OccurenceCount > 1) {
-      OS << *It << " " << OccurenceCount << '\n';
+  OS << "Functions that appear in multiple translation units:\n";
+  {
+    std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
+    for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
+      if (FunctionOccurrence[USR] > 1) {
+        OS << USR << " defined in " << Info.TU << " translation units\n";
+      }
     }
-    std::advance(It, OccurenceCount);
-  }
-
-  OS << "===" << '\n';
-
-  OS << "\nFunctions that occur more than once in the same file:\n";
-  for (const auto &[FileName, FunctionNameOccurencePair] :
-       DuplicatedFunctionsPerFile) {
-    OS << FileName << ' ' << FunctionNameOccurencePair.first << ' '
-       << FunctionNameOccurencePair.second << '\n';
   }
 }
 
 void clang::exception_scan::reportDefiniteMatches(
-    clang::exception_scan::ExceptionContext &EC, StringRef PathPrefix) {
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
+
   SmallString<256> ReportPath(PathPrefix);
   llvm::sys::path::append(ReportPath, "definite_results.txt");
-
   std::error_code FileOpenError;
   llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
 
@@ -114,27 +91,60 @@ void clang::exception_scan::reportDefiniteMatches(
     return;
   }
 
-  OS << "Functions that could be marked noexcept, but are not:\n";
-  SmallString<256> FunctionList;
-  for (const auto &Info : EC.InfoPerFunction) {
-    if (Info.Behaviour == clang::exception_scan::ExceptionState::NotThrowing &&
-        Info.ExceptionSpecification == EST_None) {
-      FunctionList.append(Info.FunctionUSRName);
-      FunctionList.append(" defined in ");
-      FunctionList.append(Info.DefinedInFile);
-      FunctionList.append(" first declared in ");
-      FunctionList.append(Info.FirstDeclaredInFile);
-      FunctionList.append("\n");
+  struct DefiniteResult {
+    llvm::StringRef USR;
+    llvm::StringRef TU;
+    llvm::StringRef SourceLocFile;
+    unsigned SourceLocLine;
+    unsigned SourceLocColumn;
+  };
+
+  llvm::SmallVector<DefiniteResult, 32> DefiniteResults;
+  {
+    std::scoped_lock Lock(GCG.USRToExceptionMapMutex,
+                          GCG.USRToFunctionMapMutex);
+    for (const auto &[USR, Info] : GCG.USRToExceptionMap) {
+      if (Info.State == ExceptionState::NotThrowing &&
+          Info.ExceptionSpecType == EST_None) {
+        const auto FuncIt = GCG.USRToFunctionMap.find(USR);
+        if (FuncIt == GCG.USRToFunctionMap.end()) {
+          llvm::errs() << "USR not found in USRToFunctionMap: " << USR << "\n";
+          continue;
+        }
+        const auto &FuncInfo = FuncIt->getValue();
+        if (FuncInfo.IsDefinition) {
+          DefiniteResults.push_back(
+              DefiniteResult{USR, FuncInfo.TU, FuncInfo.SourceLocFile,
+                             FuncInfo.SourceLocLine, FuncInfo.SourceLocColumn});
+        }
+      }
     }
   }
-  OS << FunctionList;
+
+  llvm::sort(DefiniteResults,
+             [](const DefiniteResult &LHS, const DefiniteResult &RHS) {
+               if (LHS.SourceLocFile != RHS.SourceLocFile) {
+                 return LHS.SourceLocFile < RHS.SourceLocFile;
+               }
+               if (LHS.SourceLocLine != RHS.SourceLocLine) {
+                 return LHS.SourceLocLine < RHS.SourceLocLine;
+               }
+               return LHS.SourceLocColumn < RHS.SourceLocColumn;
+             });
+
+  OS << "Functions that could be marked noexcept, but are not:\n";
+  for (const auto &Result : DefiniteResults) {
+    OS << Result.USR << " defined in " << Result.SourceLocFile << ':'
+       << Result.SourceLocLine << ':' << Result.SourceLocColumn << '\n';
+  }
 }
 
 void clang::exception_scan::reportUnknownCausedMisMatches(
-    clang::exception_scan::ExceptionContext &EC, StringRef PathPrefix) {
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "unknown_mismatches.txt");
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
 
+  SmallString<256> ReportPath(PathPrefix);
+  llvm::sys::path::append(ReportPath, "unknown_caused_mismatches.txt");
   std::error_code FileOpenError;
   llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
 
@@ -144,47 +154,26 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
     return;
   }
 
-  OS << "Functions that could NOT be marked noexcept, because they contain "
-        "function calls with unknown behaviour:\n";
-  SmallString<256> FunctionList;
-  for (const auto &Info : EC.InfoPerFunction) {
-    if (Info.Behaviour == clang::exception_scan::ExceptionState::Unknown &&
-        Info.ExceptionSpecification == EST_None) {
-      FunctionList.append(Info.FunctionUSRName);
-      FunctionList.append(" defined in ");
-      FunctionList.append(Info.DefinedInFile);
-      FunctionList.append(" first declared in ");
-      FunctionList.append(Info.FirstDeclaredInFile);
-      FunctionList.append("\n");
+  OS << "Functions with unknown exception state because they contain unknown "
+        "calls:\n";
+  {
+    std::lock_guard<std::mutex> Lock(GCG.USRToExceptionMapMutex);
+    for (const auto &[USR, Info] : GCG.USRToExceptionMap) {
+      if (Info.State == ExceptionState::Unknown && Info.ContainsUnknown) {
+        std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
+        auto FuncIt = GCG.USRToFunctionMap.find(USR);
+        if (FuncIt != GCG.USRToFunctionMap.end()) {
+          OS << FuncIt->getValue().FunctionName << '\n';
+        }
+      }
     }
   }
-  OS << FunctionList;
-}
-
-void clang::exception_scan::serializeExceptionInfo(
-    clang::exception_scan::ExceptionContext &EC, StringRef PathPrefix) {
-  // Save the exception in the same file hierarchy as the source file, but
-  // prefixed with the PathPrefix.
-  SmallString<256> Path(PathPrefix);
-  llvm::sys::path::append(Path, EC.CurrentInfile);
-  StringRef Directory = llvm::sys::path::parent_path(Path);
-  llvm::sys::fs::create_directories(Directory);
-
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(Path, FileOpenError);
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << Path << '\n'
-                 << FileOpenError.message() << "\n";
-    return;
-  }
-
-  llvm::yaml::Output out(OS);
-  out << EC;
 }
 
 // New reporting functions for the additional data
 void clang::exception_scan::reportNoexceptDependees(
-    const clang::exception_scan::GlobalExceptionInfo &GCG, StringRef PathPrefix) {
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
   SmallString<256> ReportPath(PathPrefix);
   llvm::sys::path::append(ReportPath, "noexcept_dependees.txt");
   std::error_code FileOpenError;
@@ -207,7 +196,8 @@ void clang::exception_scan::reportNoexceptDependees(
 }
 
 void clang::exception_scan::reportCallDependencies(
-    const clang::exception_scan::GlobalExceptionInfo &GCG, StringRef PathPrefix) {
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
   SmallString<256> ReportPath(PathPrefix);
   llvm::sys::path::append(ReportPath, "call_dependencies.txt");
   std::error_code FileOpenError;
@@ -229,7 +219,8 @@ void clang::exception_scan::reportCallDependencies(
 }
 
 void clang::exception_scan::reportTUDependencies(
-    const clang::exception_scan::GlobalExceptionInfo &GCG, StringRef PathPrefix) {
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
   SmallString<256> ReportPath(PathPrefix);
   llvm::sys::path::append(ReportPath, "tu_dependencies.txt");
   std::error_code FileOpenError;

@@ -12,24 +12,24 @@
 //
 //===--------------------------------------------------------------------===//
 
-#include "clang/Tooling/JSONCompilationDatabase.h"
-#include "clang/Tooling/Tooling.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Signals.h"
-#include <clang/CrossTU/CrossTranslationUnit.h>
-#include <string>
-
 #include "ASTBasedExceptionAnalyzer.h"
 #include "CallGraphGeneratorConsumer.h"
 #include "CollectExceptionInfo.h"
 #include "NoexceptDependeeConsumer.h"
 #include "USRMappingConsumer.h"
+
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/JSONCompilationDatabase.h"
+#include "clang/Tooling/Tooling.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Signals.h"
+
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -55,18 +55,17 @@ static cl::opt<std::string>
 // Custom FrontendAction that runs multiple consumers in sequence
 class MultiConsumerAction : public clang::ASTFrontendAction {
 public:
-  MultiConsumerAction(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                      bool PreAnalysis = false)
-      : GCG_(GCG), EC_(EC), PreAnalysis_(PreAnalysis) {}
+  MultiConsumerAction(GlobalExceptionInfo &GCG, bool PreAnalysis = false)
+      : GCG_(GCG), PreAnalysis_(PreAnalysis) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
     // Create a consumer that will run all our consumers in sequence
     class SequentialConsumer : public clang::ASTConsumer {
     public:
-      SequentialConsumer(GlobalExceptionInfo &GCG, ExceptionContext &EC,
-                         StringRef InFile, bool PreAnalysis)
-          : GCG_(GCG), EC_(EC), InFile_(InFile), PreAnalysis_(PreAnalysis) {}
+      SequentialConsumer(GlobalExceptionInfo &GCG, StringRef InFile,
+                         bool PreAnalysis)
+          : GCG_(GCG), InFile_(InFile), PreAnalysis_(PreAnalysis) {}
 
       void HandleTranslationUnit(ASTContext &Context) override {
         Context_ = &Context; // Store for use in isSystemHeader
@@ -120,57 +119,9 @@ public:
               continue;
             }
 
-            auto AI = ExceptionAnalyzer.analyzeFunction(FD);
-
-            // Get canonical file paths for function locations
-            auto FirstDeclLoc = FD->getFirstDecl()->getLocation();
-            auto FirstDeclaredInFile =
-                std::string{SM.getFilename(FirstDeclLoc)};
-
-            auto DefinedInFile = [&FD, &SM]() {
-              std::string Result = "<unknown>";
-              auto const *Definition = FD->getDefinition();
-              if (Definition) {
-                auto DefinitionLoc = Definition->getLocation();
-                Result = std::string{SM.getFilename(DefinitionLoc)};
-              }
-              return Result;
-            }();
-
-            // In single-TU mode (with file-selector), only report functions
-            // from the main file In multi-TU mode, report functions in their
-            // declared location
-            bool IsMainFileDecl = SM.isInMainFile(FirstDeclLoc);
-            if (IsMainFileDecl) {
-              auto *Identifier = FD->getIdentifier();
-              auto FunctionName = std::string{};
-              if (Identifier)
-                FunctionName = std::string{Identifier->getName()};
-
-              auto FunctionUSRName =
-                  cross_tu::CrossTranslationUnitContext::getLookupName(FD)
-                      .value_or("<no_usr_name>");
-
-              auto ss = std::stringstream{};
-              for (auto const &T : AI.ThrowEvents) {
-                std::string ExceptionTypeName = T.Type.getAsString();
-                ss << ExceptionTypeName << ", ";
-              }
-              auto view = std::string_view{ss.str()};
-              if (view.size() > 2)
-                view.remove_suffix(2);
-              auto ExceptionTypeList = std::string{view};
-
-              auto Behaviour = AI.State;
-              auto ES = FD->getExceptionSpecType();
-              bool ContainsUnknown = AI.ContainsUnknown;
-              bool IsInMainFile = SM.isInMainFile(FD->getOuterLocStart());
-
-              EC_.InfoPerFunction.push_back({FirstDeclaredInFile, DefinedInFile,
-                                             FunctionName, FunctionUSRName,
-                                             ExceptionTypeList, Behaviour, ES,
-                                             ContainsUnknown, IsInMainFile});
-            }
+            // Analyze the function and let the analyzer store the results
+            // in the shared GlobalExceptionInfo object (GCG_)
+            ExceptionAnalyzer.analyzeFunction(FD);
           }
         }
 
@@ -181,19 +132,16 @@ public:
 
     private:
       GlobalExceptionInfo &GCG_;
-      ExceptionContext &EC_;
       StringRef InFile_;
       bool PreAnalysis_;
       ASTContext *Context_; // Added to support isSystemHeader
     };
 
-    return std::make_unique<SequentialConsumer>(GCG_, EC_, InFile,
-                                                PreAnalysis_);
+    return std::make_unique<SequentialConsumer>(GCG_, InFile, PreAnalysis_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
-  ExceptionContext &EC_;
   bool PreAnalysis_;
 };
 
@@ -201,17 +149,16 @@ private:
 class MultiConsumerActionFactory
     : public clang::tooling::FrontendActionFactory {
 public:
-  MultiConsumerActionFactory(GlobalExceptionInfo &GCG, ExceptionContext &EC,
+  MultiConsumerActionFactory(GlobalExceptionInfo &GCG,
                              bool PreAnalysisOnly = false)
-      : GCG_(GCG), EC_(EC), PreAnalysisOnly_(PreAnalysisOnly) {}
+      : GCG_(GCG), PreAnalysisOnly_(PreAnalysisOnly) {}
 
   std::unique_ptr<clang::FrontendAction> create() override {
-    return std::make_unique<MultiConsumerAction>(GCG_, EC_, PreAnalysisOnly_);
+    return std::make_unique<MultiConsumerAction>(GCG_, PreAnalysisOnly_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
-  ExceptionContext &EC_;
   bool PreAnalysisOnly_;
 };
 
@@ -261,13 +208,12 @@ int main(int argc, const char **argv) {
 
   // Create global exception info and exception context
   GlobalExceptionInfo GEI;
-  ExceptionContext EC;
 
   // First run: Pre-analysis on build complete USR and call graph
   // info
   llvm::errs() << "Running pre-analysis on all files...\n";
   auto PreAnalysisFactory =
-      std::make_unique<MultiConsumerActionFactory>(GEI, EC, true);
+      std::make_unique<MultiConsumerActionFactory>(GEI, true);
   ClangTool PreAnalysisTool(*Compilations, SourcePaths);
   int preResult = PreAnalysisTool.run(PreAnalysisFactory.get());
   if (preResult != 0) {
@@ -294,8 +240,7 @@ int main(int argc, const char **argv) {
 
   // Second run: Detailed analysis
   llvm::errs() << "Running detailed analysis on selected files...\n";
-  auto ActionFactory =
-      std::make_unique<MultiConsumerActionFactory>(GEI, EC, false);
+  auto ActionFactory = std::make_unique<MultiConsumerActionFactory>(GEI, false);
   ClangTool Tool(*Compilations, SortedSourcePaths);
   int result = Tool.run(ActionFactory.get());
 
@@ -308,11 +253,10 @@ int main(int argc, const char **argv) {
   const char *OutputDirPath = OutputDir.c_str();
 
   // Original reports
-  serializeExceptionInfo(EC, OutputDirPath);
-  reportAllFunctions(EC, OutputDirPath);
-  reportFunctionDuplications(EC, OutputDirPath);
-  reportDefiniteMatches(EC, OutputDirPath);
-  reportUnknownCausedMisMatches(EC, OutputDirPath);
+  reportAllFunctions(GEI, OutputDirPath);
+  reportFunctionDuplications(GEI, OutputDirPath);
+  reportDefiniteMatches(GEI, OutputDirPath);
+  reportUnknownCausedMisMatches(GEI, OutputDirPath);
 
   // New reports for additional data
   reportNoexceptDependees(GEI, OutputDirPath);

@@ -920,3 +920,180 @@ TEST_F(ASTBasedExceptionAnalyzerTest, RethrowExpressions) {
   auto RethrowTransformedInfo = Analyzer.analyzeFunction(RethrowTransformed);
   EXPECT_EQ(RethrowTransformedInfo.State, ExceptionState::NotThrowing);
 }
+
+// Test exception specification handling
+TEST_F(ASTBasedExceptionAnalyzerTest, ExceptionSpecificationHandling) {
+  auto AST = buildASTFromCode(R"(
+    // Function with no exception specification
+    void noSpec() { throw 42; }
+    
+    // Function with noexcept(false) specification
+    void noexceptFalse() noexcept(false) { throw 42; }
+    
+    // Function with noexcept(true) specification but actually throws
+    void noexceptTrueViolation() noexcept(true) { throw 42; }
+    
+    // Function with noexcept(true) specification and doesn't throw
+    void noexceptTrue() noexcept(true) { int x = 42; }
+    
+    // Function with noexcept specification and doesn't throw
+    void noexceptNoThrow() noexcept { int x = 42; }
+    
+    // Function with throw() specification (deprecated but still valid)
+    void throwEmpty() throw() { int x = 42; }
+    
+    // Function with throw(...) specification
+    void throwEllipsis() throw(...) { throw 42; }
+    
+    // Function with throw(type) specification
+    void throwIntSpec() throw(int) { throw 42; }
+    
+    // Function with throw(type) specification but throws different type
+    void throwIntSpecViolation() throw(int) { throw "error"; }
+  )");
+
+  ASSERT_TRUE(AST != nullptr);
+  auto &Context = AST->getASTContext();
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
+
+  // Test noSpec function
+  const FunctionDecl *NoSpec = findFunction(AST.get(), "noSpec");
+  ASSERT_TRUE(NoSpec != nullptr);
+  auto NoSpecInfo = Analyzer.analyzeFunction(NoSpec);
+  EXPECT_EQ(NoSpecInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(NoSpecInfo.ExceptionSpecType, EST_None);
+  EXPECT_FALSE(NoSpecInfo.ThrowEvents.empty());
+
+  // Test noexceptFalse function
+  const FunctionDecl *NoexceptFalse = findFunction(AST.get(), "noexceptFalse");
+  ASSERT_TRUE(NoexceptFalse != nullptr);
+  auto NoexceptFalseInfo = Analyzer.analyzeFunction(NoexceptFalse);
+  EXPECT_EQ(NoexceptFalseInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(NoexceptFalseInfo.ExceptionSpecType, EST_NoexceptFalse);
+  EXPECT_FALSE(NoexceptFalseInfo.ThrowEvents.empty());
+
+  // Test noexceptTrueViolation function
+  const FunctionDecl *NoexceptTrueViolation =
+      findFunction(AST.get(), "noexceptTrueViolation");
+  ASSERT_TRUE(NoexceptTrueViolation != nullptr);
+  auto NoexceptTrueViolationInfo =
+      Analyzer.analyzeFunction(NoexceptTrueViolation);
+  EXPECT_EQ(NoexceptTrueViolationInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(NoexceptTrueViolationInfo.ExceptionSpecType, EST_NoexceptTrue);
+  EXPECT_FALSE(NoexceptTrueViolationInfo.ThrowEvents.empty());
+
+  // Test noexceptTrue function
+  const FunctionDecl *NoexceptTrue = findFunction(AST.get(), "noexceptTrue");
+  ASSERT_TRUE(NoexceptTrue != nullptr);
+  auto NoexceptTrueInfo = Analyzer.analyzeFunction(NoexceptTrue);
+  EXPECT_EQ(NoexceptTrueInfo.State, ExceptionState::NotThrowing);
+  EXPECT_EQ(NoexceptTrueInfo.ExceptionSpecType, EST_NoexceptTrue);
+  EXPECT_TRUE(NoexceptTrueInfo.ThrowEvents.empty());
+
+  // Test noexceptNoThrow function
+  const FunctionDecl *NoexceptNoThrow =
+      findFunction(AST.get(), "noexceptNoThrow");
+  ASSERT_TRUE(NoexceptNoThrow != nullptr);
+  auto NoexceptNoThrowInfo = Analyzer.analyzeFunction(NoexceptNoThrow);
+  EXPECT_EQ(NoexceptNoThrowInfo.State, ExceptionState::NotThrowing);
+  EXPECT_EQ(NoexceptNoThrowInfo.ExceptionSpecType, EST_BasicNoexcept);
+  EXPECT_TRUE(NoexceptNoThrowInfo.ThrowEvents.empty());
+
+  // Test throwEmpty function
+  const FunctionDecl *ThrowEmpty = findFunction(AST.get(), "throwEmpty");
+  ASSERT_TRUE(ThrowEmpty != nullptr);
+  auto ThrowEmptyInfo = Analyzer.analyzeFunction(ThrowEmpty);
+  EXPECT_EQ(ThrowEmptyInfo.State, ExceptionState::NotThrowing);
+  EXPECT_EQ(ThrowEmptyInfo.ExceptionSpecType, EST_DynamicNone);
+  EXPECT_TRUE(ThrowEmptyInfo.ThrowEvents.empty());
+
+  // Test throwEllipsis function
+  const FunctionDecl *ThrowEllipsis = findFunction(AST.get(), "throwEllipsis");
+  ASSERT_TRUE(ThrowEllipsis != nullptr);
+  auto ThrowEllipsisInfo = Analyzer.analyzeFunction(ThrowEllipsis);
+  EXPECT_EQ(ThrowEllipsisInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(ThrowEllipsisInfo.ExceptionSpecType, EST_MSAny);
+  EXPECT_FALSE(ThrowEllipsisInfo.ThrowEvents.empty());
+
+  // Test throwIntSpec function
+  const FunctionDecl *ThrowIntSpec = findFunction(AST.get(), "throwIntSpec");
+  ASSERT_TRUE(ThrowIntSpec != nullptr);
+  auto ThrowIntSpecInfo = Analyzer.analyzeFunction(ThrowIntSpec);
+  EXPECT_EQ(ThrowIntSpecInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(ThrowIntSpecInfo.ExceptionSpecType, EST_Dynamic);
+  EXPECT_FALSE(ThrowIntSpecInfo.ThrowEvents.empty());
+
+  // Test throwIntSpecViolation function
+  const FunctionDecl *ThrowIntSpecViolation =
+      findFunction(AST.get(), "throwIntSpecViolation");
+  ASSERT_TRUE(ThrowIntSpecViolation != nullptr);
+  auto ThrowIntSpecViolationInfo =
+      Analyzer.analyzeFunction(ThrowIntSpecViolation);
+  EXPECT_EQ(ThrowIntSpecViolationInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(ThrowIntSpecViolationInfo.ExceptionSpecType, EST_Dynamic);
+  EXPECT_FALSE(ThrowIntSpecViolationInfo.ThrowEvents.empty());
+}
+
+// Test exception specification in function calls
+TEST_F(ASTBasedExceptionAnalyzerTest, ExceptionSpecificationInFunctionCalls) {
+  auto AST = buildASTFromCode(R"(
+    // Function with noexcept specification
+    void noexceptFunc() noexcept(true) { int x = 42; }
+    
+    // Function that calls a noexcept function
+    void callsNoexcept() {
+      noexceptFunc();
+    }
+    
+    // Function with noexcept specification but actually throws
+    void noexceptViolation() noexcept(true) { throw 42; }
+    
+    // Function that calls a noexcept function that violates its specification
+    void callsNoexceptViolation() {
+      noexceptViolation();
+    }
+    
+    // Function with no exception specification
+    void noSpecFunc() { throw 42; }
+    
+    // Function with noexcept specification that calls a function without exception specification
+    void noexceptCallsNoSpec() noexcept(true) {
+      noSpecFunc();
+    }
+  )");
+
+  ASSERT_TRUE(AST != nullptr);
+  auto &Context = AST->getASTContext();
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
+
+  // Test callsNoexcept function
+  const FunctionDecl *CallsNoexcept = findFunction(AST.get(), "callsNoexcept");
+  ASSERT_TRUE(CallsNoexcept != nullptr);
+  auto CallsNoexceptInfo = Analyzer.analyzeFunction(CallsNoexcept);
+  EXPECT_EQ(CallsNoexceptInfo.State, ExceptionState::NotThrowing);
+  EXPECT_EQ(CallsNoexceptInfo.ExceptionSpecType, EST_None);
+  EXPECT_TRUE(CallsNoexceptInfo.ThrowEvents.empty());
+
+  // Test callsNoexceptViolation function
+  const FunctionDecl *CallsNoexceptViolation =
+      findFunction(AST.get(), "callsNoexceptViolation");
+  ASSERT_TRUE(CallsNoexceptViolation != nullptr);
+  auto CallsNoexceptViolationInfo =
+      Analyzer.analyzeFunction(CallsNoexceptViolation);
+  EXPECT_EQ(CallsNoexceptViolationInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(CallsNoexceptViolationInfo.ExceptionSpecType, EST_None);
+  EXPECT_FALSE(CallsNoexceptViolationInfo.ThrowEvents.empty());
+
+  // Test noexceptCallsNoSpec function
+  const FunctionDecl *NoexceptCallsNoSpec =
+      findFunction(AST.get(), "noexceptCallsNoSpec");
+  ASSERT_TRUE(NoexceptCallsNoSpec != nullptr);
+  auto NoexceptCallsNoSpecInfo = Analyzer.analyzeFunction(NoexceptCallsNoSpec);
+  EXPECT_EQ(NoexceptCallsNoSpecInfo.State, ExceptionState::Throwing);
+  EXPECT_EQ(NoexceptCallsNoSpecInfo.ExceptionSpecType, EST_NoexceptTrue);
+  EXPECT_FALSE(NoexceptCallsNoSpecInfo.ThrowEvents.empty());
+}

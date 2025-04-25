@@ -110,6 +110,8 @@ struct LocalFunctionExceptionInfo {
   const FunctionDecl *Function; ///< The function declaration
   ExceptionState State;         ///< The function's exception state
   bool ContainsUnknown; ///< Whether the function contains unknown elements
+  ExceptionSpecificationType
+      ExceptionSpecType; ///< The function's exception specification type
   llvm::SmallVector<LocalThrowInfo, 2>
       ThrowEvents; ///< Types of exceptions that can be thrown
 };
@@ -118,6 +120,8 @@ struct GlobalFunctionExceptionInfo {
   USRTy Function;       ///< The function declaration
   ExceptionState State; ///< The function's exception state
   bool ContainsUnknown; ///< Whether the function contains unknown elements
+  ExceptionSpecificationType
+      ExceptionSpecType; ///< The function's exception specification type
   llvm::SmallVector<GlobalThrowInfo, 2>
       ThrowEvents; ///< Types of exceptions that can be thrown
 };

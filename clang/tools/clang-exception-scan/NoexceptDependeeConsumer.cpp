@@ -144,9 +144,7 @@ private:
     std::string USRStr = USR.str().str();
 
     // Get source location information
-    SourceManager &SM = FD->getASTContext().getSourceManager();
-    std::string NoexceptLocFile =
-        SM.getFileEntryRefForID(SM.getFileID(NoexceptLoc))->getName().str();
+    const SourceManager &SM = FD->getASTContext().getSourceManager();
     unsigned NoexceptLocLine = SM.getSpellingLineNumber(NoexceptLoc);
     unsigned NoexceptLocColumn = SM.getSpellingColumnNumber(NoexceptLoc);
 
@@ -155,8 +153,10 @@ private:
     Info.USR = USRStr;
     Info.TU = CurrentTU_;
     Info.FunctionName = FD->getNameAsString();
-    Info.Loc = FD->getLocation();
-    Info.NoexceptLocFile = NoexceptLocFile;
+    Info.SourceLocFile = SM.getBufferName(FD->getOuterLocStart());
+    Info.SourceLocLine = SM.getSpellingLineNumber(FD->getOuterLocStart());
+    Info.SourceLocColumn = SM.getSpellingColumnNumber(FD->getOuterLocStart());
+    Info.NoexceptLocFile = SM.getBufferName(NoexceptLoc);
     Info.NoexceptLocLine = NoexceptLocLine;
     Info.NoexceptLocColumn = NoexceptLocColumn;
 

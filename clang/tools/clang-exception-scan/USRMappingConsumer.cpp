@@ -38,7 +38,10 @@ public:
     Info.USR = *USR;
     Info.TU = CurrentTU_;
     Info.FunctionName = FD->getNameAsString();
-    Info.Loc = FD->getLocation();
+    const SourceManager &SM = FD->getASTContext().getSourceManager();
+    Info.SourceLocFile = SM.getBufferName(FD->getOuterLocStart());
+    Info.SourceLocLine = SM.getSpellingLineNumber(FD->getOuterLocStart());
+    Info.SourceLocColumn = SM.getSpellingColumnNumber(FD->getOuterLocStart());
     Info.IsDefinition = FD->isThisDeclarationADefinition();
 
     // Add function to the map, but only if it's a definition or if we haven't

@@ -15,7 +15,6 @@
 // CHECK-SINGLE-NOT: c:@F@safe_function# defined in {{.*}}ctu_exception_spec_impl.cpp
 // In multi-TU mode, we can see it's safe
 // CHECK-MULTI: c:@F@safe_function# defined in {{.*}}ctu_exception_spec_impl.cpp
-// CHECK-MULTI: c:@F@safe_function# defined in <unknown> first declared in {{.*}}ctu_exception_spec.cpp
 void safe_function();
 
 // Function with implementation in another TU that does throw

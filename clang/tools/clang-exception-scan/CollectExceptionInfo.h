@@ -38,11 +38,13 @@ struct ExceptionContext {
   std::vector<PerFunctionExceptionInfo> InfoPerFunction;
 };
 
-void reportAllFunctions(ExceptionContext &EC, llvm::StringRef PathPrefix);
-void reportFunctionDuplications(ExceptionContext &EC,
+void reportAllFunctions(const GlobalExceptionInfo &GCG,
+                        llvm::StringRef PathPrefix);
+void reportFunctionDuplications(const GlobalExceptionInfo &GCG,
                                 llvm::StringRef PathPrefix);
-void reportDefiniteMatches(ExceptionContext &EC, llvm::StringRef PathPrefix);
-void reportUnknownCausedMisMatches(ExceptionContext &EC,
+void reportDefiniteMatches(const GlobalExceptionInfo &GCG,
+                           llvm::StringRef PathPrefix);
+void reportUnknownCausedMisMatches(const GlobalExceptionInfo &GCG,
                                    llvm::StringRef PathPrefix);
 void reportNoexceptDependees(const GlobalExceptionInfo &GCG,
                              llvm::StringRef PathPrefix);
@@ -50,8 +52,6 @@ void reportCallDependencies(const GlobalExceptionInfo &GCG,
                             llvm::StringRef PathPrefix);
 void reportTUDependencies(const GlobalExceptionInfo &GCG,
                           llvm::StringRef PathPrefix);
-
-void serializeExceptionInfo(ExceptionContext &EC, llvm::StringRef PathPrefix);
 
 } // namespace exception_scan
 } // namespace clang
