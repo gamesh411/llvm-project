@@ -43,14 +43,6 @@ struct CallDependency {
   }
 };
 
-/// Information about a function's exception behavior
-struct FunctionExceptionMappingInfo {
-  USRTy USR;                  ///< USR of the function
-  ExceptionState State;       ///< The function's exception state
-  bool ContainsUnknown;       ///< Whether the function contains unknown elements
-  std::vector<ThrowInfo> ThrowEvents; ///< Types of exceptions that can be thrown
-};
-
 } // namespace exception_scan
 } // namespace clang
 
@@ -105,7 +97,7 @@ struct GlobalExceptionInfo {
       USRToFunctionMap;             ///< Map from USR to function info
   std::mutex USRToFunctionMapMutex; ///< Mutex for USR map
 
-  llvm::StringMap<FunctionExceptionMappingInfo>
+  llvm::StringMap<GlobalFunctionExceptionInfo>
       USRToExceptionMap;             ///< Map from USR to exception info
   std::mutex USRToExceptionMapMutex; ///< Mutex for exception map
 

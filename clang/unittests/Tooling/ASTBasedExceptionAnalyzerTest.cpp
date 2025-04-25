@@ -477,7 +477,7 @@ TEST_F(ASTBasedExceptionAnalyzerTest, TryCatchAnalysis) {
   ASSERT_FALSE(CatchRethrowInfo.ThrowEvents.empty());
   bool hasLogicError = false;
   for (const auto &ET : CatchRethrowInfo.ThrowEvents) {
-    if (ET.TypeName.find("logic_error") != std::string::npos)
+    if (ET.Type.getAsString().find("logic_error") != std::string::npos)
       hasLogicError = true;
   }
   EXPECT_TRUE(hasLogicError);
@@ -709,7 +709,7 @@ TEST_F(ASTBasedExceptionAnalyzerTest, NestedTryCatchInTryBlock) {
   auto InnerInfo = Analyzer.analyzeFunction(Inner);
   EXPECT_EQ(InnerInfo.State, ExceptionState::Throwing);
   ASSERT_EQ(InnerInfo.ThrowEvents.size(), 1u);
-  EXPECT_EQ(InnerInfo.ThrowEvents[0].TypeName, "int");
+  EXPECT_EQ(InnerInfo.ThrowEvents[0].Type.getAsString(), "int");
 
   // Test outer function
   const FunctionDecl *Outer = findFunction(AST.get(), "outer");
@@ -906,7 +906,7 @@ TEST_F(ASTBasedExceptionAnalyzerTest, RethrowExpressions) {
   auto RethrowInCatchInfo = Analyzer.analyzeFunction(RethrowInCatch);
   EXPECT_EQ(RethrowInCatchInfo.State, ExceptionState::Throwing);
   ASSERT_FALSE(RethrowInCatchInfo.ThrowEvents.empty());
-  EXPECT_TRUE(RethrowInCatchInfo.ThrowEvents[0].TypeName.find(
+  EXPECT_TRUE(RethrowInCatchInfo.ThrowEvents[0].Type.getAsString().find(
                   "runtime_error") != std::string::npos);
 
   const FunctionDecl *RethrowNested = findFunction(AST.get(), "rethrowNested");

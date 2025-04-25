@@ -150,41 +150,63 @@ bool ASTBasedExceptionAnalyzer::isNoexceptBuiltin(
   return false;
 }
 
-FunctionExceptionInfo
+LocalFunctionExceptionInfo
 ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
+  llvm::errs() << "\nAnalyzing function: " << Func->getNameAsString() << "\n";
+
   if (!Func) {
     // Handle null function declarations (should never happen in practice)
-    return FunctionExceptionInfo{nullptr, ExceptionState::Unknown, true, {}};
+    return LocalFunctionExceptionInfo{
+        nullptr, ExceptionState::Unknown, true, {}};
   }
 
   // Check if we've already analyzed this function in our local cache
   auto It = FunctionCache_.find(Func);
-  if (It != FunctionCache_.end())
+  if (It != FunctionCache_.end()) {
+    llvm::errs() << "  Found in local cache\n";
     return It->second;
+  }
+  llvm::errs() << "  Not found in local cache\n";
 
   // Get the USR for this function
   std::optional<std::string> USR =
       cross_tu::CrossTranslationUnitContext::getLookupName(Func);
   if (USR) {
+    llvm::errs() << "  Checking global cache for USR: " << *USR << "\n";
     // Check if we have exception info for this USR in the global cache
     std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
     auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
     if (GlobalIt != GEI_.USRToExceptionMap.end()) {
+      llvm::errs() << "  Found in global cache\n";
       // Convert the global exception info to our local format
-      FunctionExceptionInfo LocalInfo{Func, GlobalIt->second.State,
-                                      GlobalIt->second.ContainsUnknown,
-                                      GlobalIt->second.ThrowEvents};
-      // Cache the result locally
-      FunctionCache_[Func] = LocalInfo;
-      return LocalInfo;
+      bool SuccessfullyLoadedGlobalInfo = true;
+      LocalFunctionExceptionInfo LocalInfo;
+      LocalInfo.Function = Func;
+      LocalInfo.State = GlobalIt->second.State;
+      LocalInfo.ContainsUnknown = GlobalIt->second.ContainsUnknown;
+      for (const auto &ThrowEvent : GlobalIt->second.ThrowEvents) {
+        if (std::optional<LocalThrowInfo> LocalThrowInfo =
+                fromGlobal(ThrowEvent, Context_)) {
+          LocalInfo.ThrowEvents.push_back(*LocalThrowInfo);
+        } else {
+          SuccessfullyLoadedGlobalInfo = false;
+        }
+      }
+
+      if (SuccessfullyLoadedGlobalInfo) {
+        // Cache the result locally
+        FunctionCache_[Func] = LocalInfo;
+        return LocalInfo;
+      }
     }
+    llvm::errs() << "  Not found in global cache\n";
   }
 
   // Handle functions without a body (declarations only)
   if (!Func->hasBody()) {
     // For functions without a body, we need to check if they're marked as
     // noexcept or if they have an exception specification
-    FunctionExceptionInfo Info{Func, ExceptionState::Unknown, true, {}};
+    LocalFunctionExceptionInfo Info{Func, ExceptionState::Unknown, true, {}};
     // If the function has an exception specification, we can determine its
     // state
     if (Func->getExceptionSpecType() == EST_None ||
@@ -202,12 +224,14 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
     // If we have a USR, cache in the global map as well
     if (USR) {
       std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
-      FunctionExceptionMappingInfo GlobalInfo;
-      GlobalInfo.USR = *USR;
+      GlobalFunctionExceptionInfo GlobalInfo;
+      GlobalInfo.Function = *USR;
       GlobalInfo.State = Info.State;
       GlobalInfo.ContainsUnknown = Info.ContainsUnknown;
-      GlobalInfo.ThrowEvents = Info.ThrowEvents;
-      GEI_.USRToExceptionMap[*USR] = GlobalInfo;
+      for (const auto &ThrowEvent : Info.ThrowEvents) {
+        GlobalInfo.ThrowEvents.push_back(fromLocal(ThrowEvent, Context_));
+      }
+      GEI_.USRToExceptionMap[*USR] = std::move(GlobalInfo);
     }
 
     return Info;
@@ -215,14 +239,14 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
 
   // Check if this is a noexcept builtin
   if (isNoexceptBuiltin(Func)) {
-    FunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}};
+    LocalFunctionExceptionInfo Info{
+        Func, ExceptionState::NotThrowing, false, {}};
     FunctionCache_[Func] = Info;
     return Info;
   }
 
-  // Save the current try block cache and parent map
+  // Save the current try block cache
   auto SavedTryBlockCache = std::move(TryBlockCache_);
-  auto SavedParentMap = std::move(ParentMap_);
 
   // Find all try-catch blocks in the function
   AnalysisOrderedTryCatches TryCatches =
@@ -239,7 +263,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
 
   // First analyze all try-catch blocks in order and cache their results
   for (const auto &TC : TryCatches) {
-    FunctionExceptionInfo TryInfo{
+    LocalFunctionExceptionInfo TryInfo{
         nullptr, ExceptionState::NotThrowing, false, {}};
     analyzeTryCatch(TC.TryStmt, TryInfo);
     TryBlockCache_[TC.TryStmt] = TryInfo;
@@ -253,7 +277,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   }
 
   // Now analyze the function body, which will use the cached try block results
-  FunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}};
+  LocalFunctionExceptionInfo Info{Func, ExceptionState::NotThrowing, false, {}};
   analyzeStatement(Func->getBody(), Info);
 
   // Debug print
@@ -268,23 +292,24 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   // If we have a USR, cache in the global map as well
   if (USR) {
     std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
-    FunctionExceptionMappingInfo GlobalInfo;
-    GlobalInfo.USR = *USR;
+    GlobalFunctionExceptionInfo GlobalInfo;
+    GlobalInfo.Function = *USR;
     GlobalInfo.State = Info.State;
     GlobalInfo.ContainsUnknown = Info.ContainsUnknown;
-    GlobalInfo.ThrowEvents = Info.ThrowEvents;
-    GEI_.USRToExceptionMap[*USR] = GlobalInfo;
+    for (const auto &ThrowEvent : Info.ThrowEvents) {
+      GlobalInfo.ThrowEvents.push_back(fromLocal(ThrowEvent, Context_));
+    }
+    GEI_.USRToExceptionMap[*USR] = std::move(GlobalInfo);
   }
 
-  // Restore the previous try block cache and parent map
+  // Restore the previous try block cache
   TryBlockCache_ = std::move(SavedTryBlockCache);
-  ParentMap_ = std::move(SavedParentMap);
 
   return Info;
 }
 
-void ASTBasedExceptionAnalyzer::analyzeStatement(const Stmt *S,
-                                                 FunctionExceptionInfo &Info) {
+void ASTBasedExceptionAnalyzer::analyzeStatement(
+    const Stmt *S, LocalFunctionExceptionInfo &Info) {
   if (!S)
     return;
 
@@ -352,10 +377,10 @@ void ASTBasedExceptionAnalyzer::analyzeStatement(const Stmt *S,
   }
 }
 
-void ASTBasedExceptionAnalyzer::analyzeTryCatch(const CXXTryStmt *Try,
-                                                FunctionExceptionInfo &Info) {
+void ASTBasedExceptionAnalyzer::analyzeTryCatch(
+    const CXXTryStmt *Try, LocalFunctionExceptionInfo &Info) {
   // Create info for this try block
-  FunctionExceptionInfo TryInfo{
+  LocalFunctionExceptionInfo TryInfo{
       nullptr, ExceptionState::NotThrowing, false, {}};
 
   // Analyze the try block (nested try blocks will be handled via cache)
@@ -378,12 +403,12 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(const CXXTryStmt *Try,
   // If the try block throws, check if all exceptions are caught
   bool AllCaught = false;
   bool AnyRethrows = false;
-  std::vector<ThrowInfo> UncaughtExceptions = TryInfo.ThrowEvents;
+  llvm::SmallVector<LocalThrowInfo, 2> UncaughtExceptions = TryInfo.ThrowEvents;
 
   llvm::errs() << "Initial uncaught exceptions: " << UncaughtExceptions.size()
                << "\n";
   for (const auto &Event : UncaughtExceptions) {
-    llvm::errs() << "  Type: " << Event.TypeName << "\n";
+    llvm::errs() << "  Type: " << Event.Type.getAsString() << "\n";
   }
 
   // Check each catch block
@@ -398,7 +423,7 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(const CXXTryStmt *Try,
     }
 
     // Analyze the catch block for throws/rethrows
-    FunctionExceptionInfo HandlerInfo{
+    LocalFunctionExceptionInfo HandlerInfo{
         nullptr, ExceptionState::NotThrowing, false, {}};
 
     llvm::errs() << "  Analyzing handler block:\n";
@@ -437,11 +462,11 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(const CXXTryStmt *Try,
 
     // Check if this handler catches any of the uncaught exceptions
     QualType CaughtType = Handler->getCaughtType();
-    std::vector<ThrowInfo> StillUncaught;
+    llvm::SmallVector<LocalThrowInfo, 2> StillUncaught;
 
     for (const auto &ThrowEvent : UncaughtExceptions) {
       if (canCatchType(CaughtType, ThrowEvent.Type)) {
-        llvm::errs() << "  Can catch " << ThrowEvent.TypeName << "\n";
+        llvm::errs() << "  Can catch " << ThrowEvent.Type.getAsString() << "\n";
 
         if (HandlerInfo.State == ExceptionState::Throwing) {
           AnyRethrows = true;
@@ -454,7 +479,8 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(const CXXTryStmt *Try,
           llvm::errs() << "  Handler handles exception\n";
         }
       } else {
-        llvm::errs() << "  Cannot catch " << ThrowEvent.TypeName << "\n";
+        llvm::errs() << "  Cannot catch " << ThrowEvent.Type.getAsString()
+                     << "\n";
         // This exception is not caught by this handler
         StillUncaught.push_back(ThrowEvent);
       }
@@ -504,12 +530,25 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(const CXXTryStmt *Try,
   Info = TryInfo;
 }
 
-void ASTBasedExceptionAnalyzer::analyzeThrowExpr(const CXXThrowExpr *Throw,
-                                                 FunctionExceptionInfo &Info) {
+void ASTBasedExceptionAnalyzer::analyzeThrowExpr(
+    const CXXThrowExpr *Throw, LocalFunctionExceptionInfo &Info) {
   // Get the thrown type
   QualType ThrowType;
-  std::string TypeName;
-  std::vector<ExceptionCondition> Conditions;
+  OwningStringTy TypeName;
+  llvm::SmallVector<GlobalExceptionCondition, 4> Conditions = [this, Throw]() {
+    llvm::SmallVector<GlobalExceptionCondition, 4> Conditions;
+    const Stmt *Current = Throw;
+    while (Current) {
+      const Stmt *Parent = getParentStmt(Current);
+      if (const IfStmt *If = dyn_cast_or_null<IfStmt>(Parent)) {
+        if (const Expr *Cond = If->getCond()) {
+          Conditions.push_back(getConditionInfo(Cond));
+        }
+      }
+      Current = Parent;
+    }
+    return Conditions;
+  }();
 
   if (const Expr *SubExpr = Throw->getSubExpr()) {
     ThrowType = SubExpr->getType();
@@ -530,32 +569,7 @@ void ASTBasedExceptionAnalyzer::analyzeThrowExpr(const CXXThrowExpr *Throw,
 
     if (!ShouldIgnore) {
       Info.State = ExceptionState::Throwing;
-
-      // Collect conditions from parent statements
-      const Stmt *Current = Throw;
-      while (Current) {
-        const Stmt *Parent = getParentStmt(Current);
-        if (const IfStmt *If = dyn_cast_or_null<IfStmt>(Parent)) {
-          if (const Expr *Cond = If->getCond()) {
-            ExceptionCondition EC = getConditionInfo(Cond);
-            if (EC.Loc.isValid()) {
-              const SourceManager &SM = Context_.getSourceManager();
-              EC.File = SM.getFilename(EC.Loc).str();
-              EC.Line = SM.getExpansionLineNumber(EC.Loc);
-              EC.Column = SM.getExpansionColumnNumber(EC.Loc);
-            }
-            Conditions.push_back(EC);
-          }
-        }
-        Current = Parent;
-      }
-
-      ThrowInfo ThrowEvent;
-      ThrowEvent.ThrowStmt = Throw;
-      ThrowEvent.Type = ThrowType;
-      ThrowEvent.TypeName = TypeName;
-      ThrowEvent.Conditions = Conditions;
-      Info.ThrowEvents.push_back(ThrowEvent);
+      Info.ThrowEvents.emplace_back(ThrowType, Conditions);
     }
   } else {
     // This is a rethrow (throw;)
@@ -581,12 +595,7 @@ void ASTBasedExceptionAnalyzer::analyzeThrowExpr(const CXXThrowExpr *Throw,
             }
           } else {
             // Create a throw event for the caught type
-            ThrowInfo ThrowEvent;
-            ThrowEvent.ThrowStmt = Throw;
-            ThrowEvent.Type = Catch->getCaughtType();
-            ThrowEvent.TypeName =
-                ThrowEvent.Type.getUnqualifiedType().getAsString();
-            Info.ThrowEvents.push_back(ThrowEvent);
+            Info.ThrowEvents.emplace_back(Catch->getCaughtType(), Conditions);
           }
         }
         break;
@@ -596,29 +605,66 @@ void ASTBasedExceptionAnalyzer::analyzeThrowExpr(const CXXThrowExpr *Throw,
   }
 }
 
-void ASTBasedExceptionAnalyzer::analyzeCallExpr(const CallExpr *Call,
-                                                FunctionExceptionInfo &Info) {
+void ASTBasedExceptionAnalyzer::analyzeCallExpr(
+    const CallExpr *Call, LocalFunctionExceptionInfo &Info) {
+  llvm::errs() << "\nAnalyzing call expression\n";
+
   if (const FunctionDecl *Callee = Call->getDirectCallee()) {
+    llvm::errs() << "  Direct call to: " << Callee->getNameAsString() << "\n";
+
     // Handle builtin functions first
     if (Callee->getBuiltinID() != 0 && isNoexceptBuiltin(Callee)) {
       // Known non-throwing builtin, no need to analyze further
+      llvm::errs() << "  Builtin function, skipping\n";
       return;
     }
+
+    // Check local cache first
+    auto LocalIt = FunctionCache_.find(Callee);
+    if (LocalIt != FunctionCache_.end()) {
+      llvm::errs() << "  Found in local cache\n";
+      if (LocalIt->second.State == ExceptionState::Throwing) {
+        Info.State = ExceptionState::Throwing;
+        Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                              LocalIt->second.ThrowEvents.begin(),
+                              LocalIt->second.ThrowEvents.end());
+      }
+      return;
+    }
+    llvm::errs() << "  Not found in local cache\n";
 
     // Get the USR for the callee
     std::optional<std::string> USR =
         cross_tu::CrossTranslationUnitContext::getLookupName(Callee);
     if (USR) {
+      llvm::errs() << "  Checking global cache for USR: " << *USR << "\n";
       // Check if we have exception info for this USR in the global cache
       std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
       auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
       if (GlobalIt != GEI_.USRToExceptionMap.end()) {
         // Use the global exception info directly
+        llvm::errs() << "  Found in global cache, state=" 
+                     << (GlobalIt->second.State == ExceptionState::Throwing ? "Throwing" : "NotThrowing")
+                     << ", events=" << GlobalIt->second.ThrowEvents.size() << "\n";
+        
         if (GlobalIt->second.State == ExceptionState::Throwing) {
           Info.State = ExceptionState::Throwing;
-          Info.ThrowEvents.insert(Info.ThrowEvents.end(),
-                                  GlobalIt->second.ThrowEvents.begin(),
-                                  GlobalIt->second.ThrowEvents.end());
+          bool SuccessfullyLoadedGlobalInfo = true;
+          llvm::SmallVector<LocalThrowInfo, 2> LocalThrowEvents;
+          for (const auto &ThrowEvent : GlobalIt->second.ThrowEvents) {
+            if (std::optional<LocalThrowInfo> LocalThrowInfo =
+                    fromGlobal(ThrowEvent, Context_)) {
+              LocalThrowEvents.push_back(*LocalThrowInfo);
+            } else {
+              SuccessfullyLoadedGlobalInfo = false;
+            }
+          }
+          if (SuccessfullyLoadedGlobalInfo) {
+            Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                                  LocalThrowEvents.begin(),
+                                  LocalThrowEvents.end());
+            llvm::errs() << "  Added " << LocalThrowEvents.size() << " throw events from global cache\n";
+          }
         }
         if (GlobalIt->second.ContainsUnknown) {
           Info.ContainsUnknown = true;
@@ -628,17 +674,28 @@ void ASTBasedExceptionAnalyzer::analyzeCallExpr(const CallExpr *Call,
         }
         return;
       }
+      llvm::errs() << "  Not found in global cache\n";
     }
 
     // If not found in global cache, analyze the callee
-    FunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
+    llvm::errs() << "  Not found in global cache, analyzing callee\n";
+    LocalFunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
+    llvm::errs() << "  Callee analysis result: state=" 
+                 << (CalleeInfo.State == ExceptionState::Throwing ? "Throwing" : "NotThrowing")
+                 << ", events=" << CalleeInfo.ThrowEvents.size() << "\n";
 
     // If the callee can throw, this function can throw
     if (CalleeInfo.State == ExceptionState::Throwing) {
       Info.State = ExceptionState::Throwing;
-      Info.ThrowEvents.insert(Info.ThrowEvents.end(),
-                              CalleeInfo.ThrowEvents.begin(),
-                              CalleeInfo.ThrowEvents.end());
+      // Make sure to propagate the throw events from the callee
+      if (!CalleeInfo.ThrowEvents.empty()) {
+        llvm::errs() << "  Propagating " << CalleeInfo.ThrowEvents.size() << " throw events from callee\n";
+        Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                                CalleeInfo.ThrowEvents.begin(),
+                                CalleeInfo.ThrowEvents.end());
+      } else {
+        llvm::errs() << "  Callee throws but has no throw events!\n";
+      }
     }
 
     // If the callee has unknown behavior, this function has unknown behavior
@@ -653,6 +710,7 @@ void ASTBasedExceptionAnalyzer::analyzeCallExpr(const CallExpr *Call,
   } else {
     // Handle indirect function calls (function pointers, etc.)
     // We can't determine the callee, so mark as unknown
+    llvm::errs() << "Analyzing indirect call, marking as unknown\n";
     Info.ContainsUnknown = true;
     Info.State = ExceptionState::Unknown;
   }
@@ -762,24 +820,22 @@ QualType ASTBasedExceptionAnalyzer::getUnqualifiedType(QualType Type) const {
   return Type.getUnqualifiedType();
 }
 
-ExceptionCondition
+GlobalExceptionCondition
 ASTBasedExceptionAnalyzer::getConditionInfo(const Expr *Cond) const {
-  ExceptionCondition Result;
+  GlobalExceptionCondition Result;
   if (!Cond)
     return Result;
 
-  std::string CondStr;
-  llvm::raw_string_ostream OS(CondStr);
+  OwningStringTy CondStr;
+  llvm::raw_svector_ostream OS(CondStr);
   Cond->printPretty(OS, nullptr, Context_.getPrintingPolicy());
-  Result.Condition = OS.str();
+  Result.ConditionStr = OS.str();
 
   SourceLocation Loc = Cond->getBeginLoc();
   if (Loc.isValid()) {
     const SourceManager &SM = Context_.getSourceManager();
-    Result.Loc = Loc;
     Result.File = SM.getFilename(Loc).str();
-    Result.Line = SM.getExpansionLineNumber(Loc);
-    Result.Column = SM.getExpansionColumnNumber(Loc);
+    Result.SourceRange = Cond->getSourceRange().printToString(SM);
   }
   return Result;
 }

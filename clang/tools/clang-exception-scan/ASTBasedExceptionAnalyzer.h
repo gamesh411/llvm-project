@@ -61,7 +61,7 @@ public:
       std::set<TryCatchInfo, HierarchicalSourceLocationOrdering>;
 
   /// Analyze a function and determine its exception behavior
-  FunctionExceptionInfo analyzeFunction(const FunctionDecl *Func);
+  LocalFunctionExceptionInfo analyzeFunction(const FunctionDecl *Func);
 
   /// Configure the analyzer to ignore std::bad_alloc exceptions
   void ignoreBadAlloc(bool Value) { IgnoreBadAlloc_ = Value; }
@@ -86,21 +86,22 @@ public:
 
 private:
   /// Analyze a statement and update the exception information
-  void analyzeStatement(const Stmt *S, FunctionExceptionInfo &Info);
+  void analyzeStatement(const Stmt *S, LocalFunctionExceptionInfo &Info);
 
   /// Analyze a try-catch block
-  void analyzeTryCatch(const CXXTryStmt *Try, FunctionExceptionInfo &Info);
+  void analyzeTryCatch(const CXXTryStmt *Try, LocalFunctionExceptionInfo &Info);
 
   /// Analyze a catch block
   void analyzeCatchBlock(const CXXCatchStmt *Catch,
-                         const std::vector<ThrowInfo> &TryThrowEvents,
-                         FunctionExceptionInfo &Info);
+                         const std::vector<LocalThrowInfo> &TryThrowEvents,
+                         LocalFunctionExceptionInfo &Info);
 
   /// Analyze a throw expression
-  void analyzeThrowExpr(const CXXThrowExpr *Throw, FunctionExceptionInfo &Info);
+  void analyzeThrowExpr(const CXXThrowExpr *Throw,
+                        LocalFunctionExceptionInfo &Info);
 
   /// Analyze a function call
-  void analyzeCallExpr(const CallExpr *Call, FunctionExceptionInfo &Info);
+  void analyzeCallExpr(const CallExpr *Call, LocalFunctionExceptionInfo &Info);
 
   /// Check if a type can catch another type
   bool canCatchType(QualType CaughtType, QualType ThrownType) const;
@@ -109,7 +110,7 @@ private:
   QualType getUnqualifiedType(QualType Type) const;
 
   /// Get condition information from an expression
-  ExceptionCondition getConditionInfo(const Expr *Cond) const;
+  GlobalExceptionCondition getConditionInfo(const Expr *Cond) const;
 
   /// Get the parent statement of a given statement
   const Stmt *getParentStmt(const Stmt *S) const;
@@ -121,10 +122,11 @@ private:
   GlobalExceptionInfo &GEI_;
   bool IgnoreBadAlloc_; ///< Whether to ignore std::bad_alloc
   std::vector<std::string> IgnoredExceptions_; ///< Exception types to ignore
-  llvm::DenseMap<const FunctionDecl *, FunctionExceptionInfo> FunctionCache_;
+  llvm::DenseMap<const FunctionDecl *, LocalFunctionExceptionInfo>
+      FunctionCache_;
   llvm::DenseMap<const Stmt *, const Stmt *>
       ParentMap_; ///< Maps statements to their parents
-  llvm::DenseMap<const CXXTryStmt *, FunctionExceptionInfo>
+  llvm::DenseMap<const CXXTryStmt *, LocalFunctionExceptionInfo>
       TryBlockCache_; ///< Cache of analyzed try blocks
 };
 
