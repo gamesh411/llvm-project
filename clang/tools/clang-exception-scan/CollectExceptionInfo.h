@@ -1,7 +1,6 @@
 #ifndef LLVM_CLANG_TOOLS_EXTRA_CLANG_EXCEPTION_SCAN_COLLECT_EXCEPTIONINFO_H
 #define LLVM_CLANG_TOOLS_EXTRA_CLANG_EXCEPTION_SCAN_COLLECT_EXCEPTIONINFO_H
 
-#include "ExceptionAnalyzer.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Frontend/FrontendAction.h"

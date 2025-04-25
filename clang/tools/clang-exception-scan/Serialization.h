@@ -1,7 +1,6 @@
 #ifndef LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_SERIALIZATION_H
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_SERIALIZATION_H
 
-#include "ExceptionAnalyzer.h"
 #include "llvm/Support/YAMLTraits.h"
 
 namespace ES = clang::exception_scan;

@@ -1,5 +1,4 @@
 #include "CollectExceptionInfo.h"
-#include "ExceptionAnalyzer.h"
 #include "GlobalExceptionInfo.h"
 #include "Serialization.h"
 

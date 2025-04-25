@@ -22,7 +22,6 @@
 #include "ASTBasedExceptionAnalyzer.h"
 #include "CallGraphGeneratorConsumer.h"
 #include "CollectExceptionInfo.h"
-#include "ExceptionAnalyzer.h"
 #include "NoexceptDependeeConsumer.h"
 #include "USRMappingConsumer.h"
 #include "clang/AST/ASTConsumer.h"

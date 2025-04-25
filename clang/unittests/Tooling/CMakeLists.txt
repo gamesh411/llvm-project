@@ -14,7 +14,6 @@ add_clang_unittest(ToolingTests
   CommentHandlerTest.cpp
   CompilationDatabaseTest.cpp
   DiagnosticsYamlTest.cpp
-  ExceptionAnalyzerTest.cpp
   CallGraphGeneratorTest.cpp
   ExecutionTest.cpp
   FixItTest.cpp

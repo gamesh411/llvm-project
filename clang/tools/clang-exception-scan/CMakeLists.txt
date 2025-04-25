@@ -4,7 +4,6 @@ set(LLVM_LINK_COMPONENTS
 
 add_clang_library(clangExceptionScan
   CollectExceptionInfo.cpp
-  ExceptionAnalyzer.cpp
   ASTBasedExceptionAnalyzer.cpp
   CallGraphGeneratorConsumer.cpp
   USRMappingConsumer.cpp
@@ -23,7 +22,6 @@ add_clang_library(clangExceptionScan
 )
 
 install(FILES
-  ExceptionAnalyzer.h
   ASTBasedExceptionAnalyzer.h
   CollectExceptionInfo.h
   Serialization.h
