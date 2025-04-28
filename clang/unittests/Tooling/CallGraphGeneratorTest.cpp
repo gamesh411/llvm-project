@@ -542,7 +542,7 @@ TEST_F(CallGraphGeneratorTest, CollectOperatorNewDelete) {
   const std::string Code = R"(
     class MyClass {
     public:
-      void* operator new(size_t size) { return ::operator new(size); }
+      void* operator new(unsigned long size) { return ::operator new(size); }
       void operator delete(void* ptr) { ::operator delete(ptr); }
     };
     void func() {

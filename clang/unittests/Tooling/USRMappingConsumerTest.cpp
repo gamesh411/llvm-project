@@ -23,6 +23,12 @@ protected:
     GEI.USRToDefinedInTUMap.clear();
     GEI.CallDependencies.clear();
     GEI.TUDependencies.clear();
+    GEI.NoexceptDependees.clear();
+    GEI.TotalFunctionDefinitions = 0;
+    GEI.TotalTryBlocks = 0;
+    GEI.TotalCatchHandlers = 0;
+    GEI.TotalThrowExpressions = 0;
+    GEI.TotalCallsPotentiallyWithinTryBlocks = 0;
   }
 
   void runToolOnCode(const std::string &Code, const std::string &FileName) {
@@ -52,6 +58,11 @@ TEST_F(USRMappingConsumerTest, BasicFunctionDefinition) {
 
   runToolOnCode(Code, "test.cpp");
   EXPECT_EQ(GEI.USRToFunctionMap.size(), 1u);
+  EXPECT_EQ(GEI.TotalFunctionDefinitions, 1u);
+  EXPECT_EQ(GEI.TotalTryBlocks, 0u);
+  EXPECT_EQ(GEI.TotalCatchHandlers, 0u);
+  EXPECT_EQ(GEI.TotalThrowExpressions, 0u);
+  EXPECT_EQ(GEI.TotalCallsPotentiallyWithinTryBlocks, 0u);
 
   const auto &Info = GEI.USRToFunctionMap.begin()->second;
   EXPECT_EQ(Info.FunctionName, "foo");
@@ -66,7 +77,11 @@ TEST_F(USRMappingConsumerTest, FunctionDeclaration) {
 
   runToolOnCode(Code, "test.cpp");
   EXPECT_EQ(GEI.USRToFunctionMap.size(), 1u);
-  EXPECT_EQ(GEI.TotalFunctionDefinitions, 0u);
+  EXPECT_EQ(GEI.TotalFunctionDefinitions, 0u); // Declarations don't count
+  EXPECT_EQ(GEI.TotalTryBlocks, 0u);
+  EXPECT_EQ(GEI.TotalCatchHandlers, 0u);
+  EXPECT_EQ(GEI.TotalThrowExpressions, 0u);
+  EXPECT_EQ(GEI.TotalCallsPotentiallyWithinTryBlocks, 0u);
 
   const auto &Info = GEI.USRToFunctionMap.begin()->second;
   EXPECT_EQ(Info.FunctionName, "foo");
@@ -88,6 +103,10 @@ TEST_F(USRMappingConsumerTest, MultipleFunctions) {
   runToolOnCode(Code, "test.cpp");
   EXPECT_EQ(GEI.USRToFunctionMap.size(), 4u);
   EXPECT_EQ(GEI.TotalFunctionDefinitions, 4u);
+  EXPECT_EQ(GEI.TotalTryBlocks, 0u);
+  EXPECT_EQ(GEI.TotalCatchHandlers, 0u);
+  EXPECT_EQ(GEI.TotalThrowExpressions, 0u);
+  EXPECT_EQ(GEI.TotalCallsPotentiallyWithinTryBlocks, 0u);
 
   // Check foo
   bool foundFoo = false;
@@ -124,6 +143,10 @@ TEST_F(USRMappingConsumerTest, DifferentTUs) {
   runToolOnMultipleFiles({Code1, Code2}, {"test1.cpp", "test2.cpp"});
   EXPECT_EQ(GEI.USRToFunctionMap.size(), 2u);
   EXPECT_EQ(GEI.TotalFunctionDefinitions, 2u);
+  EXPECT_EQ(GEI.TotalTryBlocks, 0u);
+  EXPECT_EQ(GEI.TotalCatchHandlers, 0u);
+  EXPECT_EQ(GEI.TotalThrowExpressions, 0u);
+  EXPECT_EQ(GEI.TotalCallsPotentiallyWithinTryBlocks, 0u);
 
   // Check first TU
   bool foundFoo = false;
@@ -143,6 +166,40 @@ TEST_F(USRMappingConsumerTest, DifferentTUs) {
 
   EXPECT_TRUE(foundFoo);
   EXPECT_TRUE(foundBar);
+}
+
+// New test for exception handling constructs
+TEST_F(USRMappingConsumerTest, CountExceptionHandlingConstructs) {
+  const std::string Code = R"(
+    void g(); // external call
+    void h() noexcept;
+
+    void f() {
+      try {         // +1 try
+        int x = 0;
+        g();        // +1 call in try
+        try {       // +1 try
+           h();     // +1 call in try (nested)
+           throw 1; // +1 throw
+        } catch(int e) { // +1 catch
+           g();     // +0 call (in catch, not try)
+           throw;   // +1 throw (rethrow)
+        }
+      } catch(...) { // +1 catch
+         h();       // +0 call (in catch, not try)
+      }
+      g(); // +0 call (outside try)
+    }
+  )";
+
+  runToolOnCode(Code, "test.cpp");
+
+  EXPECT_EQ(GEI.TotalFunctionDefinitions, 1u); // Only f()
+  EXPECT_EQ(GEI.TotalTryBlocks, 2u);
+  EXPECT_EQ(GEI.TotalCatchHandlers, 2u);
+  EXPECT_EQ(GEI.TotalThrowExpressions, 2u);
+  EXPECT_EQ(GEI.TotalCallsPotentiallyWithinTryBlocks,
+            2u); // Calls to g() and h() inside try blocks
 }
 
 } // namespace

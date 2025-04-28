@@ -6,7 +6,7 @@
 // UN: cat %t.output/definite_results.txt | FileCheck %s --check-prefix=CHECK-SINGLE
 // RUN: %clang_exception_scan %t.json %t.output/MULTI
 // RUN: cat %t.output/MULTI/definite_results.txt | FileCheck %s --check-prefix=CHECK-MULTI
-// RUN: cat %t.output/MULTI/function_definition_count.txt | FileCheck %s --check-prefix=CHECK-COUNT
+// RUN: cat %t.output/MULTI/analysis_stats.txt | FileCheck %s --check-prefix=CHECK-STATS
 
 // CHECK-SINGLE: Functions that could be marked noexcept, but are not:
 // CHECK-MULTI: Functions that could be marked noexcept, but are not:
@@ -46,11 +46,50 @@ void calls_throwing() {
 // CHECK-MULTI: c:@F@local_safe# defined in {{.*}}ctu_exception_spec.cpp
 void local_safe() {
     // Does nothing, can be noexcept
+} 
+
+void test_throw_in_try() {
+    try {
+        throwing_function();
+    } catch (...) {
+        throw 1;
+    }
 }
 
-// CHECK-COUNT: Total non-system-header function definitions: 5
-// Explanation:
-// ctu_exception_spec_impl.cpp: safe_function, throwing_function (2)
-// ctu_exception_spec.cpp: calls_safe, calls_throwing, local_safe (3)
-// Total: 5
-// The counter logic now includes functions defined in the main file of each TU. 
+void test_immediately_invoked_lambda() {
+    try {
+        []{
+            throw 1;
+        }();
+    } catch (...) {
+        throw 2;
+    }
+}
+
+void test_inner_class_definition() {
+    struct Inner {
+        void f() {
+            throw 1;
+        }
+    };
+
+    try {
+        Inner inner;
+        inner.f();
+    } catch (...) {
+        throw;
+    }
+}
+
+// CHECK-STATS: Total non-system-header function definitions: 9
+// CHECK-STATS: Total non-system-header try blocks: 3
+// CHECK-STATS: Total non-system-header catch handlers: 3
+// CHECK-STATS: Total non-system-header throw expressions: 7
+// CHECK-STATS: Total non-system-header calls potentially within try blocks: 3
+
+// Explanation for stats checking:
+// Func Defs: safe_function, throwing_function, calls_safe, calls_throwing, local_safe, test_throw_in_try, test_immediately_invoked_lambda, the lambda's operator(), test_inner_class_definition (9)
+// Try Blocks: 1 (in test_throw_in_try) + 1 (in test_immediately_invoked_lambda) + 1 (in test_inner_class_definition) = 3
+// Catch Handlers: 1 (in test_throw_in_try) + 1 (in test_immediately_invoked_lambda) + 1 (in test_inner_class_definition) = 3
+// Throw Expressions: 1 (in throwing_function implementation) + 1 (in test_throw_in_try) + 1 (in test_immediately_invoked_lambda) + 1 (in test_inner_class_definition) = 4
+// Calls in Try: 1 (throwing_function() called within try in test_throw_in_try) + 1 (lambda called within try in test_immediately_invoked_lambda) + 1 (inner.f() called within try in test_inner_class_definition) = 3

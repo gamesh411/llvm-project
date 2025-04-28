@@ -53,9 +53,9 @@ void reportCallDependencies(const GlobalExceptionInfo &GCG,
 void reportTUDependencies(const GlobalExceptionInfo &GCG,
                           llvm::StringRef PathPrefix);
 
-// Report the total count of non-header function definitions
-void reportFunctionDefinitionCount(const GlobalExceptionInfo &GCG,
-                                   llvm::StringRef PathPrefix);
+// Report the combined analysis statistics
+void reportAnalysisStats(const GlobalExceptionInfo &GCG,
+                         llvm::StringRef PathPrefix);
 
 } // namespace exception_scan
 } // namespace clang

@@ -43,7 +43,8 @@ std::unique_ptr<raw_fd_ostream> openOutputFile(StringRef Prefix,
 void clang::exception_scan::reportAllFunctions(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "all_functions.txt");
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "all_functions.txt");
   if (!Out)
     return;
 
@@ -59,7 +60,8 @@ void clang::exception_scan::reportAllFunctions(
 void clang::exception_scan::reportFunctionDuplications(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "function_duplications.txt");
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "function_duplications.txt");
   if (!Out)
     return;
 
@@ -86,7 +88,8 @@ void clang::exception_scan::reportFunctionDuplications(
 void clang::exception_scan::reportDefiniteMatches(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "definite_results.txt");
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "definite_results.txt");
   if (!Out)
     return;
 
@@ -136,14 +139,15 @@ void clang::exception_scan::reportDefiniteMatches(
   *Out << "Functions that could be marked noexcept, but are not:\n";
   for (const auto &Result : DefiniteResults) {
     *Out << Result.USR << " defined in " << Result.SourceLocFile << ':'
-       << Result.SourceLocLine << ':' << Result.SourceLocColumn << '\n';
+         << Result.SourceLocLine << ':' << Result.SourceLocColumn << '\n';
   }
 }
 
 void clang::exception_scan::reportUnknownCausedMisMatches(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "unknown_caused_mismatches.txt");
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "unknown_caused_mismatches.txt");
   if (!Out)
     return;
 
@@ -167,7 +171,8 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
 void clang::exception_scan::reportNoexceptDependees(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "noexcept_dependees.txt");
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "noexcept_dependees.txt");
   if (!Out)
     return;
 
@@ -176,15 +181,16 @@ void clang::exception_scan::reportNoexceptDependees(
     *Out << "Function: " << Info.FunctionName << "\n";
     *Out << "  USR: " << Info.USR << "\n";
     *Out << "  TU: " << Info.TU << "\n";
-    *Out << "  Location: " << Info.NoexceptLocFile << ":" << Info.NoexceptLocLine
-       << ":" << Info.NoexceptLocColumn << "\n";
+    *Out << "  Location: " << Info.NoexceptLocFile << ":"
+         << Info.NoexceptLocLine << ":" << Info.NoexceptLocColumn << "\n";
   }
 }
 
 void clang::exception_scan::reportCallDependencies(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "call_dependencies.txt");
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "call_dependencies.txt");
   if (!Out)
     return;
 
@@ -193,7 +199,7 @@ void clang::exception_scan::reportCallDependencies(
     *Out << "Caller: " << Call.CallerUSR << "\n";
     *Out << "Callee: " << Call.CalleeUSR << "\n";
     *Out << "Location: " << Call.CallLocFile << ":" << Call.CallLocLine << ":"
-       << Call.CallLocColumn << "\n";
+         << Call.CallLocColumn << "\n";
   }
 }
 
@@ -216,14 +222,22 @@ void clang::exception_scan::reportTUDependencies(
   }
 }
 
-// Implementation for the new report function
-void clang::exception_scan::reportFunctionDefinitionCount(
+// Implementation for the combined statistics report function
+void clang::exception_scan::reportAnalysisStats(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  auto Out = openOutputFile(PathPrefix, "function_definition_count.txt");
+  auto Out = openOutputFile(PathPrefix, "analysis_stats.txt");
   if (!Out)
     return;
 
   *Out << "Total non-system-header function definitions: "
        << GCG.TotalFunctionDefinitions.load() << "\n";
+  *Out << "Total non-system-header try blocks: " << GCG.TotalTryBlocks.load()
+       << "\n";
+  *Out << "Total non-system-header catch handlers: "
+       << GCG.TotalCatchHandlers.load() << "\n";
+  *Out << "Total non-system-header throw expressions: "
+       << GCG.TotalThrowExpressions.load() << "\n";
+  *Out << "Total non-system-header calls potentially within try blocks: "
+       << GCG.TotalCallsPotentiallyWithinTryBlocks.load() << "\n";
 }

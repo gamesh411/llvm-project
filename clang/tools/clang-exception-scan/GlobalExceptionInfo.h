@@ -11,10 +11,10 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
-#include <atomic>
 
 namespace clang {
 namespace exception_scan {
@@ -134,9 +134,20 @@ struct GlobalExceptionInfo {
       NoexceptDependees; ///< Functions that appear in noexcept clauses
   mutable std::mutex NoexceptDependeesMutex; ///< Mutex for noexcept dependees
 
-  std::atomic<unsigned long> TotalFunctionDefinitions{0}; ///< Total non-header function definitions
-  // NOTE: Being lock-free is is nice to have, but not required, as we are already heavily using mutexes.
-  static_assert(std::atomic<decltype(TotalFunctionDefinitions)>::is_always_lock_free, "TotalFunctionDefinitions must be lock-free");
+  using counter_t = std::atomic<unsigned long>;
+  counter_t TotalFunctionDefinitions{
+      0};                          ///< Total non-header function definitions
+  counter_t TotalTryBlocks{0};     ///< Total non-system-header try blocks
+  counter_t TotalCatchHandlers{0}; ///< Total non-system-header catch handlers
+  counter_t TotalThrowExpressions{
+      0}; ///< Total non-system-header throw expressions
+  counter_t TotalCallsPotentiallyWithinTryBlocks{
+      0}; ///< Total non-system-header function definitions within exception
+          ///< context
+  // NOTE: Being lock-free is is nice to have, but not required, as we are
+  // already heavily using mutexes.
+  static_assert(std::atomic<counter_t>::is_always_lock_free,
+                "TotalFunctionDefinitions must be lock-free");
 };
 
 } // namespace exception_scan
