@@ -263,6 +263,9 @@ int main(int argc, const char **argv) {
   reportCallDependencies(GEI, OutputDirPath);
   reportTUDependencies(GEI, OutputDirPath);
 
+  // Report the total function definition count
+  reportFunctionDefinitionCount(GEI, OutputDirPath);
+
   // Generate call graph visualization
   std::string DotFilePath = std::string(OutputDirPath) + "/tu_dependencies.dot";
   generateDependencyDotFile(GEI, DotFilePath);

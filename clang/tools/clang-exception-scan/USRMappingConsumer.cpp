@@ -65,6 +65,13 @@ public:
         std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
         GCG_.USRToDefinedInTUMap[Info.USR].insert(Info.TU);
       }
+
+      // Increment the global counter if the function definition is not in a
+      // header file
+      SourceLocation Loc = FD->getLocation();
+      if (!SM.isInSystemHeader(Loc)) {
+        GCG_.TotalFunctionDefinitions++;
+      }
     }
 
     return true;

@@ -11,33 +11,47 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm> // for std::sort
 #include <sstream>
+#include <system_error> // for std::error_code
 
 using namespace llvm;
 using namespace clang;
+using namespace clang::exception_scan;
+
+namespace {
+// Helper to open a file for writing
+std::unique_ptr<raw_fd_ostream> openOutputFile(StringRef Prefix,
+                                               StringRef Suffix) {
+  SmallString<128> Path(Prefix);
+  sys::path::append(Path, Suffix);
+  std::error_code EC;
+  auto Out = std::make_unique<raw_fd_ostream>(Path, EC, sys::fs::OF_Text);
+  if (EC) {
+    errs() << "Error opening file " << Path << ": " << EC.message() << "\n";
+    return nullptr;
+  }
+  return Out;
+}
+} // namespace
 
 void clang::exception_scan::reportAllFunctions(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  llvm::SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "all_functions.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "all_functions.txt");
+  if (!Out)
     return;
-  }
 
-  OS << "All functions:\n";
+  *Out << "All functions:\n";
   {
     std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
     for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
-      OS << USR << " defined in " << Info.TU << '\n';
+      *Out << USR << " defined in " << Info.TU << '\n';
     }
   }
 }
@@ -45,6 +59,10 @@ void clang::exception_scan::reportAllFunctions(
 void clang::exception_scan::reportFunctionDuplications(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "function_duplications.txt");
+  if (!Out)
+    return;
+
   // Count occurrences of each function
   llvm::StringMap<unsigned> FunctionOccurrence;
   {
@@ -54,23 +72,12 @@ void clang::exception_scan::reportFunctionDuplications(
     }
   }
 
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "function_duplications.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
-    return;
-  }
-
-  OS << "Functions that appear in multiple translation units:\n";
+  *Out << "Functions that appear in multiple translation units:\n";
   {
     std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
     for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
       if (FunctionOccurrence[USR] > 1) {
-        OS << USR << " defined in " << Info.TU << " translation units\n";
+        *Out << USR << " defined in " << Info.TU << " translation units\n";
       }
     }
   }
@@ -79,17 +86,11 @@ void clang::exception_scan::reportFunctionDuplications(
 void clang::exception_scan::reportDefiniteMatches(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "definite_results.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "definite_results.txt");
+  if (!Out)
     return;
-  }
+
+  *Out << "Functions that could be marked noexcept, but are not:\n";
 
   struct DefiniteResult {
     llvm::StringRef USR;
@@ -132,9 +133,9 @@ void clang::exception_scan::reportDefiniteMatches(
                return LHS.SourceLocColumn < RHS.SourceLocColumn;
              });
 
-  OS << "Functions that could be marked noexcept, but are not:\n";
+  *Out << "Functions that could be marked noexcept, but are not:\n";
   for (const auto &Result : DefiniteResults) {
-    OS << Result.USR << " defined in " << Result.SourceLocFile << ':'
+    *Out << Result.USR << " defined in " << Result.SourceLocFile << ':'
        << Result.SourceLocLine << ':' << Result.SourceLocColumn << '\n';
   }
 }
@@ -142,20 +143,12 @@ void clang::exception_scan::reportDefiniteMatches(
 void clang::exception_scan::reportUnknownCausedMisMatches(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "unknown_caused_mismatches.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "unknown_caused_mismatches.txt");
+  if (!Out)
     return;
-  }
 
-  OS << "Functions with unknown exception state because they contain unknown "
-        "calls:\n";
+  *Out << "Functions with unknown exception state because they contain unknown "
+       << "calls:\n";
   {
     std::lock_guard<std::mutex> Lock(GCG.USRToExceptionMapMutex);
     for (const auto &[USR, Info] : GCG.USRToExceptionMap) {
@@ -163,7 +156,7 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
         std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
         auto FuncIt = GCG.USRToFunctionMap.find(USR);
         if (FuncIt != GCG.USRToFunctionMap.end()) {
-          OS << FuncIt->getValue().FunctionName << '\n';
+          *Out << FuncIt->getValue().FunctionName << '\n';
         }
       }
     }
@@ -174,23 +167,16 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
 void clang::exception_scan::reportNoexceptDependees(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "noexcept_dependees.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "noexcept_dependees.txt");
+  if (!Out)
     return;
-  }
 
-  OS << "Functions that appear in noexcept clauses:\n";
+  *Out << "Functions that appear in noexcept clauses:\n";
   for (const auto &Info : GCG.NoexceptDependees) {
-    OS << "Function: " << Info.FunctionName << "\n";
-    OS << "  USR: " << Info.USR << "\n";
-    OS << "  TU: " << Info.TU << "\n";
-    OS << "  Location: " << Info.NoexceptLocFile << ":" << Info.NoexceptLocLine
+    *Out << "Function: " << Info.FunctionName << "\n";
+    *Out << "  USR: " << Info.USR << "\n";
+    *Out << "  TU: " << Info.TU << "\n";
+    *Out << "  Location: " << Info.NoexceptLocFile << ":" << Info.NoexceptLocLine
        << ":" << Info.NoexceptLocColumn << "\n";
   }
 }
@@ -198,22 +184,15 @@ void clang::exception_scan::reportNoexceptDependees(
 void clang::exception_scan::reportCallDependencies(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "call_dependencies.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(PathPrefix, "call_dependencies.txt");
+  if (!Out)
     return;
-  }
 
-  OS << "Function call dependencies:\n";
+  *Out << "Function call dependencies:\n";
   for (const auto &Call : GCG.CallDependencies) {
-    OS << "Caller: " << Call.CallerUSR << "\n";
-    OS << "Callee: " << Call.CalleeUSR << "\n";
-    OS << "Location: " << Call.CallLocFile << ":" << Call.CallLocLine << ":"
+    *Out << "Caller: " << Call.CallerUSR << "\n";
+    *Out << "Callee: " << Call.CalleeUSR << "\n";
+    *Out << "Location: " << Call.CallLocFile << ":" << Call.CallLocLine << ":"
        << Call.CallLocColumn << "\n";
   }
 }
@@ -221,21 +200,30 @@ void clang::exception_scan::reportCallDependencies(
 void clang::exception_scan::reportTUDependencies(
     const clang::exception_scan::GlobalExceptionInfo &GCG,
     StringRef PathPrefix) {
-  SmallString<256> ReportPath(PathPrefix);
-  llvm::sys::path::append(ReportPath, "tu_dependencies.txt");
-  std::error_code FileOpenError;
-  llvm::raw_fd_ostream OS(ReportPath, FileOpenError);
-
-  if (FileOpenError) {
-    llvm::errs() << "Error opening file: " << ReportPath << '\n'
-                 << FileOpenError.message() << "\n";
+  std::unique_ptr<raw_fd_ostream> Out =
+      openOutputFile(PathPrefix, "tu_dependencies.txt");
+  if (!Out)
     return;
-  }
 
-  OS << "Translation unit dependencies:\n";
-  for (const auto &[Dependent, _] : GCG.TUs) {
-    for (const auto &Dependee : GCG.TUDependencies.getDependencies(Dependent)) {
-      OS << Dependent << " -> " << Dependee << "\n";
+  *Out << "Translation Unit Dependencies:\n";
+  for (const auto &Dependency : GCG.TUDependencies.getAllTUs()) {
+    *Out << Dependency << " -> ";
+    for (const auto &Dependency :
+         GCG.TUDependencies.getDependencies(Dependency)) {
+      *Out << Dependency << " ";
     }
+    *Out << "\n";
   }
+}
+
+// Implementation for the new report function
+void clang::exception_scan::reportFunctionDefinitionCount(
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
+  auto Out = openOutputFile(PathPrefix, "function_definition_count.txt");
+  if (!Out)
+    return;
+
+  *Out << "Total non-system-header function definitions: "
+       << GCG.TotalFunctionDefinitions.load() << "\n";
 }

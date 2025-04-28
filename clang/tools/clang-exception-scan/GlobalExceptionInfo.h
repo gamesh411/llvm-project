@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <atomic>
 
 namespace clang {
 namespace exception_scan {
@@ -132,6 +133,10 @@ struct GlobalExceptionInfo {
   std::vector<NoexceptDependeeInfo>
       NoexceptDependees; ///< Functions that appear in noexcept clauses
   mutable std::mutex NoexceptDependeesMutex; ///< Mutex for noexcept dependees
+
+  std::atomic<unsigned long> TotalFunctionDefinitions{0}; ///< Total non-header function definitions
+  // NOTE: Being lock-free is is nice to have, but not required, as we are already heavily using mutexes.
+  static_assert(std::atomic<decltype(TotalFunctionDefinitions)>::is_always_lock_free, "TotalFunctionDefinitions must be lock-free");
 };
 
 } // namespace exception_scan

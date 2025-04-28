@@ -66,6 +66,7 @@ TEST_F(USRMappingConsumerTest, FunctionDeclaration) {
 
   runToolOnCode(Code, "test.cpp");
   EXPECT_EQ(GEI.USRToFunctionMap.size(), 1u);
+  EXPECT_EQ(GEI.TotalFunctionDefinitions, 0u);
 
   const auto &Info = GEI.USRToFunctionMap.begin()->second;
   EXPECT_EQ(Info.FunctionName, "foo");
@@ -81,10 +82,12 @@ TEST_F(USRMappingConsumerTest, MultipleFunctions) {
     class MyClass {
       void method() {}
     };
+    inline void header_func() {}
   )";
 
   runToolOnCode(Code, "test.cpp");
-  EXPECT_EQ(GEI.USRToFunctionMap.size(), 3u);
+  EXPECT_EQ(GEI.USRToFunctionMap.size(), 4u);
+  EXPECT_EQ(GEI.TotalFunctionDefinitions, 4u);
 
   // Check foo
   bool foundFoo = false;
@@ -120,6 +123,7 @@ TEST_F(USRMappingConsumerTest, DifferentTUs) {
 
   runToolOnMultipleFiles({Code1, Code2}, {"test1.cpp", "test2.cpp"});
   EXPECT_EQ(GEI.USRToFunctionMap.size(), 2u);
+  EXPECT_EQ(GEI.TotalFunctionDefinitions, 2u);
 
   // Check first TU
   bool foundFoo = false;

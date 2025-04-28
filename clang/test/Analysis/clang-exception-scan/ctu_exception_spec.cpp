@@ -6,6 +6,7 @@
 // UN: cat %t.output/definite_results.txt | FileCheck %s --check-prefix=CHECK-SINGLE
 // RUN: %clang_exception_scan %t.json %t.output/MULTI
 // RUN: cat %t.output/MULTI/definite_results.txt | FileCheck %s --check-prefix=CHECK-MULTI
+// RUN: cat %t.output/MULTI/function_definition_count.txt | FileCheck %s --check-prefix=CHECK-COUNT
 
 // CHECK-SINGLE: Functions that could be marked noexcept, but are not:
 // CHECK-MULTI: Functions that could be marked noexcept, but are not:
@@ -45,4 +46,11 @@ void calls_throwing() {
 // CHECK-MULTI: c:@F@local_safe# defined in {{.*}}ctu_exception_spec.cpp
 void local_safe() {
     // Does nothing, can be noexcept
-} 
+}
+
+// CHECK-COUNT: Total non-system-header function definitions: 5
+// Explanation:
+// ctu_exception_spec_impl.cpp: safe_function, throwing_function (2)
+// ctu_exception_spec.cpp: calls_safe, calls_throwing, local_safe (3)
+// Total: 5
+// The counter logic now includes functions defined in the main file of each TU. 
