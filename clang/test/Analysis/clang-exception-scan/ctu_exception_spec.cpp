@@ -7,6 +7,7 @@
 // RUN: %clang_exception_scan %t.json %t.output/MULTI
 // RUN: cat %t.output/MULTI/definite_results.txt | FileCheck %s --check-prefix=CHECK-MULTI
 // RUN: cat %t.output/MULTI/analysis_stats.txt | FileCheck %s --check-prefix=CHECK-STATS
+// RUN: cat %t.output/MULTI/calls_in_try_blocks.txt | FileCheck %s --check-prefix=CHECK-CALLS-IN-TRY
 
 // CHECK-SINGLE: Functions that could be marked noexcept, but are not:
 // CHECK-MULTI: Functions that could be marked noexcept, but are not:
@@ -86,6 +87,11 @@ void test_inner_class_definition() {
 // CHECK-STATS: Total non-system-header catch handlers: 3
 // CHECK-STATS: Total non-system-header throw expressions: 7
 // CHECK-STATS: Total non-system-header calls potentially within try blocks: 3
+
+// CHECK-CALLS-IN-TRY: Functions called from within a try block:
+// CHECK-CALLS-IN-TRY-NEXT: c:@F@throwing_function# defined in {{.*}}ctu_exception_spec_impl.cpp:7:1
+// CHECK-CALLS-IN-TRY-NEXT: c:ctu_exception_spec.cpp@2355@F@test_immediately_invoked_lambda#@Sa@F@operator()#1 defined in {{.*}}ctu_exception_spec.cpp:62:10
+// CHECK-CALLS-IN-TRY-NEXT: c:ctu_exception_spec.cpp@2502@F@test_inner_class_definition#@S@Inner@F@f# defined in {{.*}}ctu_exception_spec.cpp:72:9
 
 // Explanation for stats checking:
 // Func Defs: safe_function, throwing_function, calls_safe, calls_throwing, local_safe, test_throw_in_try, test_immediately_invoked_lambda, the lambda's operator(), test_inner_class_definition (9)

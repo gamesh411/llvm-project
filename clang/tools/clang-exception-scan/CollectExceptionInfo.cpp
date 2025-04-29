@@ -241,3 +241,62 @@ void clang::exception_scan::reportAnalysisStats(
   *Out << "Total non-system-header calls potentially within try blocks: "
        << GCG.TotalCallsPotentiallyWithinTryBlocks.load() << "\n";
 }
+
+// Report functions called within try blocks
+void clang::exception_scan::reportFunctionsCalledInTryBlocks(
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix) {
+  auto Out = openOutputFile(PathPrefix, "calls_in_try_blocks.txt");
+  if (!Out)
+    return;
+
+  *Out << "Functions called from within a try block:\n";
+
+  // Structure to hold info for sorting
+  struct CalledInTryInfo {
+    StringRef USR;
+    StringRef SourceLocFile;
+    unsigned SourceLocLine;
+    unsigned SourceLocColumn;
+  };
+
+  SmallVector<CalledInTryInfo, 32> Results;
+  {
+    // Lock both maps needed for this operation
+    std::scoped_lock Lock(GCG.CalledWithinTryUSRSetMutex,
+                          GCG.USRToFunctionMapMutex);
+    for (const auto &Entry : GCG.CalledWithinTryUSRSet) {
+      StringRef USR = Entry.getKey();
+      auto FuncIt = GCG.USRToFunctionMap.find(USR);
+      if (FuncIt != GCG.USRToFunctionMap.end()) {
+        const auto &FuncInfo = FuncIt->getValue();
+        // Store info, preferably from the definition if available
+        Results.push_back({USR, FuncInfo.SourceLocFile, FuncInfo.SourceLocLine,
+                           FuncInfo.SourceLocColumn});
+      } else {
+        // Optionally handle cases where a USR from the set isn't in the map,
+        // though this shouldn't typically happen if collection is correct.
+        // For now, just add the USR with dummy location data.
+        Results.push_back({USR, "<unknown_file>", 0, 0});
+      }
+    }
+  }
+
+  // Sort results by source location
+  llvm::sort(Results,
+             [](const CalledInTryInfo &LHS, const CalledInTryInfo &RHS) {
+               if (LHS.SourceLocFile != RHS.SourceLocFile) {
+                 return LHS.SourceLocFile < RHS.SourceLocFile;
+               }
+               if (LHS.SourceLocLine != RHS.SourceLocLine) {
+                 return LHS.SourceLocLine < RHS.SourceLocLine;
+               }
+               return LHS.SourceLocColumn < RHS.SourceLocColumn;
+             });
+
+  // Print sorted results
+  for (const auto &Result : Results) {
+    *Out << Result.USR << " defined in " << Result.SourceLocFile << ':'
+         << Result.SourceLocLine << ':' << Result.SourceLocColumn << '\n';
+  }
+}

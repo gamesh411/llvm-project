@@ -57,6 +57,11 @@ void reportTUDependencies(const GlobalExceptionInfo &GCG,
 void reportAnalysisStats(const GlobalExceptionInfo &GCG,
                          llvm::StringRef PathPrefix);
 
+// Report USRs of functions called within try blocks.
+void reportFunctionsCalledInTryBlocks(
+    const clang::exception_scan::GlobalExceptionInfo &GCG,
+    StringRef PathPrefix);
+
 } // namespace exception_scan
 } // namespace clang
 

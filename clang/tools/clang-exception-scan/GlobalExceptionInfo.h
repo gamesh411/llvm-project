@@ -134,6 +134,10 @@ struct GlobalExceptionInfo {
       NoexceptDependees; ///< Functions that appear in noexcept clauses
   mutable std::mutex NoexceptDependeesMutex; ///< Mutex for noexcept dependees
 
+  llvm::StringSet<>
+      CalledWithinTryUSRSet; ///< USRs of functions called within a try block
+  mutable std::mutex CalledWithinTryUSRSetMutex;
+
   using counter_t = std::atomic<unsigned long>;
   counter_t TotalFunctionDefinitions{
       0};                          ///< Total non-header function definitions

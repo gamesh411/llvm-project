@@ -117,8 +117,24 @@ public:
     const SourceManager &SM = Context_.getSourceManager();
     if (SM.isInSystemHeader(CE->getBeginLoc()))
       return true;
+
     if (IsInTryBlock_) {
+      // Increment the counter (already exists)
       GCG_.TotalCallsPotentiallyWithinTryBlocks++;
+
+      // Get the USR of the callee
+      const FunctionDecl *CalleeDecl = CE->getDirectCallee();
+      if (CalleeDecl) {
+        if (auto CalleeUSR =
+                cross_tu::CrossTranslationUnitContext::getLookupName(
+                    CalleeDecl)) {
+          std::lock_guard<std::mutex> Lock(GCG_.CalledWithinTryUSRSetMutex);
+          GCG_.CalledWithinTryUSRSet.insert(*CalleeUSR);
+        }
+        // else: Could generate a fallback USR if needed, but often
+        //       less useful for calls within try blocks where we care about
+        //       known functions.
+      }
     }
     return true;
   }

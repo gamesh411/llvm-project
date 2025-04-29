@@ -266,6 +266,9 @@ int main(int argc, const char **argv) {
   // Report combined analysis statistics
   reportAnalysisStats(GEI, OutputDirPath);
 
+  // Report functions called within try blocks
+  reportFunctionsCalledInTryBlocks(GEI, OutputDirPath);
+
   // Generate call graph visualization
   std::string DotFilePath = std::string(OutputDirPath) + "/tu_dependencies.dot";
   generateDependencyDotFile(GEI, DotFilePath);
