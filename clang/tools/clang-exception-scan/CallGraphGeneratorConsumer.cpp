@@ -38,8 +38,9 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
     return;
   }
 
-  assert(Caller->isThisDeclarationADefinition() &&
-         "Caller must be a definition");
+  if (!Caller->isThisDeclarationADefinition()) {
+    LOG << "Caller is a declaration\n";
+  }
 
   std::optional<std::string> CallerUSR =
       cross_tu::CrossTranslationUnitContext::getLookupName(Caller);
