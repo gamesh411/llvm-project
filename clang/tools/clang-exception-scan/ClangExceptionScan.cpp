@@ -252,6 +252,9 @@ int main(int argc, const char **argv) {
   // Generate output files
   const char *OutputDirPath = OutputDir.c_str();
 
+  // ensure OutputDirPath exists
+  llvm::sys::fs::create_directories(OutputDirPath);
+
   // Original reports
   reportAllFunctions(GEI, OutputDirPath);
   reportFunctionDuplications(GEI, OutputDirPath);
