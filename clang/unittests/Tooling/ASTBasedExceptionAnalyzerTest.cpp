@@ -1178,3 +1178,80 @@ TEST_F(ASTBasedExceptionAnalyzerTest, LambdaThrowTest) {
   EXPECT_FALSE(NoexceptLambdaInfo.ContainsUnknown);
   EXPECT_TRUE(NoexceptLambdaInfo.ThrowEvents.empty());
 }
+
+// Test recursive function calls
+TEST_F(ASTBasedExceptionAnalyzerTest, RecursiveFunctionCalls) {
+  auto AST = buildASTFromCode(R"(
+    // Recursive function that throws on a condition
+    void recursiveThrow(int count) {
+      if (count <= 0) {
+        throw 1;
+      }
+      recursiveThrow(count - 1);
+    }
+
+    // Recursive function that does not throw
+    int recursiveNoThrow(int count) {
+      if (count <= 0) {
+        return 0;
+      }
+      return recursiveNoThrow(count - 1) + 1;
+    }
+
+    // Function calling the recursive throw function
+    void callerThrow() {
+      recursiveThrow(5);
+    }
+
+    // Function calling the non-throwing recursive function
+    void callerNoThrow() {
+      recursiveNoThrow(5);
+    }
+  )");
+
+  ASSERT_TRUE(AST != nullptr);
+  auto &Context = AST->getASTContext();
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
+
+  // Test recursiveThrow function
+  const FunctionDecl *RecursiveThrow =
+      findFunction(AST.get(), "recursiveThrow");
+  ASSERT_TRUE(RecursiveThrow != nullptr);
+  auto RecursiveThrowInfo = Analyzer.analyzeFunction(RecursiveThrow);
+  // The analysis should detect the possibility of throwing, even with
+  // recursion.
+  EXPECT_EQ(RecursiveThrowInfo.State, ExceptionState::Throwing);
+  EXPECT_FALSE(RecursiveThrowInfo.ContainsUnknown);
+  ASSERT_FALSE(RecursiveThrowInfo.ThrowEvents.empty());
+  EXPECT_TRUE(RecursiveThrowInfo.ThrowEvents[0].Type->isIntegerType());
+
+  // Test recursiveNoThrow function
+  const FunctionDecl *RecursiveNoThrow =
+      findFunction(AST.get(), "recursiveNoThrow");
+  ASSERT_TRUE(RecursiveNoThrow != nullptr);
+  auto RecursiveNoThrowInfo = Analyzer.analyzeFunction(RecursiveNoThrow);
+  // This function never throws, despite being recursive.
+  EXPECT_EQ(RecursiveNoThrowInfo.State, ExceptionState::NotThrowing);
+  EXPECT_FALSE(RecursiveNoThrowInfo.ContainsUnknown);
+  EXPECT_TRUE(RecursiveNoThrowInfo.ThrowEvents.empty());
+
+  // Test callerThrow function
+  const FunctionDecl *CallerThrow = findFunction(AST.get(), "callerThrow");
+  ASSERT_TRUE(CallerThrow != nullptr);
+  auto CallerThrowInfo = Analyzer.analyzeFunction(CallerThrow);
+  EXPECT_EQ(CallerThrowInfo.State,
+            ExceptionState::Throwing); // Calls a throwing function
+  EXPECT_FALSE(CallerThrowInfo.ContainsUnknown);
+  EXPECT_FALSE(CallerThrowInfo.ThrowEvents.empty());
+
+  // Test callerNoThrow function
+  const FunctionDecl *CallerNoThrow = findFunction(AST.get(), "callerNoThrow");
+  ASSERT_TRUE(CallerNoThrow != nullptr);
+  auto CallerNoThrowInfo = Analyzer.analyzeFunction(CallerNoThrow);
+  EXPECT_EQ(CallerNoThrowInfo.State,
+            ExceptionState::NotThrowing); // Calls a non-throwing function
+  EXPECT_FALSE(CallerNoThrowInfo.ContainsUnknown);
+  EXPECT_TRUE(CallerNoThrowInfo.ThrowEvents.empty());
+}

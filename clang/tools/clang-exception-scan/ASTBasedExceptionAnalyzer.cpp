@@ -10,6 +10,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
@@ -153,6 +154,21 @@ bool ASTBasedExceptionAnalyzer::isNoexceptBuiltin(
 LocalFunctionExceptionInfo
 ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   llvm::errs() << "\nAnalyzing function: " << Func->getNameAsString() << "\n";
+
+  // Check for recursive entry (should ideally be caught in analyzeFunctionCall,
+  // but good safeguard)
+  if (AnalyzingFunctions_.count(Func)) {
+    llvm::errs() << "  Recursive entry detected in analyzeFunction for "
+                 << Func->getNameAsString() << ", returning Unknown\n";
+    return LocalFunctionExceptionInfo{
+        Func, ExceptionState::Unknown, true, EST_None, {}};
+  }
+
+  // Add function to the set of currently analyzed functions
+  AnalyzingFunctions_.insert(Func);
+  // Ensure the function is removed from the set when we exit this scope
+  auto RemoveFromAnalyzingGuard =
+      llvm::make_scope_exit([&]() { AnalyzingFunctions_.erase(Func); });
 
   if (!Func) {
     // Handle null function declarations (should never happen in practice)
@@ -650,6 +666,15 @@ void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
     llvm::errs() << "Analyzing indirect call, marking as unknown\n";
     Info.ContainsUnknown = true;
     Info.State = ExceptionState::Unknown;
+    return;
+  }
+
+  // Check if the callee is already being analyzed (recursion)
+  if (AnalyzingFunctions_.count(Callee)) {
+    llvm::errs() << "  Recursive call to " << Callee->getNameAsString()
+                 << " detected, skipping re-analysis.\n";
+    // Don't re-analyze; the base case throw will be caught by the initial
+    // analyzeFunction call for the recursive function.
     return;
   }
 
