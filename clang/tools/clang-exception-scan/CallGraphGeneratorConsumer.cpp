@@ -21,7 +21,8 @@ using namespace clang::exception_scan;
 void CallGraphVisitor::addCall(const FunctionDecl *Caller,
                                const FunctionDecl *Callee, const Expr *E) {
   // TODO: Implement a proper logging system with log levels to reduce the
-  // noise, and eliminate this hack.
+  // noise, and eliminate this hack. We filter for isInMainFile to reduce the
+  // noise.
   const SourceManager &SM = Context_.getSourceManager();
   const bool IsCallerInMainFile = SM.isInMainFile(Caller->getOuterLocStart());
   const bool IsCalleeInMainFile = SM.isInMainFile(Callee->getOuterLocStart());

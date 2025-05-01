@@ -40,6 +40,8 @@ private:
     Info.SourceLocLine = SM.getSpellingLineNumber(Loc);
     Info.SourceLocColumn = SM.getSpellingColumnNumber(Loc);
     Info.IsDefinition = FD->isThisDeclarationADefinition();
+    Info.IsInSystemHeader = SM.isInSystemHeader(Loc);
+    Info.IsInMainFile = SM.isInMainFile(Loc);
 
     return Info;
   }
@@ -65,9 +67,9 @@ private:
       GCG_.USRToDefinedInTUMap[Info.USR].insert(Info.TU);
     }
 
-    const SourceManager &SM = Context_.getSourceManager();
-    if (!SM.isInSystemHeader(FD->getLocation())) {
-      GCG_.TotalFunctionDefinitions++;
+    GCG_.TotalFunctionDefinitions++;
+    if (!Info.IsInSystemHeader) {
+      GCG_.TotalFunctionDefinitionsNotInSystemHeaders++;
     }
 
     const FunctionDecl *PreviousFunction = CurrentlyDefinedFunction_;
@@ -124,6 +126,9 @@ public:
     if (IsInTryBlock_) {
       // Increment the counter (already exists)
       GCG_.TotalCallsPotentiallyWithinTryBlocks++;
+      if (!SM.isInSystemHeader(CE->getBeginLoc())) {
+        GCG_.TotalCallsPotentiallyWithinTryBlocksNotInSystemHeaders++;
+      }
 
       // Get the USR of the callee
       const FunctionDecl *CalleeDecl = CE->getDirectCallee();
@@ -145,9 +150,10 @@ public:
   bool TraverseCXXTryStmt(CXXTryStmt *TS) {
     if (!CurrentlyDefinedFunction_)
       return true;
+    GCG_.TotalTryBlocks++;
     const SourceManager &SM = Context_.getSourceManager();
     if (!SM.isInSystemHeader(TS->getBeginLoc())) {
-      GCG_.TotalTryBlocks++;
+      GCG_.TotalTryBlocksNotInSystemHeaders++;
     }
     bool StateBeforeThisTry = IsInTryBlock_;
     IsInTryBlock_ = true;
@@ -163,9 +169,10 @@ public:
   bool VisitCXXCatchStmt(const CXXCatchStmt *CS) {
     if (!CurrentlyDefinedFunction_)
       return true;
+    GCG_.TotalCatchHandlers++;
     const SourceManager &SM = Context_.getSourceManager();
     if (!SM.isInSystemHeader(CS->getBeginLoc())) {
-      GCG_.TotalCatchHandlers++;
+      GCG_.TotalCatchHandlersNotInSystemHeaders++;
     }
     return true;
   }
@@ -173,15 +180,20 @@ public:
   bool VisitCXXThrowExpr(const CXXThrowExpr *TE) {
     if (!CurrentlyDefinedFunction_)
       return true;
-    const SourceManager &SM = Context_.getSourceManager();
-    if (!SM.isInSystemHeader(TE->getBeginLoc())) {
-      VisitedThrowExprs_.insert(TE);
-    }
+    VisitedThrowExprs_.insert(TE);
     return true;
   }
 
   size_t getNumberOfUniqueThrowExpressions() const {
     return VisitedThrowExprs_.size();
+  }
+
+  size_t getNumberOfUniqueThrowExpressionsNotInSystemHeaders() const {
+    const SourceManager &SM = Context_.getSourceManager();
+    return std::count_if(VisitedThrowExprs_.begin(), VisitedThrowExprs_.end(),
+                         [&SM](const CXXThrowExpr *TE) {
+                           return !SM.isInSystemHeader(TE->getBeginLoc());
+                         });
   }
 
 private:
@@ -203,6 +215,8 @@ void USRMappingConsumer::HandleTranslationUnit(ASTContext &Context) {
   // After visiting the TU, aggregate the unique throw count
   GCG_.TotalThrowExpressions.fetch_add(
       Visitor.getNumberOfUniqueThrowExpressions());
+  GCG_.TotalThrowExpressionsNotInSystemHeaders.fetch_add(
+      Visitor.getNumberOfUniqueThrowExpressionsNotInSystemHeaders());
 }
 
 std::unique_ptr<FrontendAction> USRMappingActionFactory::create() {

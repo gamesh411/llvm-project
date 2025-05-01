@@ -82,11 +82,16 @@ void test_inner_class_definition() {
     }
 }
 
-// CHECK-STATS: Total non-system-header function definitions: 10
-// CHECK-STATS: Total non-system-header try blocks: 3
-// CHECK-STATS: Total non-system-header catch handlers: 3
-// CHECK-STATS: Total non-system-header throw expressions: 6
-// CHECK-STATS: Total non-system-header calls potentially within try blocks: 3
+// CHECK-STATS: Total function definitions: 10
+// CHECK-STATS: Total function definitions not in system headers: 10
+// CHECK-STATS: Total try blocks: 3
+// CHECK-STATS: Total try blocks not in system headers: 3
+// CHECK-STATS: Total catch handlers: 3
+// CHECK-STATS: Total catch handlers not in system headers: 3
+// CHECK-STATS: Total throw expressions: 6
+// CHECK-STATS: Total throw expressions not in system headers: 6
+// CHECK-STATS: Total calls potentially within try blocks: 3
+// CHECK-STATS: Total calls potentially within try blocks not in system headers: 3
 
 // CHECK-CALLS-IN-TRY: Functions called from within a try block:
 // CHECK-CALLS-IN-TRY-NEXT: c:@F@throwing_function# defined in {{.*}}ctu_exception_spec_impl.cpp:7:1

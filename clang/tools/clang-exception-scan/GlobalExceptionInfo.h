@@ -28,6 +28,8 @@ struct FunctionMappingInfo {
   unsigned SourceLocLine;
   unsigned SourceLocColumn;
   bool IsDefinition;
+  bool IsInSystemHeader;
+  bool IsInMainFile;
 };
 
 /// Information about a function call
@@ -141,11 +143,22 @@ struct GlobalExceptionInfo {
   using counter_t = std::atomic<unsigned long>;
   counter_t TotalFunctionDefinitions{
       0};                          ///< Total non-header function definitions
+  counter_t TotalFunctionDefinitionsNotInSystemHeaders{
+      0}; ///< Total non-system-header function definitions
   counter_t TotalTryBlocks{0};     ///< Total non-system-header try blocks
+  counter_t TotalTryBlocksNotInSystemHeaders{
+      0};                          ///< Total non-system-header try blocks
   counter_t TotalCatchHandlers{0}; ///< Total non-system-header catch handlers
+  counter_t TotalCatchHandlersNotInSystemHeaders{
+      0}; ///< Total non-system-header catch handlers
   counter_t TotalThrowExpressions{
       0}; ///< Total non-system-header throw expressions
+  counter_t TotalThrowExpressionsNotInSystemHeaders{
+      0}; ///< Total non-system-header throw expressions
   counter_t TotalCallsPotentiallyWithinTryBlocks{
+      0}; ///< Total non-system-header function definitions within exception
+          ///< context
+  counter_t TotalCallsPotentiallyWithinTryBlocksNotInSystemHeaders{
       0}; ///< Total non-system-header function definitions within exception
           ///< context
   // NOTE: Being lock-free is is nice to have, but not required, as we are

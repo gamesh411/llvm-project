@@ -230,16 +230,29 @@ void clang::exception_scan::reportAnalysisStats(
   if (!Out)
     return;
 
-  *Out << "Total non-system-header function definitions: "
-       << GCG.TotalFunctionDefinitions.load() << "\n";
-  *Out << "Total non-system-header try blocks: " << GCG.TotalTryBlocks.load()
+  *Out << "Total function definitions: " << GCG.TotalFunctionDefinitions.load()
        << "\n";
-  *Out << "Total non-system-header catch handlers: "
-       << GCG.TotalCatchHandlers.load() << "\n";
-  *Out << "Total non-system-header throw expressions: "
-       << GCG.TotalThrowExpressions.load() << "\n";
-  *Out << "Total non-system-header calls potentially within try blocks: "
+  *Out << "Total function definitions not in system headers: "
+       << GCG.TotalFunctionDefinitionsNotInSystemHeaders.load() << "\n";
+
+  *Out << "Total try blocks: " << GCG.TotalTryBlocks.load() << "\n";
+  *Out << "Total try blocks not in system headers: "
+       << GCG.TotalTryBlocksNotInSystemHeaders.load() << "\n";
+
+  *Out << "Total catch handlers: " << GCG.TotalCatchHandlers.load() << "\n";
+  *Out << "Total catch handlers not in system headers: "
+       << GCG.TotalCatchHandlersNotInSystemHeaders.load() << "\n";
+
+  *Out << "Total throw expressions: " << GCG.TotalThrowExpressions.load()
+       << "\n";
+  *Out << "Total throw expressions not in system headers: "
+       << GCG.TotalThrowExpressionsNotInSystemHeaders.load() << "\n";
+
+  *Out << "Total calls potentially within try blocks: "
        << GCG.TotalCallsPotentiallyWithinTryBlocks.load() << "\n";
+  *Out << "Total calls potentially within try blocks not in system headers: "
+       << GCG.TotalCallsPotentiallyWithinTryBlocksNotInSystemHeaders.load()
+       << "\n";
 }
 
 // Report functions called within try blocks

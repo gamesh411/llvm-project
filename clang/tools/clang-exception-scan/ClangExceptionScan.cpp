@@ -114,10 +114,6 @@ public:
             // Skip system header functions
             llvm::errs() << "Analyzing function: " << FD->getNameAsString()
                          << "\n";
-            if (SM.isInSystemHeader(FD->getLocation())) {
-              llvm::errs() << "Skipping system header function...\n";
-              continue;
-            }
 
             // Analyze the function and let the analyzer store the results
             // in the shared GlobalExceptionInfo object (GCG_)
