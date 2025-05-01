@@ -105,6 +105,16 @@ void CallGraphVisitor::addCall(const FunctionDecl *Caller,
   // }
 
   // Add the TU dependency if the callee is defined in a different TU
+  // We do not track dependencies for system headers, as they lead to false
+  // dependencies between TUs.
+  if (SM.isInSystemHeader(Callee->getBeginLoc())) {
+    LOG << "=== Finished addCall ===\n\n";
+    return;
+  }
+  // NOTE: We only read from USRToDefinedInTUMap, so we don't need to lock if
+  // this stage (CallGraphGeneration) is the only one that reads from it.
+  // TODO: If the above is really true, optimize by not locking.
+  std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
   auto CalleeTU = GCG_.USRToDefinedInTUMap.find(*CalleeUSR);
   if (CalleeTU != GCG_.USRToDefinedInTUMap.end()) {
     // TODO: From the build system, we could narrow the set of potential TUs
