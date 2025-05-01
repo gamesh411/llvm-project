@@ -93,8 +93,6 @@ void clang::exception_scan::reportDefiniteMatches(
   if (!Out)
     return;
 
-  *Out << "Functions that could be marked noexcept, but are not:\n";
-
   struct DefiniteResult {
     llvm::StringRef USR;
     llvm::StringRef TU;
