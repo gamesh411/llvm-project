@@ -111,6 +111,16 @@ public:
     return true;
   }
 
+  bool VisitLambdaExpr(const LambdaExpr *LE) {
+    if (auto MaybeInfo = GetFunctionInfo(LE->getCallOperator())) {
+      FunctionMappingInfo Info = *MaybeInfo;
+      updateUSRToFunctionMap(Info);
+      assert(Info.IsDefinition);
+      processFunctionDefinition(LE->getCallOperator(), Info);
+    }
+    return true;
+  }
+
   bool VisitCallExpr(const CallExpr *CE) {
     if (!CurrentlyDefinedFunction_)
       return true;

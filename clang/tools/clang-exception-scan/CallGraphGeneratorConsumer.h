@@ -51,7 +51,6 @@ public:
   bool VisitCXXNewExpr(CXXNewExpr *NewExpr);
   bool VisitCXXDeleteExpr(CXXDeleteExpr *DeleteExpr);
   bool VisitFunctionDecl(FunctionDecl *FD);
-  bool VisitLambdaExpr(LambdaExpr *LE);
   bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *Call);
 
   bool ChangesMade() const { return ChangesMade_; }

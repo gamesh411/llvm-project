@@ -189,67 +189,6 @@ bool CallGraphVisitor::VisitCXXMethodDecl(CXXMethodDecl *MD) {
   return true;
 }
 
-bool CallGraphVisitor::VisitLambdaExpr(LambdaExpr *Lambda) {
-  if (const CXXMethodDecl *CallOperator = Lambda->getCallOperator()) {
-    // NOTE: Adding the call operator of the lambda to the mentioned and the
-    // defined TU maps is needed *EVEN IF* the USRMappingConsumer was already
-    // run. This may be because USRMappingConsumer only handles function
-    // declarations, not LambdaExprs, bit we should verify this claim.
-
-    // TODO: Migrate this to the USRMappingConsumer.
-
-    // Register the lambda's call operator in the USRToDefinedInTUMap
-    if (std::optional<std::string> CallOperatorUSR =
-            cross_tu::CrossTranslationUnitContext::getLookupName(
-                CallOperator)) {
-      // Add the lambda's call operator to the USRToDefinedInTUMap
-      {
-        std::lock_guard<std::mutex> Lock(GCG_.USRToDefinedInTUMapMutex);
-        const auto Result =
-            GCG_.USRToDefinedInTUMap[*CallOperatorUSR].insert(CurrentTU_);
-        if (Result.second) {
-          ChangesMade_ = true;
-        }
-      }
-
-      // Also add it to the USRToFunctionMap
-      FunctionMappingInfo Info;
-      Info.USR = *CallOperatorUSR;
-      Info.TU = CurrentTU_;
-      Info.FunctionName = CallOperator->getNameAsString();
-      const SourceManager &SM = Context_.getSourceManager();
-      Info.SourceLocFile = SM.getBufferName(CallOperator->getOuterLocStart());
-      Info.SourceLocLine =
-          SM.getSpellingLineNumber(CallOperator->getOuterLocStart());
-      Info.SourceLocColumn =
-          SM.getSpellingColumnNumber(CallOperator->getOuterLocStart());
-      Info.IsDefinition = true; // Lambda call operators are always definitions
-      {
-        std::lock_guard<std::mutex> Lock(GCG_.USRToFunctionMapMutex);
-        const auto Result =
-            GCG_.USRToFunctionMap.insert({*CallOperatorUSR, Info});
-        if (Result.second) {
-          ChangesMade_ = true;
-        }
-      }
-    }
-    // Store the previous current function
-    const FunctionDecl *PreviousFunction = CurrentFunction_;
-
-    // Set the current function to the lambda's call operator
-    CurrentFunction_ = CallOperator;
-
-    // Add the lambda's body to the call graph
-    if (Stmt *Body = CallOperator->getBody()) {
-      TraverseStmt(Body);
-    }
-
-    // Restore the previous current function
-    CurrentFunction_ = PreviousFunction;
-  }
-  return true;
-}
-
 bool CallGraphVisitor::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *Call) {
   if (const FunctionDecl *Callee = Call->getDirectCallee()) {
     // Handle operator() calls, which could be lambda invocations
