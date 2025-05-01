@@ -114,7 +114,7 @@ void clang::exception_scan::reportDefiniteMatches(
           continue;
         }
         const auto &FuncInfo = FuncIt->getValue();
-        if (FuncInfo.IsDefinition) {
+        if (FuncInfo.IsDefinition && !FuncInfo.IsInSystemHeader) {
           DefiniteResults.push_back(
               DefiniteResult{USR, FuncInfo.TU, FuncInfo.SourceLocFile,
                              FuncInfo.SourceLocLine, FuncInfo.SourceLocColumn});
