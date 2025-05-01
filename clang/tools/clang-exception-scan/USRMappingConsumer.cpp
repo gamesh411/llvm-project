@@ -85,9 +85,6 @@ private:
 
 public:
   bool TraverseFunctionDecl(FunctionDecl *FD) {
-    if (!FD)
-      return true;
-
     if (auto MaybeInfo = GetFunctionInfo(FD)) {
       FunctionMappingInfo Info = *MaybeInfo;
       updateUSRToFunctionMap(Info);
@@ -99,9 +96,6 @@ public:
   }
 
   bool VisitFunctionDecl(FunctionDecl *FD) {
-    if (!FD)
-      return true;
-
     if (auto MaybeInfo = GetFunctionInfo(FD)) {
       FunctionMappingInfo Info = *MaybeInfo;
       updateUSRToFunctionMap(Info);
