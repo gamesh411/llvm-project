@@ -101,6 +101,14 @@ private:
                         LocalFunctionExceptionInfo &Info);
 
   /// Analyze a function call
+  void analyzeFunctionCall(const FunctionDecl *Callee,
+                           LocalFunctionExceptionInfo &Info);
+
+  /// Analyze a CXXConstructExpr
+  void analyzeCXXConstructExpr(const CXXConstructExpr *Construct,
+                               LocalFunctionExceptionInfo &Info);
+
+  /// Analyze a function call
   void analyzeCallExpr(const CallExpr *Call, LocalFunctionExceptionInfo &Info);
 
   /// Check if a type can catch another type

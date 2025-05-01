@@ -389,6 +389,10 @@ void ASTBasedExceptionAnalyzer::analyzeStatement(
     analyzeCallExpr(Call, Info);
   }
 
+  if (const CXXConstructExpr *Construct = dyn_cast<CXXConstructExpr>(S)) {
+    analyzeCXXConstructExpr(Construct, Info);
+  }
+
   // Recursively analyze child statements
   for (const Stmt *Child : S->children()) {
     if (Child) {
@@ -403,7 +407,7 @@ void ASTBasedExceptionAnalyzer::analyzeStatement(
       }
 
       if (!SkipChild) {
-    analyzeStatement(Child, Info);
+        analyzeStatement(Child, Info);
       }
     }
   }
@@ -637,157 +641,168 @@ void ASTBasedExceptionAnalyzer::analyzeThrowExpr(
   }
 }
 
-void ASTBasedExceptionAnalyzer::analyzeCallExpr(
-    const CallExpr *Call, LocalFunctionExceptionInfo &Info) {
-  llvm::errs() << "\nAnalyzing call expression\n";
-
-  if (const FunctionDecl *Callee = Call->getDirectCallee()) {
-    llvm::errs() << "  Direct call to: " << Callee->getNameAsString() << "\n";
-
-    // Handle builtin functions first
-    if (Callee->getBuiltinID() != 0 && isNoexceptBuiltin(Callee)) {
-      // Known non-throwing builtin, no need to analyze further
-      llvm::errs() << "  Builtin function, skipping\n";
-      return;
-    }
-
-    // Check local cache first
-    auto LocalIt = FunctionCache_.find(Callee);
-    if (LocalIt != FunctionCache_.end()) {
-      llvm::errs() << "  Found in local cache\n";
-      if (LocalIt->second.State == ExceptionState::Throwing) {
-        Info.State = ExceptionState::Throwing;
-        Info.ThrowEvents.insert(Info.ThrowEvents.end(),
-                                LocalIt->second.ThrowEvents.begin(),
-                                LocalIt->second.ThrowEvents.end());
-      }
-
-      // Check if the callee has a noexcept specification but our analysis found
-      // it can throw
-      if (LocalIt->second.ExceptionSpecType == EST_NoexceptTrue ||
-          LocalIt->second.ExceptionSpecType == EST_NoexceptFalse ||
-          LocalIt->second.ExceptionSpecType == EST_NoThrow) {
-        if (LocalIt->second.State == ExceptionState::Throwing) {
-          llvm::errs() << "  Warning: Callee marked as noexcept but analysis "
-                          "found it can throw\n";
-        }
-      }
-
-      return;
-    }
-    llvm::errs() << "  Not found in local cache\n";
-
-    // Get the USR for the callee
-    std::optional<std::string> USR =
-        cross_tu::CrossTranslationUnitContext::getLookupName(Callee);
-    if (USR) {
-      llvm::errs() << "  Checking global cache for USR: " << *USR << "\n";
-      // Check if we have exception info for this USR in the global cache
-      std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
-      auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
-      if (GlobalIt != GEI_.USRToExceptionMap.end()) {
-        // Use the global exception info directly
-        llvm::errs() << "  Found in global cache, state="
-                     << (GlobalIt->second.State == ExceptionState::Throwing
-                             ? "Throwing"
-                             : "NotThrowing")
-                     << ", events=" << GlobalIt->second.ThrowEvents.size()
-                     << "\n";
-
-        if (GlobalIt->second.State == ExceptionState::Throwing) {
-          Info.State = ExceptionState::Throwing;
-          bool SuccessfullyLoadedGlobalInfo = true;
-          llvm::SmallVector<LocalThrowInfo, 2> LocalThrowEvents;
-          for (const auto &ThrowEvent : GlobalIt->second.ThrowEvents) {
-            if (std::optional<LocalThrowInfo> LocalThrowInfo =
-                    fromGlobal(ThrowEvent, Context_)) {
-              LocalThrowEvents.push_back(*LocalThrowInfo);
-            } else {
-              SuccessfullyLoadedGlobalInfo = false;
-            }
-          }
-          if (SuccessfullyLoadedGlobalInfo) {
-            Info.ThrowEvents.insert(Info.ThrowEvents.end(),
-                                    LocalThrowEvents.begin(),
-                                    LocalThrowEvents.end());
-            llvm::errs() << "  Added " << LocalThrowEvents.size()
-                         << " throw events from global cache\n";
-          }
-        }
-
-        // Check if the callee has a noexcept specification but our analysis
-        // found it can throw
-        if (GlobalIt->second.ExceptionSpecType == EST_NoexceptTrue ||
-            GlobalIt->second.ExceptionSpecType == EST_NoexceptFalse ||
-            GlobalIt->second.ExceptionSpecType == EST_NoThrow) {
-          if (GlobalIt->second.State == ExceptionState::Throwing) {
-            llvm::errs() << "  Warning: Callee marked as noexcept but analysis "
-                            "found it can throw\n";
-          }
-        }
-
-        if (GlobalIt->second.ContainsUnknown) {
-          Info.ContainsUnknown = true;
-          if (GlobalIt->second.State == ExceptionState::Unknown) {
-            Info.State = ExceptionState::Unknown;
-          }
-        }
-        return;
-      }
-      llvm::errs() << "  Not found in global cache\n";
-    }
-
-    // If not found in global cache, analyze the callee
-    llvm::errs() << "  Not found in global cache, analyzing callee\n";
-    LocalFunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
-    llvm::errs() << "  Callee analysis result: state="
-                 << (CalleeInfo.State == ExceptionState::Throwing
-                         ? "Throwing"
-                         : "NotThrowing")
-                 << ", events=" << CalleeInfo.ThrowEvents.size() << "\n";
-
-    // If the callee can throw, this function can throw
-    if (CalleeInfo.State == ExceptionState::Throwing) {
-      Info.State = ExceptionState::Throwing;
-      // Make sure to propagate the throw events from the callee
-      if (!CalleeInfo.ThrowEvents.empty()) {
-        llvm::errs() << "  Propagating " << CalleeInfo.ThrowEvents.size()
-                     << " throw events from callee\n";
-        Info.ThrowEvents.insert(Info.ThrowEvents.end(),
-                                CalleeInfo.ThrowEvents.begin(),
-                                CalleeInfo.ThrowEvents.end());
-      } else {
-        llvm::errs() << "  Callee throws but has no throw events!\n";
-      }
-    }
-
-    // Check if the callee has a noexcept specification but our analysis found
-    // it can throw
-    if (CalleeInfo.ExceptionSpecType == EST_NoexceptTrue ||
-        CalleeInfo.ExceptionSpecType == EST_NoexceptFalse ||
-        CalleeInfo.ExceptionSpecType == EST_NoThrow) {
-      if (CalleeInfo.State == ExceptionState::Throwing) {
-        llvm::errs() << "  Warning: Callee marked as noexcept but analysis "
-                        "found it can throw\n";
-      }
-    }
-
-    // If the callee has unknown behavior, this function has unknown behavior
-    if (CalleeInfo.ContainsUnknown) {
-      Info.ContainsUnknown = true;
-      // If we don't know if the callee throws, we should mark this function
-      // as unknown
-      if (CalleeInfo.State == ExceptionState::Unknown) {
-        Info.State = ExceptionState::Unknown;
-      }
-    }
-  } else {
+void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
+    const FunctionDecl *Callee, LocalFunctionExceptionInfo &Info) {
+  llvm::errs() << "\nAnalyzing function call\n";
+  if (!Callee) {
     // Handle indirect function calls (function pointers, etc.)
     // We can't determine the callee, so mark as unknown
     llvm::errs() << "Analyzing indirect call, marking as unknown\n";
     Info.ContainsUnknown = true;
     Info.State = ExceptionState::Unknown;
+    return;
   }
+
+  llvm::errs() << "  Direct call to: " << Callee->getNameAsString() << "\n";
+
+  // Handle builtin functions first
+  if (Callee->getBuiltinID() != 0 && isNoexceptBuiltin(Callee)) {
+    // Known non-throwing builtin, no need to analyze further
+    llvm::errs() << "  Builtin function, skipping\n";
+    return;
+  }
+
+  // Check local cache first
+  auto LocalIt = FunctionCache_.find(Callee);
+  if (LocalIt != FunctionCache_.end()) {
+    llvm::errs() << "  Found in local cache\n";
+    if (LocalIt->second.State == ExceptionState::Throwing) {
+      Info.State = ExceptionState::Throwing;
+      Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                              LocalIt->second.ThrowEvents.begin(),
+                              LocalIt->second.ThrowEvents.end());
+    }
+
+    // Check if the callee has a noexcept specification but our analysis found
+    // it can throw
+    if (LocalIt->second.ExceptionSpecType == EST_NoexceptTrue ||
+        LocalIt->second.ExceptionSpecType == EST_NoexceptFalse ||
+        LocalIt->second.ExceptionSpecType == EST_NoThrow) {
+      if (LocalIt->second.State == ExceptionState::Throwing) {
+        llvm::errs() << "  Warning: Callee marked as noexcept but analysis "
+                        "found it can throw\n";
+      }
+    }
+
+    return;
+  }
+  llvm::errs() << "  Not found in local cache\n";
+
+  // Get the USR for the callee
+  std::optional<std::string> USR =
+      cross_tu::CrossTranslationUnitContext::getLookupName(Callee);
+  if (USR) {
+    llvm::errs() << "  Checking global cache for USR: " << *USR << "\n";
+    // Check if we have exception info for this USR in the global cache
+    std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
+    auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
+    if (GlobalIt != GEI_.USRToExceptionMap.end()) {
+      // Use the global exception info directly
+      llvm::errs() << "  Found in global cache, state="
+                   << (GlobalIt->second.State == ExceptionState::Throwing
+                           ? "Throwing"
+                           : "NotThrowing")
+                   << ", events=" << GlobalIt->second.ThrowEvents.size()
+                   << "\n";
+
+      if (GlobalIt->second.State == ExceptionState::Throwing) {
+        Info.State = ExceptionState::Throwing;
+        bool SuccessfullyLoadedGlobalInfo = true;
+        llvm::SmallVector<LocalThrowInfo, 2> LocalThrowEvents;
+        for (const auto &ThrowEvent : GlobalIt->second.ThrowEvents) {
+          if (std::optional<LocalThrowInfo> LocalThrowInfo =
+                  fromGlobal(ThrowEvent, Context_)) {
+            LocalThrowEvents.push_back(*LocalThrowInfo);
+          } else {
+            SuccessfullyLoadedGlobalInfo = false;
+          }
+        }
+        if (SuccessfullyLoadedGlobalInfo) {
+          Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                                  LocalThrowEvents.begin(),
+                                  LocalThrowEvents.end());
+          llvm::errs() << "  Added " << LocalThrowEvents.size()
+                       << " throw events from global cache\n";
+        }
+      }
+
+      // Check if the callee has a noexcept specification but our analysis
+      // found it can throw
+      if (GlobalIt->second.ExceptionSpecType == EST_NoexceptTrue ||
+          GlobalIt->second.ExceptionSpecType == EST_NoexceptFalse ||
+          GlobalIt->second.ExceptionSpecType == EST_NoThrow) {
+        if (GlobalIt->second.State == ExceptionState::Throwing) {
+          llvm::errs() << "  Warning: Callee marked as noexcept but analysis "
+                          "found it can throw\n";
+        }
+      }
+
+      if (GlobalIt->second.ContainsUnknown) {
+        Info.ContainsUnknown = true;
+        if (GlobalIt->second.State == ExceptionState::Unknown) {
+          Info.State = ExceptionState::Unknown;
+        }
+      }
+      return;
+    }
+    llvm::errs() << "  Not found in global cache\n";
+  }
+
+  // If not found in global cache, analyze the callee
+  llvm::errs() << "  Not found in global cache, analyzing callee\n";
+  LocalFunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
+  llvm::errs() << "  Callee analysis result: state="
+               << (CalleeInfo.State == ExceptionState::Throwing ? "Throwing"
+                                                                : "NotThrowing")
+               << ", events=" << CalleeInfo.ThrowEvents.size() << "\n";
+
+  // If the callee can throw, this function can throw
+  if (CalleeInfo.State == ExceptionState::Throwing) {
+    Info.State = ExceptionState::Throwing;
+    // Make sure to propagate the throw events from the callee
+    if (!CalleeInfo.ThrowEvents.empty()) {
+      llvm::errs() << "  Propagating " << CalleeInfo.ThrowEvents.size()
+                   << " throw events from callee\n";
+      Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                              CalleeInfo.ThrowEvents.begin(),
+                              CalleeInfo.ThrowEvents.end());
+    } else {
+      llvm::errs() << "  Callee throws but has no throw events!\n";
+    }
+  }
+
+  // Check if the callee has a noexcept specification but our analysis found
+  // it can throw
+  if (CalleeInfo.ExceptionSpecType == EST_NoexceptTrue ||
+      CalleeInfo.ExceptionSpecType == EST_NoexceptFalse ||
+      CalleeInfo.ExceptionSpecType == EST_NoThrow) {
+    if (CalleeInfo.State == ExceptionState::Throwing) {
+      llvm::errs() << "  Warning: Callee marked as noexcept but analysis "
+                      "found it can throw\n";
+    }
+  }
+
+  // If the callee has unknown behavior, this function has unknown behavior
+  if (CalleeInfo.ContainsUnknown) {
+    Info.ContainsUnknown = true;
+    // If we don't know if the callee throws, we should mark this function
+    // as unknown
+    if (CalleeInfo.State == ExceptionState::Unknown) {
+      Info.State = ExceptionState::Unknown;
+    }
+  }
+}
+
+void ASTBasedExceptionAnalyzer::analyzeCXXConstructExpr(
+    const CXXConstructExpr *Construct, LocalFunctionExceptionInfo &Info) {
+  llvm::errs() << "\nAnalyzing CXXConstructExpr\n";
+  analyzeFunctionCall(Construct->getConstructor(), Info);
+}
+
+void ASTBasedExceptionAnalyzer::analyzeCallExpr(
+    const CallExpr *Call, LocalFunctionExceptionInfo &Info) {
+  llvm::errs() << "\nAnalyzing call expression\n";
+  analyzeFunctionCall(Call->getDirectCallee(), Info);
 }
 
 bool ASTBasedExceptionAnalyzer::canCatchType(QualType CaughtType,
