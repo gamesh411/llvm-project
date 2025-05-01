@@ -149,18 +149,72 @@ void clang::exception_scan::reportUnknownCausedMisMatches(
   if (!Out)
     return;
 
-  *Out << "Functions with unknown exception state because they contain unknown "
-       << "calls:\n";
+  struct UnknownCausedMismatch {
+    USRTy USR;
+    PathTy TU;
+    PathTy SourceLocFile;
+    unsigned SourceLocLine;
+    unsigned SourceLocColumn;
+    llvm::SmallVector<USRTy, 2> CallsToUnknown;
+  };
+
+  llvm::SmallVector<UnknownCausedMismatch, 32> UnknownCausedMismatches;
   {
-    std::lock_guard<std::mutex> Lock(GCG.USRToExceptionMapMutex);
+    std::scoped_lock Lock(GCG.USRToExceptionMapMutex, GCG.USRToFunctionMapMutex,
+                          GCG.CallDependenciesMutex);
     for (const auto &[USR, Info] : GCG.USRToExceptionMap) {
       if (Info.State == ExceptionState::Unknown && Info.ContainsUnknown) {
-        std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
         auto FuncIt = GCG.USRToFunctionMap.find(USR);
-        if (FuncIt != GCG.USRToFunctionMap.end()) {
-          *Out << FuncIt->getValue().FunctionName << '\n';
+        if (FuncIt == GCG.USRToFunctionMap.end()) {
+          llvm::errs() << "USR not found in USRToFunctionMap: " << USR << "\n";
+          continue;
+        }
+        const auto &FuncInfo = FuncIt->getValue();
+
+        // Collect all calls of this function to functions that have unknown
+        // exception state.
+        llvm::SmallVector<USRTy, 2> CallsToUnknown;
+        for (const auto &Call : GCG.CallDependencies) {
+          if (Call.CallerUSR == USR) {
+            auto CalleeIt = GCG.USRToExceptionMap.find(Call.CalleeUSR);
+            if (CalleeIt == GCG.USRToExceptionMap.end()) {
+              llvm::errs() << "Callee USR not found in USRToExceptionMap: "
+                           << Call.CalleeUSR << "\n";
+              continue;
+            }
+            const auto &CalleeInfo = CalleeIt->getValue();
+            if (CalleeInfo.State == ExceptionState::Unknown) {
+              CallsToUnknown.push_back(Call.CalleeUSR);
+            }
+          }
+        }
+
+        // NOTE: Lets not restrict the reporting to just non-system-header
+        // functions, as unknown functions can be defined in system headers.
+        if (FuncInfo.IsDefinition) {
+          UnknownCausedMismatches.push_back(
+              {USR, FuncInfo.TU, FuncInfo.SourceLocFile, FuncInfo.SourceLocLine,
+               FuncInfo.SourceLocColumn, std::move(CallsToUnknown)});
         }
       }
+    }
+  }
+
+  llvm::sort(UnknownCausedMismatches, [](const UnknownCausedMismatch &LHS,
+                                         const UnknownCausedMismatch &RHS) {
+    if (LHS.SourceLocFile != RHS.SourceLocFile) {
+      return LHS.SourceLocFile < RHS.SourceLocFile;
+    }
+    return LHS.SourceLocColumn < RHS.SourceLocColumn;
+  });
+
+  *Out << "Functions with unknown exception state because they contain unknown "
+       << "calls:\n";
+  for (const auto &Result : UnknownCausedMismatches) {
+    *Out << Result.USR << " defined in " << Result.SourceLocFile << ':'
+         << Result.SourceLocLine << ':' << Result.SourceLocColumn << '\n';
+    for (const auto &Call : Result.CallsToUnknown) {
+      *Out << "  Calls to unknown: " << Call << '\n';
     }
   }
 }
