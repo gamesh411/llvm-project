@@ -82,10 +82,10 @@ void test_inner_class_definition() {
     }
 }
 
-// CHECK-STATS: Total non-system-header function definitions: 9
+// CHECK-STATS: Total non-system-header function definitions: 10
 // CHECK-STATS: Total non-system-header try blocks: 3
 // CHECK-STATS: Total non-system-header catch handlers: 3
-// CHECK-STATS: Total non-system-header throw expressions: 7
+// CHECK-STATS: Total non-system-header throw expressions: 6
 // CHECK-STATS: Total non-system-header calls potentially within try blocks: 3
 
 // CHECK-CALLS-IN-TRY: Functions called from within a try block:

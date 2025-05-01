@@ -391,7 +391,21 @@ void ASTBasedExceptionAnalyzer::analyzeStatement(
 
   // Recursively analyze child statements
   for (const Stmt *Child : S->children()) {
+    if (Child) {
+      // Check if the current statement 'S' is a LambdaExpr and 'Child' is its
+      // body CompoundStmt. If so, skip analyzing the body here; it's only
+      // relevant when the lambda is called.
+      bool SkipChild = false;
+      if (const LambdaExpr *ParentLambda = dyn_cast<LambdaExpr>(S)) {
+        if (Child == ParentLambda->getBody()) {
+          SkipChild = true;
+        }
+      }
+
+      if (!SkipChild) {
     analyzeStatement(Child, Info);
+      }
+    }
   }
 }
 

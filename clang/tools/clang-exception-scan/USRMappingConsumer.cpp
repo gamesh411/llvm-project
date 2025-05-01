@@ -2,6 +2,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
+#include "llvm/ADT/SmallSet.h"
 #include <llvm/Support/raw_ostream.h>
 
 using namespace clang;
@@ -125,8 +126,6 @@ public:
     if (!CurrentlyDefinedFunction_)
       return true;
     const SourceManager &SM = Context_.getSourceManager();
-    if (SM.isInSystemHeader(CE->getBeginLoc()))
-      return true;
 
     if (IsInTryBlock_) {
       // Increment the counter (already exists)
@@ -182,9 +181,13 @@ public:
       return true;
     const SourceManager &SM = Context_.getSourceManager();
     if (!SM.isInSystemHeader(TE->getBeginLoc())) {
-      GCG_.TotalThrowExpressions++;
+      VisitedThrowExprs_.insert(TE);
     }
     return true;
+  }
+
+  size_t getNumberOfUniqueThrowExpressions() const {
+    return VisitedThrowExprs_.size();
   }
 
 private:
@@ -194,12 +197,18 @@ private:
   GlobalExceptionInfo &GCG_;
   ASTContext &Context_;
   bool IsInTryBlock_ = false;
+  // Set to store unique throw expressions encountered within this TU.
+  llvm::SmallSet<const clang::CXXThrowExpr *, 16> VisitedThrowExprs_;
 };
 } // namespace
 
 void USRMappingConsumer::HandleTranslationUnit(ASTContext &Context) {
   FunctionVisitor Visitor(CurrentTU_, GCG_, Context);
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+
+  // After visiting the TU, aggregate the unique throw count
+  GCG_.TotalThrowExpressions.fetch_add(
+      Visitor.getNumberOfUniqueThrowExpressions());
 }
 
 std::unique_ptr<FrontendAction> USRMappingActionFactory::create() {

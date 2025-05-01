@@ -1097,3 +1097,84 @@ TEST_F(ASTBasedExceptionAnalyzerTest, ExceptionSpecificationInFunctionCalls) {
   EXPECT_EQ(NoexceptCallsNoSpecInfo.ExceptionSpecType, EST_NoexceptTrue);
   EXPECT_FALSE(NoexceptCallsNoSpecInfo.ThrowEvents.empty());
 }
+
+// Test throw expression inside a lambda
+TEST_F(ASTBasedExceptionAnalyzerTest, LambdaThrowTest) {
+  auto AST = buildASTFromCode(R"(
+    void function_with_lambda_throw() {
+      auto lambda = []() {
+        throw 1;
+      };
+      lambda(); // Call the lambda
+    }
+
+    void function_with_immediately_invoked_lambda_throw() {
+      []() {
+        throw 1;
+      }();
+    }
+
+    void function_with_unused_lambda_throw() {
+      auto lambda = []() {
+        throw 1;
+      };
+      // Lambda defined but not called
+    }
+
+    void function_with_noexcept_lambda() {
+      auto lambda = []() noexcept {
+        // Does not throw
+      };
+      lambda();
+    }
+  )");
+
+  ASSERT_TRUE(AST != nullptr);
+  auto &Context = AST->getASTContext();
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
+
+  // Test function_with_lambda_throw
+  const FunctionDecl *LambdaThrowFunc =
+      findFunction(AST.get(), "function_with_lambda_throw");
+  ASSERT_TRUE(LambdaThrowFunc != nullptr);
+  auto LambdaThrowInfo = Analyzer.analyzeFunction(LambdaThrowFunc);
+  EXPECT_EQ(LambdaThrowInfo.State, ExceptionState::Throwing);
+  EXPECT_FALSE(LambdaThrowInfo.ContainsUnknown);
+  ASSERT_EQ(LambdaThrowInfo.ThrowEvents.size(), 1u);
+  EXPECT_TRUE(LambdaThrowInfo.ThrowEvents[0]
+                  .Type->isIntegerType()); // Lambda throws int
+
+  // Test function_with_immediately_invoked_lambda_throw
+  const FunctionDecl *ImmediatelyInvokedLambdaThrowFunc =
+      findFunction(AST.get(), "function_with_immediately_invoked_lambda_throw");
+  ASSERT_TRUE(ImmediatelyInvokedLambdaThrowFunc != nullptr);
+  auto ImmediatelyInvokedLambdaThrowInfo =
+      Analyzer.analyzeFunction(ImmediatelyInvokedLambdaThrowFunc);
+  EXPECT_EQ(ImmediatelyInvokedLambdaThrowInfo.State, ExceptionState::Throwing);
+  EXPECT_FALSE(ImmediatelyInvokedLambdaThrowInfo.ContainsUnknown);
+  ASSERT_EQ(ImmediatelyInvokedLambdaThrowInfo.ThrowEvents.size(), 1u);
+  EXPECT_TRUE(
+      ImmediatelyInvokedLambdaThrowInfo.ThrowEvents[0]
+          .Type->isIntegerType()); // Immediately invoked lambda throws int
+
+  // Test function_with_unused_lambda_throw
+  const FunctionDecl *UnusedLambdaFunc =
+      findFunction(AST.get(), "function_with_unused_lambda_throw");
+  ASSERT_TRUE(UnusedLambdaFunc != nullptr);
+  auto UnusedLambdaInfo = Analyzer.analyzeFunction(UnusedLambdaFunc);
+  // Since the throwing lambda is not called, the function itself doesn't throw
+  EXPECT_EQ(UnusedLambdaInfo.State, ExceptionState::NotThrowing);
+  EXPECT_FALSE(UnusedLambdaInfo.ContainsUnknown);
+  EXPECT_TRUE(UnusedLambdaInfo.ThrowEvents.empty());
+
+  // Test function_with_noexcept_lambda
+  const FunctionDecl *NoexceptLambdaFunc =
+      findFunction(AST.get(), "function_with_noexcept_lambda");
+  ASSERT_TRUE(NoexceptLambdaFunc != nullptr);
+  auto NoexceptLambdaInfo = Analyzer.analyzeFunction(NoexceptLambdaFunc);
+  EXPECT_EQ(NoexceptLambdaInfo.State, ExceptionState::NotThrowing);
+  EXPECT_FALSE(NoexceptLambdaInfo.ContainsUnknown);
+  EXPECT_TRUE(NoexceptLambdaInfo.ThrowEvents.empty());
+}
