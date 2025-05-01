@@ -53,6 +53,24 @@ void clang::exception_scan::reportAllFunctions(
     std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
     for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
       *Out << USR << " defined in " << Info.TU << '\n';
+      // report the exception state of the function
+      const auto &ExceptionInfo = GCG.USRToExceptionMap.find(USR);
+      if (ExceptionInfo == GCG.USRToExceptionMap.end()) {
+        *Out << "  Exception state: untracked\n";
+        continue;
+      }
+      const auto &EI = ExceptionInfo->getValue();
+      switch (EI.State) {
+      case ExceptionState::Throwing:
+        *Out << "  Exception state: throwing\n";
+        break;
+      case ExceptionState::NotThrowing:
+        *Out << "  Exception state: noexcept\n";
+        break;
+      case ExceptionState::Unknown:
+        *Out << "  Exception state: unknown\n";
+        break;
+      }
     }
   }
 }
