@@ -52,7 +52,19 @@ void clang::exception_scan::reportAllFunctions(
   {
     std::lock_guard<std::mutex> Lock(GCG.USRToFunctionMapMutex);
     for (const auto &[USR, Info] : GCG.USRToFunctionMap) {
-      *Out << USR << " defined in " << Info.TU << '\n';
+      *Out << USR.str();
+      // report the definitions of the function
+      const auto &DefinedInTUs = GCG.USRToDefinedInTUMap.find(USR);
+      if (DefinedInTUs == GCG.USRToDefinedInTUMap.end()) {
+        *Out << " unknown definition\n";
+      } else {
+        *Out << " defined in ";
+        for (const auto &[TU, _] : DefinedInTUs->getValue()) {
+          *Out << TU.str() << ", ";
+        }
+        *Out << '\n';
+      }
+
       // report the exception state of the function
       const auto &ExceptionInfo = GCG.USRToExceptionMap.find(USR);
       if (ExceptionInfo == GCG.USRToExceptionMap.end()) {
