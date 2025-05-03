@@ -53,7 +53,7 @@ public:
   bool VisitFunctionDecl(FunctionDecl *FD);
   bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *Call);
 
-  bool ChangesMade() const { return ChangesMade_; }
+  bool hasMadeChanges() const { return ChangesMade_; }
 
 private:
   void addCall(const FunctionDecl *Caller, const FunctionDecl *Callee,
@@ -70,43 +70,48 @@ private:
 class CallGraphGeneratorConsumer : public ASTConsumer {
 public:
   explicit CallGraphGeneratorConsumer(StringRef CurrentTU,
-                                      GlobalExceptionInfo &GCG)
-      : CurrentTU_(CurrentTU.str()), GCG_(GCG) {}
+                                      GlobalExceptionInfo &GCG,
+                                      std::atomic_flag &ChangedFlag)
+      : CurrentTU_(CurrentTU.str()), GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   void HandleTranslationUnit(ASTContext &Context) override;
-
-  bool ChangesMade() const { return ChangesMade_; }
 
 private:
   std::string CurrentTU_;
   GlobalExceptionInfo &GCG_;
-  bool ChangesMade_ = false;
+  std::atomic_flag &ChangedFlag_;
 };
 
 // FrontendAction that uses CallGraphGeneratorConsumer
 class CallGraphGeneratorAction : public ASTFrontendAction {
 public:
-  explicit CallGraphGeneratorAction(GlobalExceptionInfo &GCG) : GCG_(GCG) {}
+  explicit CallGraphGeneratorAction(GlobalExceptionInfo &GCG,
+                                    std::atomic_flag &ChangedFlag)
+      : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
-    return std::make_unique<CallGraphGeneratorConsumer>(InFile.str(), GCG_);
+    return std::make_unique<CallGraphGeneratorConsumer>(InFile.str(), GCG_,
+                                                        ChangedFlag_);
   }
 
   GlobalExceptionInfo &GCG_;
+  std::atomic_flag &ChangedFlag_;
 };
 
 class CallGraphGeneratorActionFactory : public tooling::FrontendActionFactory {
 public:
-  explicit CallGraphGeneratorActionFactory(GlobalExceptionInfo &GCG)
-      : GCG_(GCG) {}
+  explicit CallGraphGeneratorActionFactory(GlobalExceptionInfo &GCG,
+                                           std::atomic_flag &ChangedFlag)
+      : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   std::unique_ptr<FrontendAction> create() override {
-    return std::make_unique<CallGraphGeneratorAction>(GCG_);
+    return std::make_unique<CallGraphGeneratorAction>(GCG_, ChangedFlag_);
   }
 
 private:
   GlobalExceptionInfo &GCG_;
+  std::atomic_flag &ChangedFlag_;
 };
 
 /// Generates a DOT file representation of the translation unit dependency graph

@@ -83,6 +83,7 @@ public:
       const Stmt *Root);
   static AnalysisOrderedTryCatches findTryCatchBlocks(const Stmt *S,
                                                       const SourceManager &SM);
+  bool hasChanged() const { return Changed_; }
 
 private:
   /// Analyze a statement and update the exception information
@@ -136,9 +137,10 @@ private:
       ParentMap_; ///< Maps statements to their parents
   llvm::DenseMap<const CXXTryStmt *, LocalFunctionExceptionInfo>
       TryBlockCache_; ///< Cache of analyzed try blocks
-  llvm::SmallSet<const FunctionDecl *, 8>
+  llvm::SmallSet<const FunctionDecl *, 16>
       AnalyzingFunctions_; ///< Tracks functions currently being analyzed to
                            ///< detect recursion
+  bool Changed_{false};
 };
 
 } // namespace exception_scan
