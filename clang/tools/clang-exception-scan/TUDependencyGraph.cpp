@@ -6,19 +6,19 @@ namespace clang {
 namespace exception_scan {
 
 bool TUDependencyGraph::addIndependentTU(llvm::StringRef TU) {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
   return AdjacencyList.insert(std::make_pair(TU, llvm::StringSet<>())).second;
 }
 
 bool TUDependencyGraph::addDependency(llvm::StringRef From,
                                       llvm::StringRef To) {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
   // Add both TUs to the graph if they don't exist
   bool Modified = false;
   Modified |= addIndependentTU(From);
   Modified |= addIndependentTU(To);
 
   // Add the dependency
+  std::lock_guard<std::mutex> Lock(GraphMutex);
   const auto Result = AdjacencyList[From].insert(To);
   Modified |= Result.second;
   return Modified;
@@ -26,7 +26,7 @@ bool TUDependencyGraph::addDependency(llvm::StringRef From,
 
 bool TUDependencyGraph::hasDependency(llvm::StringRef From,
                                       llvm::StringRef To) const {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
 
   auto It = AdjacencyList.find(From);
   if (It == AdjacencyList.end()) {
@@ -38,7 +38,7 @@ bool TUDependencyGraph::hasDependency(llvm::StringRef From,
 
 llvm::SmallVector<PathTy, 4>
 TUDependencyGraph::getDependencies(llvm::StringRef TU) const {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
 
   llvm::SmallVector<PathTy, 4> Result;
   auto It = AdjacencyList.find(TU);
@@ -53,7 +53,7 @@ TUDependencyGraph::getDependencies(llvm::StringRef TU) const {
 
 llvm::SmallVector<PathTy, 4>
 TUDependencyGraph::getDependents(llvm::StringRef TU) const {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
 
   llvm::SmallVector<PathTy, 4> Result;
   for (const auto &Entry : AdjacencyList) {
@@ -66,7 +66,7 @@ TUDependencyGraph::getDependents(llvm::StringRef TU) const {
 }
 
 llvm::SmallVector<PathTy, 4> TUDependencyGraph::getAllTUs() const {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
 
   llvm::SmallVector<PathTy, 4> Result;
   for (const auto &Entry : AdjacencyList) {
@@ -77,13 +77,13 @@ llvm::SmallVector<PathTy, 4> TUDependencyGraph::getAllTUs() const {
 }
 
 void TUDependencyGraph::clear() {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
   AdjacencyList.clear();
 }
 
 bool TUDependencyGraph::topologicalSort(
     llvm::SmallVectorImpl<PathTy> &Result) const {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
 
   // Kahn's algorithm for topological sorting
   std::map<PathTy, unsigned> InDegree;
@@ -208,7 +208,7 @@ void TUDependencyGraph::tarjanDFS(
 
 llvm::SmallVector<StronglyConnectedComponent, 4>
 TUDependencyGraph::detectSCCs() const {
-  std::lock_guard<std::recursive_mutex> Lock(GraphMutex);
+  std::lock_guard<std::mutex> Lock(GraphMutex);
 
   llvm::SmallVector<StronglyConnectedComponent, 4> SCCs;
   llvm::StringMap<unsigned> Index;

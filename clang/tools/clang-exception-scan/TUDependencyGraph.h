@@ -55,7 +55,7 @@ private:
   llvm::StringMap<llvm::StringSet<>> AdjacencyList;
 
   /// Mutex for thread safety
-  mutable std::recursive_mutex GraphMutex;
+  mutable std::mutex GraphMutex;
 
   /// Helper function for Tarjan's algorithm to find SCCs
   void tarjanDFS(llvm::StringRef TU, llvm::StringMap<unsigned> &Index,
