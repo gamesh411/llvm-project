@@ -42,6 +42,20 @@ private:
     Info.IsDefinition = FD->isThisDeclarationADefinition();
     Info.IsInSystemHeader = SM.isInSystemHeader(Loc);
     Info.IsInMainFile = SM.isInMainFile(Loc);
+    Info.IsConsideredInternalLinkage = [FD]() {
+      clang::Linkage FunctionLinkage =
+          FD->getLinkageAndVisibility().getLinkage();
+      switch (FunctionLinkage) {
+      case clang::Linkage::None:
+      case clang::Linkage::Internal:
+      case clang::Linkage::UniqueExternal:
+      case clang::Linkage::VisibleNone:
+      case clang::Linkage::Module:
+        return true;
+      default:
+        return false;
+      };
+    }();
 
     return Info;
   }

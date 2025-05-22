@@ -116,10 +116,11 @@ void clang::exception_scan::reportFunctionDuplications(
 }
 
 void clang::exception_scan::reportDefiniteMatches(
-    const clang::exception_scan::GlobalExceptionInfo &GCG,
-    StringRef PathPrefix) {
-  std::unique_ptr<raw_fd_ostream> Out =
-      openOutputFile(PathPrefix, "definite_results.txt");
+    const clang::exception_scan::GlobalExceptionInfo &GCG, StringRef PathPrefix,
+    bool IsInternalLinkageOnly) {
+  std::unique_ptr<raw_fd_ostream> Out = openOutputFile(
+      PathPrefix, IsInternalLinkageOnly ? "definite_internal_results.txt"
+                                        : "definite_results.txt");
   if (!Out)
     return;
 
@@ -144,6 +145,9 @@ void clang::exception_scan::reportDefiniteMatches(
           continue;
         }
         const auto &FuncInfo = FuncIt->getValue();
+        if (IsInternalLinkageOnly && !FuncInfo.IsConsideredInternalLinkage) {
+          continue;
+        }
         if (FuncInfo.IsDefinition && !FuncInfo.IsInSystemHeader) {
           DefiniteResults.push_back(
               DefiniteResult{USR, FuncInfo.TU, FuncInfo.SourceLocFile,

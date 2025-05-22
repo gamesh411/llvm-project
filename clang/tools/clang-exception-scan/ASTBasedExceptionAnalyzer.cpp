@@ -175,26 +175,20 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
     auto GlobalIt = GEI_.USRToExceptionMap.find(*USR);
     if (GlobalIt != GEI_.USRToExceptionMap.end()) {
       // Convert the global exception info to our local format
-      bool SuccessfullyLoadedGlobalInfo = true;
       LocalFunctionExceptionInfo LocalInfo;
       LocalInfo.Function = Func;
       LocalInfo.State = GlobalIt->second.State;
       LocalInfo.ContainsUnknown = GlobalIt->second.ContainsUnknown;
       LocalInfo.ExceptionSpecType = GlobalIt->second.ExceptionSpecType;
+
       for (const auto &ThrowEvent : GlobalIt->second.ThrowEvents) {
-        if (std::optional<LocalThrowInfo> LocalThrowInfo =
-                fromGlobal(ThrowEvent, Context_)) {
-          LocalInfo.ThrowEvents.push_back(*LocalThrowInfo);
-        } else {
-          SuccessfullyLoadedGlobalInfo = false;
-        }
+        LocalInfo.ThrowEvents.emplace_back(ThrowEvent.SerializedCanonicalType,
+                                           ThrowEvent.Conditions);
       }
 
-      if (SuccessfullyLoadedGlobalInfo) {
-        // Cache the result locally
-        FunctionCache_[Func] = LocalInfo;
-        return LocalInfo;
-      }
+      // Cache the result locally
+      FunctionCache_[Func] = LocalInfo;
+      return LocalInfo;
     }
   }
 
@@ -440,8 +434,18 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(
     QualType CaughtType = Handler->getCaughtType();
     llvm::SmallVector<LocalThrowInfo, 2> StillUncaught;
 
-    for (const auto &ThrowEvent : UncaughtExceptions) {
-      if (canCatchType(CaughtType, ThrowEvent.Type)) {
+    for (auto &ThrowEvent : UncaughtExceptions) {
+      if (!ThrowEvent.ensureAndStoreQualTypeInContext(Context_)) {
+        // TODO: log that we could not get the effective type of the throw
+        // event, and this case we err on the side caution, and assume that the
+        // exception is not caught
+        StillUncaught.push_back(ThrowEvent);
+        continue;
+      }
+
+      assert(ThrowEvent.Type);
+
+      if (canCatchType(CaughtType, ThrowEvent.Type.value())) {
         if (HandlerInfo.State == ExceptionState::Throwing) {
           AnyRethrows = true;
           // Add any new throw events from the handler
@@ -620,21 +624,16 @@ void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
 
       if (GlobalIt->second.State == ExceptionState::Throwing) {
         Info.State = ExceptionState::Throwing;
-        bool SuccessfullyLoadedGlobalInfo = true;
+        // Create a local throw info from the global throw info
         llvm::SmallVector<LocalThrowInfo, 2> LocalThrowEvents;
         for (const auto &ThrowEvent : GlobalIt->second.ThrowEvents) {
-          if (std::optional<LocalThrowInfo> LocalThrowInfo =
-                  fromGlobal(ThrowEvent, Context_)) {
-            LocalThrowEvents.push_back(*LocalThrowInfo);
-          } else {
-            SuccessfullyLoadedGlobalInfo = false;
-          }
+          LocalThrowEvents.emplace_back(ThrowEvent.SerializedCanonicalType,
+                                        ThrowEvent.Conditions);
         }
-        if (SuccessfullyLoadedGlobalInfo) {
-          Info.ThrowEvents.insert(Info.ThrowEvents.end(),
-                                  LocalThrowEvents.begin(),
-                                  LocalThrowEvents.end());
-        }
+        Info.ThrowEvents.insert(Info.ThrowEvents.end(),
+                                LocalThrowEvents.begin(),
+                                LocalThrowEvents.end());
+        // TODO: check if we need to set Changed_ = true;
       }
 
       // Check if the callee has a noexcept specification but our analysis
@@ -651,9 +650,16 @@ void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
       }
 
       if (GlobalIt->second.ContainsUnknown) {
-        Info.ContainsUnknown = true;
+        if (!Info.ContainsUnknown) {
+          Info.ContainsUnknown = true;
+          // TODO: check if we need to set Changed_ = true;
+        }
+
         if (GlobalIt->second.State == ExceptionState::Unknown) {
-          Info.State = ExceptionState::Unknown;
+          if (Info.State != ExceptionState::Unknown) {
+            Info.State = ExceptionState::Unknown;
+            // TODO: check if we need to set Changed_ = true;
+          }
         }
       }
       return;

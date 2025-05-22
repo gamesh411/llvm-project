@@ -43,7 +43,8 @@ void reportAllFunctions(const GlobalExceptionInfo &GCG,
 void reportFunctionDuplications(const GlobalExceptionInfo &GCG,
                                 llvm::StringRef PathPrefix);
 void reportDefiniteMatches(const GlobalExceptionInfo &GCG,
-                           llvm::StringRef PathPrefix);
+                           llvm::StringRef PathPrefix,
+                           bool IsInternalLinkageOnly);
 void reportUnknownCausedMisMatches(const GlobalExceptionInfo &GCG,
                                    llvm::StringRef PathPrefix);
 void reportNoexceptDependees(const GlobalExceptionInfo &GCG,

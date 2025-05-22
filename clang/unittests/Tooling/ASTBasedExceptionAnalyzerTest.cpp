@@ -477,7 +477,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, TryCatchAnalysis) {
   ASSERT_FALSE(CatchRethrowInfo.ThrowEvents.empty());
   bool hasLogicError = false;
   for (const auto &ET : CatchRethrowInfo.ThrowEvents) {
-    if (ET.Type.getAsString().find("logic_error") != std::string::npos)
+    if (ET.Type &&
+        ET.Type->getAsString().find("logic_error") != std::string::npos)
       hasLogicError = true;
   }
   EXPECT_TRUE(hasLogicError);
@@ -709,7 +710,7 @@ TEST_F(ASTBasedExceptionAnalyzerTest, NestedTryCatchInTryBlock) {
   auto InnerInfo = Analyzer.analyzeFunction(Inner);
   EXPECT_EQ(InnerInfo.State, ExceptionState::Throwing);
   ASSERT_EQ(InnerInfo.ThrowEvents.size(), 1u);
-  EXPECT_EQ(InnerInfo.ThrowEvents[0].Type.getAsString(), "int");
+  EXPECT_EQ(InnerInfo.ThrowEvents[0].Type->getAsString(), "int");
 
   // Test outer function
   const FunctionDecl *Outer = findFunction(AST.get(), "outer");
@@ -906,7 +907,7 @@ TEST_F(ASTBasedExceptionAnalyzerTest, RethrowExpressions) {
   auto RethrowInCatchInfo = Analyzer.analyzeFunction(RethrowInCatch);
   EXPECT_EQ(RethrowInCatchInfo.State, ExceptionState::Throwing);
   ASSERT_FALSE(RethrowInCatchInfo.ThrowEvents.empty());
-  EXPECT_TRUE(RethrowInCatchInfo.ThrowEvents[0].Type.getAsString().find(
+  EXPECT_TRUE(RethrowInCatchInfo.ThrowEvents[0].Type->getAsString().find(
                   "runtime_error") != std::string::npos);
 
   const FunctionDecl *RethrowNested = findFunction(AST.get(), "rethrowNested");
@@ -1144,7 +1145,8 @@ TEST_F(ASTBasedExceptionAnalyzerTest, LambdaThrowTest) {
   EXPECT_FALSE(LambdaThrowInfo.ContainsUnknown);
   ASSERT_EQ(LambdaThrowInfo.ThrowEvents.size(), 1u);
   EXPECT_TRUE(LambdaThrowInfo.ThrowEvents[0]
-                  .Type->isIntegerType()); // Lambda throws int
+                  .Type.value()
+                  ->isIntegerType()); // Lambda throws int
 
   // Test function_with_immediately_invoked_lambda_throw
   const FunctionDecl *ImmediatelyInvokedLambdaThrowFunc =
@@ -1155,9 +1157,9 @@ TEST_F(ASTBasedExceptionAnalyzerTest, LambdaThrowTest) {
   EXPECT_EQ(ImmediatelyInvokedLambdaThrowInfo.State, ExceptionState::Throwing);
   EXPECT_FALSE(ImmediatelyInvokedLambdaThrowInfo.ContainsUnknown);
   ASSERT_EQ(ImmediatelyInvokedLambdaThrowInfo.ThrowEvents.size(), 1u);
-  EXPECT_TRUE(
-      ImmediatelyInvokedLambdaThrowInfo.ThrowEvents[0]
-          .Type->isIntegerType()); // Immediately invoked lambda throws int
+  EXPECT_TRUE(ImmediatelyInvokedLambdaThrowInfo.ThrowEvents[0]
+                  .Type.value()
+                  ->isIntegerType()); // Immediately invoked lambda throws int
 
   // Test function_with_unused_lambda_throw
   const FunctionDecl *UnusedLambdaFunc =
@@ -1225,7 +1227,7 @@ TEST_F(ASTBasedExceptionAnalyzerTest, RecursiveFunctionCalls) {
   EXPECT_EQ(RecursiveThrowInfo.State, ExceptionState::Throwing);
   EXPECT_FALSE(RecursiveThrowInfo.ContainsUnknown);
   ASSERT_FALSE(RecursiveThrowInfo.ThrowEvents.empty());
-  EXPECT_TRUE(RecursiveThrowInfo.ThrowEvents[0].Type->isIntegerType());
+  EXPECT_TRUE(RecursiveThrowInfo.ThrowEvents[0].Type.value()->isIntegerType());
 
   // Test recursiveNoThrow function
   const FunctionDecl *RecursiveNoThrow =

@@ -33,7 +33,11 @@ struct GlobalExceptionCondition {
 
 /// Represents information about a specific exception type
 struct LocalThrowInfo {
-  QualType Type; ///< The exception type
+  std::optional<QualType> Type; ///< The exception type
+  std::string
+      SerializedCanonicalType; ///< String representation of the exception type,
+                               ///< because we use this with AST matchers, we
+                               ///< store it as a std::string
   llvm::SmallVector<GlobalExceptionCondition, 4>
       Conditions; ///< Conditions under which this type is thrown
 
@@ -42,67 +46,86 @@ struct LocalThrowInfo {
   LocalThrowInfo(
       QualType Type,
       const llvm::SmallVector<GlobalExceptionCondition, 4> &Conditions)
-      : Type(Type), Conditions(Conditions) {}
+      : Type(Type), SerializedCanonicalType(Type.getAsString()),
+        Conditions(Conditions) {}
+
+  LocalThrowInfo(
+      const std::string &SerializedCanonicalType,
+      const llvm::SmallVector<GlobalExceptionCondition, 4> &Conditions)
+      : SerializedCanonicalType(SerializedCanonicalType),
+        Conditions(Conditions) {}
+
+  bool ensureAndStoreQualTypeInContext(ASTContext &Context) {
+    if (Type) {
+      return true;
+    }
+
+    if (SerializedCanonicalType.empty()) {
+      return false;
+    }
+
+    using namespace clang::ast_matchers;
+    const auto Matcher =
+        qualType(hasCanonicalType(asString(SerializedCanonicalType)))
+            .bind("exception_type");
+
+    class TypeMatchCallback : public MatchFinder::MatchCallback {
+    public:
+      TypeMatchCallback(std::optional<QualType> &Result) : Result(Result) {}
+
+      void run(const MatchFinder::MatchResult &MatchResult) override {
+        const QualType *Type =
+            MatchResult.Nodes.getNodeAs<QualType>("exception_type");
+        if (!Type) {
+          return;
+        }
+        Result = *Type;
+      }
+
+    private:
+      std::optional<QualType> &Result;
+    };
+
+    // Create the callback and add the matcher
+    std::optional<QualType> Result;
+    TypeMatchCallback Callback(Result);
+    MatchFinder Finder;
+    Finder.addMatcher(Matcher, &Callback);
+
+    // Run the matcher on the AST
+    Finder.matchAST(Context);
+
+    if (Result) {
+      Type = *Result;
+      return true;
+    }
+
+    return false;
+  }
 };
 
 struct GlobalThrowInfo {
-  OwningStringTy Type; ///< The exception type
+  std::string
+      SerializedCanonicalType; ///< We use std::string because we
+                               ///< need to pass it to AST matchers eventually
   llvm::SmallVector<GlobalExceptionCondition, 4>
       Conditions; ///< Conditions under which this type is thrown
 };
 
 inline GlobalThrowInfo fromLocal(const LocalThrowInfo &ThrowInfo,
                                  ASTContext &Context) {
-  OwningStringTy Type;
-  llvm::raw_svector_ostream TypeOS(Type);
-  TypeOS << ThrowInfo.Type.getAsString();
-
-  return GlobalThrowInfo{Type, ThrowInfo.Conditions};
-}
-
-inline std::optional<LocalThrowInfo>
-fromGlobal(const GlobalThrowInfo &ThrowInfo, ASTContext &Context) {
-  using namespace clang::ast_matchers;
-
-  std::optional<LocalThrowInfo> Result;
-
-  // Create a matcher to find the type
-  auto Matcher =
-      qualType(hasCanonicalType(asString(ThrowInfo.Type.str().str())))
-          .bind("exception_type");
-
-  // Create a callback class to handle the match
-  class TypeMatchCallback : public MatchFinder::MatchCallback {
-  public:
-    TypeMatchCallback(std::optional<LocalThrowInfo> &Result,
-                      const GlobalThrowInfo &ThrowInfo)
-        : Result(Result), ThrowInfo(ThrowInfo) {}
-
-    void run(const MatchFinder::MatchResult &MatchResult) override {
-      const QualType *Type =
-          MatchResult.Nodes.getNodeAs<QualType>("exception_type");
-      if (!Type) {
-        return;
-      }
-
-      // Use the constructor instead of emplace
-      Result = LocalThrowInfo(*Type, ThrowInfo.Conditions);
-    }
-
-  private:
-    std::optional<LocalThrowInfo> &Result;
-    const GlobalThrowInfo &ThrowInfo;
+  if (!ThrowInfo.SerializedCanonicalType.empty()) {
+    return GlobalThrowInfo{ThrowInfo.SerializedCanonicalType,
+                           ThrowInfo.Conditions};
   };
 
-  // Create the callback and add the matcher
-  TypeMatchCallback Callback(Result, ThrowInfo);
-  MatchFinder Finder;
-  Finder.addMatcher(Matcher, &Callback);
+  if (ThrowInfo.Type) {
+    return GlobalThrowInfo{
+        ThrowInfo.Type.value().getCanonicalType().getAsString(),
+        ThrowInfo.Conditions};
+  }
 
-  // Run the matcher on the AST
-  Finder.matchAST(Context);
-
-  return Result;
+  llvm_unreachable("No serialized canonical type and no type");
 }
 
 /// Represents detailed exception information for a function

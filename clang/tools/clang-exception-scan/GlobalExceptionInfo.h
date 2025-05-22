@@ -30,6 +30,7 @@ struct FunctionMappingInfo {
   bool IsDefinition;
   bool IsInSystemHeader;
   bool IsInMainFile;
+  bool IsConsideredInternalLinkage;
 };
 
 /// Information about a function call
