@@ -73,6 +73,7 @@ add_clang_unittest(ToolingTests
   ToolingTest.cpp
   TransformerTest.cpp
   NoexceptDependeeTest.cpp
+  TypeMappingConsumerTest.cpp
 )
 
 target_include_directories(ToolingTests PRIVATE

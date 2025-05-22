@@ -54,54 +54,6 @@ struct LocalThrowInfo {
       const llvm::SmallVector<GlobalExceptionCondition, 4> &Conditions)
       : SerializedCanonicalType(SerializedCanonicalType),
         Conditions(Conditions) {}
-
-  bool ensureAndStoreQualTypeInContext(ASTContext &Context) {
-    if (Type) {
-      return true;
-    }
-
-    if (SerializedCanonicalType.empty()) {
-      return false;
-    }
-
-    using namespace clang::ast_matchers;
-    const auto Matcher =
-        qualType(hasCanonicalType(asString(SerializedCanonicalType)))
-            .bind("exception_type");
-
-    class TypeMatchCallback : public MatchFinder::MatchCallback {
-    public:
-      TypeMatchCallback(std::optional<QualType> &Result) : Result(Result) {}
-
-      void run(const MatchFinder::MatchResult &MatchResult) override {
-        const QualType *Type =
-            MatchResult.Nodes.getNodeAs<QualType>("exception_type");
-        if (!Type) {
-          return;
-        }
-        Result = *Type;
-      }
-
-    private:
-      std::optional<QualType> &Result;
-    };
-
-    // Create the callback and add the matcher
-    std::optional<QualType> Result;
-    TypeMatchCallback Callback(Result);
-    MatchFinder Finder;
-    Finder.addMatcher(Matcher, &Callback);
-
-    // Run the matcher on the AST
-    Finder.matchAST(Context);
-
-    if (Result) {
-      Type = *Result;
-      return true;
-    }
-
-    return false;
-  }
 };
 
 struct GlobalThrowInfo {

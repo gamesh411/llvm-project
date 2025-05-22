@@ -8,6 +8,7 @@ add_clang_library(clangExceptionScan
   CallGraphGeneratorConsumer.cpp
   USRMappingConsumer.cpp
   NoexceptDependeeConsumer.cpp
+  TypeMappingConsumer.cpp
   TUDependencyGraph.cpp
   PARTIAL_SOURCES_INTENDED
   LINK_LIBS
@@ -28,6 +29,7 @@ install(FILES
   CallGraphGeneratorConsumer.h
   USRMappingConsumer.h
   NoexceptDependeeConsumer.h
+  TypeMappingConsumer.h
   GlobalExceptionInfo.h
   TUDependencyGraph.h
   DESTINATION include/clang/Tooling/clang-exception-scan

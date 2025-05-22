@@ -16,6 +16,7 @@
 #include "CallGraphGeneratorConsumer.h"
 #include "CollectExceptionInfo.h"
 #include "NoexceptDependeeConsumer.h"
+#include "TypeMappingConsumer.h"
 #include "USRMappingConsumer.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -227,15 +228,13 @@ bool runAnalysisPhase(llvm::StringRef PhaseName,
     sync_outs << "Monitor task finished\n";
 
     if (FailedFlag.test()) {
-      llvm::errs() << "Error: " << PhaseName << " failed for "
-                   << FailedCount.load(std::memory_order_relaxed)
-                   << " file(s).\n";
+      sync_errs << "Error: " << PhaseName << " failed for "
+                << FailedCount.load(std::memory_order_relaxed) << " file(s).\n";
       return false;
     }
 
-    llvm::outs() << PhaseName << " succeeded for all "
-                 << SuccessCount.load(std::memory_order_relaxed)
-                 << " file(s).\n";
+    sync_outs << PhaseName << " succeeded for all "
+              << SuccessCount.load(std::memory_order_relaxed) << " file(s).\n";
     return true;
 
     // Sequential
@@ -426,6 +425,18 @@ int main(int argc, const char **argv) {
   for (const auto &Path : SortedSourcePaths) {
     sync_outs << "- " << Path << "\n";
   }
+
+  // --- Phase 2.5: Type Mapping ---
+  auto TypeMappingFactory = std::make_unique<TypeMappingActionFactory>(GEI);
+  std::atomic_flag TypeMappingFailed = ATOMIC_FLAG_INIT;
+  bool TypeMappingSuccess = runAnalysisPhase</*Parallel=*/false>(
+      "TypeMapping", *Compilations, SortedSourcePaths, TypeMappingFactory.get(),
+      TypeMappingFailed);
+  if (!TypeMappingSuccess) {
+    sync_errs << "Type mapping failed, stopping analysis...\n";
+    return 1; // Exit if the phase failed
+  }
+
   // --- Phase 3: Main Analysis ---
   std::atomic_flag ExceptionAnalyzerChanged = ATOMIC_FLAG_INIT;
   auto ExceptionAnalyzerFactory =

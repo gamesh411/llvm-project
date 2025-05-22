@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace clang;
@@ -435,26 +436,29 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(
     llvm::SmallVector<LocalThrowInfo, 2> StillUncaught;
 
     for (auto &ThrowEvent : UncaughtExceptions) {
-      if (!ThrowEvent.ensureAndStoreQualTypeInContext(Context_)) {
-        // TODO: log that we could not get the effective type of the throw
-        // event, and this case we err on the side caution, and assume that the
-        // exception is not caught
-        StillUncaught.push_back(ThrowEvent);
-        continue;
+      if (!ThrowEvent.Type) {
+        if (canCatchGlobalType(CaughtType,
+                               ThrowEvent.SerializedCanonicalType)) {
+          // TODO: log that we could not get the effective type of the throw
+          // event, and this case we err on the side caution, and assume that
+          // the exception is not caught
+          StillUncaught.push_back(ThrowEvent);
+          continue;
+        }
       }
 
-      assert(ThrowEvent.Type);
-
-      if (canCatchType(CaughtType, ThrowEvent.Type.value())) {
-        if (HandlerInfo.State == ExceptionState::Throwing) {
-          AnyRethrows = true;
-          // Add any new throw events from the handler
-          TryInfo.ThrowEvents =
-              HandlerInfo.ThrowEvents; // Replace instead of append
+      if (ThrowEvent.Type) {
+        if (canCatchLocalType(CaughtType, ThrowEvent.Type.value())) {
+          if (HandlerInfo.State == ExceptionState::Throwing) {
+            AnyRethrows = true;
+            // Add any new throw events from the handler
+            TryInfo.ThrowEvents =
+                HandlerInfo.ThrowEvents; // Replace instead of append
+          }
+        } else {
+          // This exception is not caught by this handler
+          StillUncaught.push_back(ThrowEvent);
         }
-      } else {
-        // This exception is not caught by this handler
-        StillUncaught.push_back(ThrowEvent);
       }
     }
 
@@ -716,76 +720,125 @@ void ASTBasedExceptionAnalyzer::analyzeCallExpr(
   analyzeFunctionCall(Call->getDirectCallee(), Info);
 }
 
-bool ASTBasedExceptionAnalyzer::canCatchType(QualType CaughtType,
-                                             QualType ThrownType) const {
-  // If the types are the same, it's a direct catch
-  if (Context_.hasSameType(CaughtType, ThrownType)) {
-    return true;
+static void collectCXXRecordDecls(
+    const DeclContext *DC,
+    std::unordered_map<std::string, const CXXRecordDecl *> &typeToDecl) {
+  for (const auto *D : DC->decls()) {
+    if (const auto *RD = llvm::dyn_cast<CXXRecordDecl>(D)) {
+      if (RD->hasDefinition()) {
+        QualType QT = RD->getTypeForDecl() ? QualType(RD->getTypeForDecl(), 0)
+                                           : QualType();
+        if (!QT.isNull()) {
+          QualType NormQT = QT.getCanonicalType();
+          while (NormQT->isReferenceType() || NormQT->isPointerType())
+            NormQT = NormQT->getPointeeType();
+          NormQT = NormQT.getUnqualifiedType();
+          std::string ThisType = NormQT.getAsString();
+          typeToDecl[ThisType] = RD;
+        }
+      }
+    }
+    if (const auto *DC2 = llvm::dyn_cast<DeclContext>(D)) {
+      collectCXXRecordDecls(DC2, typeToDecl);
+    }
   }
+}
 
-  // Get the unqualified types and handle references
+bool ASTBasedExceptionAnalyzer::canCatchLocalType(QualType CaughtType,
+                                                  QualType ThrownType) const {
   if (CaughtType->isReferenceType()) {
     CaughtType = CaughtType->getPointeeType();
   }
   if (ThrownType->isReferenceType()) {
     ThrownType = ThrownType->getPointeeType();
   }
-  CaughtType = CaughtType.getUnqualifiedType();
-  ThrownType = ThrownType.getUnqualifiedType();
 
-  // Check for direct match after dereferencing
-  if (Context_.hasSameType(CaughtType, ThrownType)) {
-    return true;
+  const void *currentTU =
+      static_cast<const void *>(Context_.getTranslationUnitDecl());
+  if (lastTU_ != currentTU) {
+    typeToDecl_.clear();
+    collectCXXRecordDecls(Context_.getTranslationUnitDecl(), typeToDecl_);
+    lastTU_ = currentTU;
   }
 
-  // Handle pointer types
   if (CaughtType->isPointerType() && ThrownType->isPointerType()) {
-    return canCatchType(CaughtType->getPointeeType(),
-                        ThrownType->getPointeeType());
+    return canCatchLocalType(CaughtType->getPointeeType(),
+                             ThrownType->getPointeeType());
   }
-
-  // Handle nullptr_t
   if (ThrownType->isNullPtrType() && CaughtType->isPointerType()) {
     return true;
   }
 
-  // Handle class types
-  const CXXRecordDecl *CaughtDecl = CaughtType->getAsCXXRecordDecl();
-  const CXXRecordDecl *ThrownDecl = ThrownType->getAsCXXRecordDecl();
+  QualType NormCaught = CaughtType.getCanonicalType().getUnqualifiedType();
+  QualType NormThrown = ThrownType.getCanonicalType().getUnqualifiedType();
 
-  if (!CaughtDecl || !ThrownDecl) {
-    return false;
+  if (!NormCaught->isRecordType() && !NormThrown->isRecordType()) {
+    return Context_.hasSameType(NormCaught.getUnqualifiedType(),
+                                NormThrown.getUnqualifiedType());
   }
 
-  // Check if ThrownDecl is derived from CaughtDecl
-  CXXBasePaths Paths;
-  bool IsDerived = ThrownDecl->isDerivedFrom(CaughtDecl, Paths);
+  std::string CatchTypeStr = NormCaught.getAsString();
+  std::string ThrownTypeStr = NormThrown.getAsString();
 
-  if (!IsDerived) {
-    return false;
-  }
-
-  // Check for ambiguous paths
-  bool IsAmbiguous = Paths.isAmbiguous(Context_.getCanonicalType(CaughtType));
-
-  if (IsAmbiguous) {
-    return false;
-  }
-
-  // Check that at least one path has all public inheritance
-  for (const CXXBasePath &Path : Paths) {
-    bool AllPublic = true;
-    for (const CXXBasePathElement &Element : Path) {
-      if (Element.Base->getAccessSpecifier() != AS_public) {
-        AllPublic = false;
-        break;
+  auto catchIt = typeToDecl_.find(CatchTypeStr);
+  auto thrownIt = typeToDecl_.find(ThrownTypeStr);
+  if (thrownIt != typeToDecl_.end()) {
+    if (catchIt != typeToDecl_.end()) {
+      const CXXRecordDecl *CaughtDecl = catchIt->second;
+      const CXXRecordDecl *ThrownDecl = thrownIt->second;
+      if (CaughtDecl == ThrownDecl) {
+        return true;
       }
+      CXXBasePaths Paths;
+      if (!ThrownDecl->isDerivedFrom(CaughtDecl, Paths)) {
+        return false;
+      }
+      if (Paths.isAmbiguous(CanQualType::CreateUnsafe(
+              Context_.getCanonicalType(Context_.getRecordType(CaughtDecl))))) {
+        return false;
+      }
+      for (const CXXBasePath &Path : Paths) {
+        bool AllPublic = true;
+        for (const CXXBasePathElement &Element : Path) {
+          if (Element.Base->getAccessSpecifier() != AS_public) {
+            AllPublic = false;
+            break;
+          }
+        }
+        if (AllPublic) {
+          return true;
+        }
+      }
+      return false;
     }
-    if (AllPublic) {
+    return false;
+  }
+  return false;
+}
+
+bool ASTBasedExceptionAnalyzer::canCatchGlobalType(
+    QualType CaughtType, const std::string &ThrownTypeStr) const {
+  if (CaughtType->isReferenceType()) {
+    CaughtType = CaughtType->getPointeeType();
+  }
+  if (CaughtType->isPointerType()) {
+    // For pointer types, we only support exact match for cross-TU
+    CaughtType = CaughtType.getCanonicalType().getUnqualifiedType();
+    std::string CatchTypeStr = CaughtType.getAsString();
+    if (CatchTypeStr == ThrownTypeStr) {
+      return true;
+    }
+    return false;
+  }
+  QualType NormCaught = CaughtType.getCanonicalType().getUnqualifiedType();
+  std::string CatchTypeStr = NormCaught.getAsString();
+  std::lock_guard<std::mutex> Lock(GEI_.CatchTypeToDescendantsMutex);
+  auto It = GEI_.CatchTypeToDescendants.find(CatchTypeStr);
+  if (It != GEI_.CatchTypeToDescendants.end()) {
+    if (It->second.contains(ThrownTypeStr)) {
       return true;
     }
   }
-
   return false;
 }
 

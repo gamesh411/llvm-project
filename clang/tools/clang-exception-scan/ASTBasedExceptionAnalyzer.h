@@ -14,6 +14,7 @@
 #include "llvm/ADT/StringRef.h"
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace clang {
@@ -127,6 +128,10 @@ private:
   /// Build a map of statements to their parents
   void updateParentMap(const Stmt *S);
 
+  bool canCatchLocalType(QualType CaughtType, QualType ThrownType) const;
+  bool canCatchGlobalType(QualType CaughtType,
+                          const std::string &ThrownTypeStr) const;
+
   ASTContext &Context_; ///< AST context
   GlobalExceptionInfo &GEI_;
   bool IgnoreBadAlloc_; ///< Whether to ignore std::bad_alloc
@@ -141,6 +146,8 @@ private:
       AnalyzingFunctions_; ///< Tracks functions currently being analyzed to
                            ///< detect recursion
   bool Changed_{false};
+  mutable std::unordered_map<std::string, const CXXRecordDecl *> typeToDecl_;
+  mutable const void *lastTU_ = nullptr;
 };
 
 } // namespace exception_scan

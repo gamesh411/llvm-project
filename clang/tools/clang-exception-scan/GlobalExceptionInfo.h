@@ -143,10 +143,10 @@ struct GlobalExceptionInfo {
 
   using counter_t = std::atomic<unsigned long>;
   counter_t TotalFunctionDefinitions{
-      0};                          ///< Total non-header function definitions
+      0}; ///< Total non-header function definitions
   counter_t TotalFunctionDefinitionsNotInSystemHeaders{
-      0}; ///< Total non-system-header function definitions
-  counter_t TotalTryBlocks{0};     ///< Total non-system-header try blocks
+      0};                      ///< Total non-system-header function definitions
+  counter_t TotalTryBlocks{0}; ///< Total non-system-header try blocks
   counter_t TotalTryBlocksNotInSystemHeaders{
       0};                          ///< Total non-system-header try blocks
   counter_t TotalCatchHandlers{0}; ///< Total non-system-header catch handlers
@@ -166,6 +166,12 @@ struct GlobalExceptionInfo {
   // already heavily using mutexes.
   static_assert(std::atomic<counter_t>::is_always_lock_free,
                 "TotalFunctionDefinitions must be lock-free");
+
+  llvm::StringMap<llvm::StringSet<>>
+      CatchTypeToDescendants; ///< Map from catch type string to set of
+                              ///< descendant type strings
+  mutable std::mutex
+      CatchTypeToDescendantsMutex; ///< Mutex for catch type mapping
 };
 
 } // namespace exception_scan
