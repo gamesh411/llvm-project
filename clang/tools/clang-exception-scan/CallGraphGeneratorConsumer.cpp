@@ -176,7 +176,7 @@ void CallGraphGeneratorConsumer::HandleTranslationUnit(ASTContext &Context) {
     std::lock_guard<std::mutex> Lock(GCG_.TUsMutex);
     const auto Result = GCG_.TUs.insert(CurrentTU);
     if (Result.second) {
-      ChangedFlag_.test_and_set(std::memory_order_relaxed);
+      ChangedFlag_.store(true, std::memory_order_relaxed);
     }
   }
 
@@ -186,7 +186,7 @@ void CallGraphGeneratorConsumer::HandleTranslationUnit(ASTContext &Context) {
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
 
   if (Visitor.hasMadeChanges()) {
-    ChangedFlag_.test_and_set(std::memory_order_relaxed);
+    ChangedFlag_.store(true, std::memory_order_relaxed);
   }
 }
 

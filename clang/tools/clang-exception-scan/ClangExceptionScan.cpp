@@ -62,7 +62,7 @@ static cl::opt<std::string>
 class ExceptionAnalyzerAction : public clang::ASTFrontendAction {
 public:
   ExceptionAnalyzerAction(GlobalExceptionInfo &GCG,
-                          std::atomic_flag &ChangedFlag)
+                          std::atomic<bool> &ChangedFlag)
       : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
@@ -70,7 +70,7 @@ public:
     class ExceptionAnalyzerConsumer : public clang::ASTConsumer {
     public:
       ExceptionAnalyzerConsumer(GlobalExceptionInfo &GCG,
-                                std::atomic_flag &ChangedFlag)
+                                std::atomic<bool> &ChangedFlag)
           : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
       void HandleTranslationUnit(ASTContext &Context) override {
@@ -83,13 +83,13 @@ public:
           }
         }
         if (ExceptionAnalyzer.hasChanged()) {
-          ChangedFlag_.test_and_set(std::memory_order_relaxed);
+          ChangedFlag_.store(true, std::memory_order_relaxed);
         }
       }
 
     private:
       GlobalExceptionInfo &GCG_;
-      std::atomic_flag &ChangedFlag_;
+      std::atomic<bool> &ChangedFlag_;
     };
 
     return std::make_unique<ExceptionAnalyzerConsumer>(GCG_, ChangedFlag_);
@@ -97,7 +97,7 @@ public:
 
 private:
   GlobalExceptionInfo &GCG_;
-  std::atomic_flag &ChangedFlag_;
+  std::atomic<bool> &ChangedFlag_;
 };
 
 // Factory for our custom action
@@ -105,7 +105,7 @@ class ExceptionAnalyzerActionFactory
     : public clang::tooling::FrontendActionFactory {
 public:
   ExceptionAnalyzerActionFactory(GlobalExceptionInfo &GCG,
-                                 std::atomic_flag &ChangedFlag)
+                                 std::atomic<bool> &ChangedFlag)
       : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   std::unique_ptr<clang::FrontendAction> create() override {
@@ -114,7 +114,7 @@ public:
 
 private:
   GlobalExceptionInfo &GCG_;
-  std::atomic_flag &ChangedFlag_;
+  std::atomic<bool> &ChangedFlag_;
 };
 
 namespace {
@@ -163,13 +163,15 @@ bool runAnalysisPhase(llvm::StringRef PhaseName,
                       const clang::tooling::CompilationDatabase &Compilations,
                       const std::vector<std::string> &SourceFiles,
                       clang::tooling::FrontendActionFactory *Factory,
-                      std::atomic_flag &FailedFlag) {
+                      std::atomic<bool> &FailedFlag) {
   if constexpr (Parallel) {
     std::atomic<size_t> SuccessCount{0u};
     std::atomic<size_t> FailedCount{0u};
     sync_outs << "Running " << PhaseName << " in parallel on all files... \n";
     llvm::DefaultThreadPool Pool;
-    FailedFlag.clear(); // Ensure the flag is clear before starting
+    FailedFlag.store(
+        false,
+        std::memory_order_relaxed); // Ensure the flag is clear before starting
 
     llvm::ThreadPoolTaskGroup MainAnalysisTasks(Pool);
 
@@ -190,7 +192,7 @@ bool runAnalysisPhase(llvm::StringRef PhaseName,
         if (Result != 0) {
           // test_and_set returns the *previous* value. If it was
           // false, this thread is the first one to set it.
-          FailedFlag.test_and_set();
+          FailedFlag.store(true, std::memory_order_relaxed);
           FailedCount.fetch_add(1, std::memory_order_relaxed);
           // Optionally log the specific file that failed
           // llvm::errs() << "Error: " << PhaseName << " failed for
@@ -227,7 +229,7 @@ bool runAnalysisPhase(llvm::StringRef PhaseName,
     Pool.wait(); // Wait for the monitor task
     sync_outs << "Monitor task finished\n";
 
-    if (FailedFlag.test()) {
+    if (FailedFlag.load(std::memory_order_relaxed)) {
       sync_errs << "Error: " << PhaseName << " failed for "
                 << FailedCount.load(std::memory_order_relaxed) << " file(s).\n";
       return false;
@@ -276,8 +278,7 @@ bool runAnalysisPhase(llvm::StringRef PhaseName,
     llvm::outs() << std::string(80, ' ') << '\r';
     llvm::outs().flush();
 
-    if (FailedFlag.test()) {
-      FailedFlag.test_and_set();
+    if (FailedFlag.load(std::memory_order_relaxed)) {
       sync_errs << "Error: " << PhaseName << " failed for " << FailedCount
                 << " file(s).\n";
       return false;
@@ -295,17 +296,17 @@ bool runAnalysisUntilFixedPoint(
     const clang::tooling::CompilationDatabase &Compilations,
     const std::vector<std::string> &SourcePaths,
     clang::tooling::FrontendActionFactory *Factory,
-    std::atomic_flag &FailedFlag, std::atomic_flag &ChangedFlag) {
+    std::atomic<bool> &FailedFlag, std::atomic<bool> &ChangedFlag) {
   bool ReachedFixedPoint = false;
   bool AnalysisSuccess = true; // Assume success to enter the loop
   size_t Iteration = 0;
   while (AnalysisSuccess && !ReachedFixedPoint) {
     ++Iteration;
     sync_outs << PhaseName << " #" << Iteration << '\n';
-    ChangedFlag.clear();
+    ChangedFlag.store(false, std::memory_order_relaxed);
     AnalysisSuccess = runAnalysisPhase<Parallel>(
         PhaseName, Compilations, SourcePaths, Factory, FailedFlag);
-    const bool ChangedFlagValue = ChangedFlag.test(std::memory_order_relaxed);
+    const bool ChangedFlagValue = ChangedFlag.load(std::memory_order_relaxed);
     sync_outs << "ChangedFlag: " << ChangedFlagValue << '\n';
     ReachedFixedPoint = !ChangedFlagValue;
   }
@@ -388,7 +389,7 @@ int main(int argc, const char **argv) {
 
   // --- Phase 1: USR Mapping ---
   auto USRMappingFactory = std::make_unique<USRMappingActionFactory>(GEI);
-  std::atomic_flag USRMappingFailed = ATOMIC_FLAG_INIT;
+  std::atomic<bool> USRMappingFailed{false};
   bool USRMappingSuccess = runAnalysisPhase</*Parallel=*/true>(
       "USRMapping", *Compilations, SourcePaths, USRMappingFactory.get(),
       USRMappingFailed);
@@ -398,11 +399,11 @@ int main(int argc, const char **argv) {
   }
 
   // --- Phase 2: Call Graph Generation ---
-  std::atomic_flag CallGraphGenerationChanged = ATOMIC_FLAG_INIT;
+  std::atomic<bool> CallGraphGenerationChanged{false};
   auto CallGraphGeneratorFactory =
       std::make_unique<CallGraphGeneratorActionFactory>(
           GEI, CallGraphGenerationChanged);
-  std::atomic_flag CallGraphGeneratorFailed = ATOMIC_FLAG_INIT;
+  std::atomic<bool> CallGraphGeneratorFailed{false};
 
   bool CallGraphGeneratorSuccess =
       runAnalysisUntilFixedPoint</*Parallel=*/true>(
@@ -428,7 +429,7 @@ int main(int argc, const char **argv) {
 
   // --- Phase 2.5: Type Mapping ---
   auto TypeMappingFactory = std::make_unique<TypeMappingActionFactory>(GEI);
-  std::atomic_flag TypeMappingFailed = ATOMIC_FLAG_INIT;
+  std::atomic<bool> TypeMappingFailed{false};
   bool TypeMappingSuccess = runAnalysisPhase</*Parallel=*/false>(
       "TypeMapping", *Compilations, SortedSourcePaths, TypeMappingFactory.get(),
       TypeMappingFailed);
@@ -438,11 +439,11 @@ int main(int argc, const char **argv) {
   }
 
   // --- Phase 3: Main Analysis ---
-  std::atomic_flag ExceptionAnalyzerChanged = ATOMIC_FLAG_INIT;
+  std::atomic<bool> ExceptionAnalyzerChanged{false};
   auto ExceptionAnalyzerFactory =
       std::make_unique<ExceptionAnalyzerActionFactory>(
           GEI, ExceptionAnalyzerChanged);
-  std::atomic_flag ExceptionAnalyzerFailed = ATOMIC_FLAG_INIT;
+  std::atomic<bool> ExceptionAnalyzerFailed{false};
   bool ExceptionAnalyzerSuccess =
       runAnalysisUntilFixedPoint</*Parallel=*/false>(
           "MainAnalysis", *Compilations, SortedSourcePaths,

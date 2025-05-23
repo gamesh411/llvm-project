@@ -71,7 +71,7 @@ class CallGraphGeneratorConsumer : public ASTConsumer {
 public:
   explicit CallGraphGeneratorConsumer(StringRef CurrentTU,
                                       GlobalExceptionInfo &GCG,
-                                      std::atomic_flag &ChangedFlag)
+                                      std::atomic<bool> &ChangedFlag)
       : CurrentTU_(CurrentTU.str()), GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   void HandleTranslationUnit(ASTContext &Context) override;
@@ -79,14 +79,14 @@ public:
 private:
   std::string CurrentTU_;
   GlobalExceptionInfo &GCG_;
-  std::atomic_flag &ChangedFlag_;
+  std::atomic<bool> &ChangedFlag_;
 };
 
 // FrontendAction that uses CallGraphGeneratorConsumer
 class CallGraphGeneratorAction : public ASTFrontendAction {
 public:
   explicit CallGraphGeneratorAction(GlobalExceptionInfo &GCG,
-                                    std::atomic_flag &ChangedFlag)
+                                    std::atomic<bool> &ChangedFlag)
       : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
@@ -96,13 +96,13 @@ public:
   }
 
   GlobalExceptionInfo &GCG_;
-  std::atomic_flag &ChangedFlag_;
+  std::atomic<bool> &ChangedFlag_;
 };
 
 class CallGraphGeneratorActionFactory : public tooling::FrontendActionFactory {
 public:
   explicit CallGraphGeneratorActionFactory(GlobalExceptionInfo &GCG,
-                                           std::atomic_flag &ChangedFlag)
+                                           std::atomic<bool> &ChangedFlag)
       : GCG_(GCG), ChangedFlag_(ChangedFlag) {}
 
   std::unique_ptr<FrontendAction> create() override {
@@ -111,7 +111,7 @@ public:
 
 private:
   GlobalExceptionInfo &GCG_;
-  std::atomic_flag &ChangedFlag_;
+  std::atomic<bool> &ChangedFlag_;
 };
 
 /// Generates a DOT file representation of the translation unit dependency graph

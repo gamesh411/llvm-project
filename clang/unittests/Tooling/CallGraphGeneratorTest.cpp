@@ -44,7 +44,7 @@ protected:
     tooling::runToolOnCodeWithArgs(std::make_unique<USRMappingAction>(GEI),
                                    Code, Args, FileName);
     // run call graph generation step
-    std::atomic_flag ChangedFlag = ATOMIC_FLAG_INIT;
+    std::atomic<bool> ChangedFlag;
     tooling::runToolOnCodeWithArgs(
         std::make_unique<CallGraphGeneratorAction>(GEI, ChangedFlag), Code,
         Args, FileName);
@@ -61,7 +61,7 @@ protected:
       tooling::runToolOnCodeWithArgs(std::make_unique<USRMappingAction>(GEI),
                                      Codes[i], Args, FileNames[i]);
       // run call graph generation step
-      std::atomic_flag ChangedFlag = ATOMIC_FLAG_INIT;
+      std::atomic<bool> ChangedFlag{false};
       tooling::runToolOnCodeWithArgs(
           std::make_unique<CallGraphGeneratorAction>(GEI, ChangedFlag),
           Codes[i], Args, FileNames[i]);
