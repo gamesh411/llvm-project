@@ -1,5 +1,4 @@
 #include "CallGraphGeneratorConsumer.h"
-#include "USRMappingConsumer.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
@@ -7,12 +6,10 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
-#include "llvm/Support/GraphWriter.h"
 
 #include <algorithm>
 #include <fstream>
 #include <optional>
-#include <unordered_map>
 #include <unordered_set>
 
 using namespace clang;

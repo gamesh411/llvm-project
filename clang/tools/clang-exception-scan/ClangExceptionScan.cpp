@@ -15,7 +15,6 @@
 #include "ASTBasedExceptionAnalyzer.h"
 #include "CallGraphGeneratorConsumer.h"
 #include "CollectExceptionInfo.h"
-#include "NoexceptDependeeConsumer.h"
 #include "TypeMappingConsumer.h"
 #include "USRMappingConsumer.h"
 
@@ -32,8 +31,7 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <future>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>

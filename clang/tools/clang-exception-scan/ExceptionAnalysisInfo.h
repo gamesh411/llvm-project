@@ -8,12 +8,8 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/Type.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
-#include "clang/Basic/SourceLocation.h"
 
 #include <string>
-#include <vector>
 
 namespace clang {
 namespace exception_scan {

@@ -1,12 +1,10 @@
 #include "USRMappingConsumer.h"
-#include "gtest/gtest.h"
 
-#include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
+#include "gtest/gtest.h"
 
 #include <memory>
 #include <string>
-#include <utility>
 #include <vector>
 
 using namespace clang;

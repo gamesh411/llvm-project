@@ -2,6 +2,7 @@
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_ASTBASEDEXCEPTIONANALYZER_H
 
 #include "ExceptionAnalysisInfo.h"
+
 #include "GlobalExceptionInfo.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -11,8 +12,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/ADT/StringRef.h"
-#include <optional>
+
 #include <string>
 #include <unordered_map>
 #include <vector>

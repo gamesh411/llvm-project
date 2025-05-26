@@ -1,21 +1,14 @@
 #include "CallGraphGeneratorConsumer.h"
+
 #include "GlobalExceptionInfo.h"
 #include "USRMappingConsumer.h"
-#include "gtest/gtest.h"
-
-#include "clang/AST/ASTContext.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
-#include "clang/Frontend/ASTUnit.h"
-#include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/SetOperations.h"
+#include "gtest/gtest.h"
 
 #include <fstream>
-#include <map>
 #include <memory>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 using namespace clang;

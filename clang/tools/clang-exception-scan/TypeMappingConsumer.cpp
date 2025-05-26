@@ -1,7 +1,11 @@
 #include "TypeMappingConsumer.h"
+
+#include "clang/AST/CXXInheritance.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Type.h"
+
 #include <llvm/Support/raw_ostream.h>
 #include <unordered_map>
 #include <unordered_set>

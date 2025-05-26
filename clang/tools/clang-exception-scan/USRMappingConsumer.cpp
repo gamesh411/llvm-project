@@ -1,9 +1,10 @@
 #include "USRMappingConsumer.h"
+
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/CrossTU/CrossTranslationUnit.h"
 #include "llvm/ADT/SmallSet.h"
-#include <llvm/Support/raw_ostream.h>
 
 using namespace clang;
 using namespace clang::exception_scan;

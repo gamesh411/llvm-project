@@ -1,23 +1,13 @@
 #include "CollectExceptionInfo.h"
 #include "GlobalExceptionInfo.h"
 
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/Decl.h"
-#include "clang/Basic/SourceLocation.h"
-#include "clang/CrossTU/CrossTranslationUnit.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <algorithm> // for std::sort
-#include <sstream>
 #include <system_error> // for std::error_code
 
 using namespace llvm;

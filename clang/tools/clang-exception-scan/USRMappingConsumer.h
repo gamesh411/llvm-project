@@ -4,16 +4,11 @@
 #include "GlobalExceptionInfo.h"
 
 #include "clang/AST/ASTConsumer.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Index/USRGeneration.h"
 #include "clang/Tooling/Tooling.h"
-#include <map>
-#include <mutex>
+
 #include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace clang {
 namespace exception_scan {

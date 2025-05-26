@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TUDependencyGraph.h"
+
 #include "gtest/gtest.h"
 
 using namespace clang;

@@ -2,8 +2,8 @@
 #define LLVM_CLANG_TOOLS_EXTRA_CLANG_EXCEPTION_SCAN_COLLECT_EXCEPTIONINFO_H
 
 #include "ExceptionAnalysisInfo.h"
-#include "GlobalExceptionInfo.h"
 
+#include "GlobalExceptionInfo.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <string>

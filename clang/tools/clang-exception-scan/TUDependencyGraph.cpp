@@ -1,5 +1,7 @@
 #include "TUDependencyGraph.h"
-#include "llvm/Support/raw_ostream.h"
+
+#include "llvm/ADT/STLExtras.h"
+
 #include <map>
 
 namespace clang {

@@ -3,13 +3,11 @@
 
 #include "CommonTypes.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 
 #include <mutex>
-#include <string>
 
 namespace clang {
 namespace exception_scan {

@@ -1,11 +1,12 @@
 #include "TypeMappingConsumer.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
 #include "gtest/gtest.h"
+
 #include <memory>
 #include <string>
-#include <unordered_set>
 
 using namespace clang;
 using namespace clang::exception_scan;

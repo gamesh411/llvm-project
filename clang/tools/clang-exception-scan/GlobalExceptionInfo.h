@@ -2,18 +2,15 @@
 #define LLVM_CLANG_TOOLS_CLANG_EXCEPTION_SCAN_GLOBAL_EXCEPTION_INFO_H
 
 #include "CommonTypes.h"
+
 #include "ExceptionAnalysisInfo.h"
 #include "TUDependencyGraph.h"
-
-#include "clang/AST/Decl.h"
-#include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringSet.h"
 
 #include <atomic>
 #include <mutex>
-#include <string>
 #include <vector>
 
 namespace clang {
