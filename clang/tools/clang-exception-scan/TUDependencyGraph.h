@@ -30,7 +30,7 @@ public:
   bool hasDependency(llvm::StringRef From, llvm::StringRef To) const;
 
   /// Get all dependencies of a TU
-  llvm::SmallVector<PathTy, 4> getDependencies(llvm::StringRef TU) const;
+  llvm::SmallVector<PathTy, 4> getDependendees(llvm::StringRef TU) const;
 
   /// Get all TUs that depend on a given TU
   llvm::SmallVector<PathTy, 4> getDependents(llvm::StringRef TU) const;

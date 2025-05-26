@@ -291,7 +291,7 @@ void clang::exception_scan::reportTUDependencies(
   for (const auto &Dependency : GCG.TUDependencies.getAllTUs()) {
     *Out << Dependency << " -> ";
     for (const auto &Dependency :
-         GCG.TUDependencies.getDependencies(Dependency)) {
+         GCG.TUDependencies.getDependendees(Dependency)) {
       *Out << Dependency << " ";
     }
     *Out << "\n";

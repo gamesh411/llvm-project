@@ -42,7 +42,7 @@ TEST(TUDependencyGraphTest, GetDependencies) {
   Graph.addDependency("B", "C");
 
   // Get dependencies of A
-  auto Dependencies = Graph.getDependencies("A");
+  auto Dependencies = Graph.getDependendees("A");
   EXPECT_EQ(Dependencies.size(), 2u);
   EXPECT_TRUE(std::find(Dependencies.begin(), Dependencies.end(), "B") !=
               Dependencies.end());
@@ -50,13 +50,13 @@ TEST(TUDependencyGraphTest, GetDependencies) {
               Dependencies.end());
 
   // Get dependencies of B
-  Dependencies = Graph.getDependencies("B");
+  Dependencies = Graph.getDependendees("B");
   EXPECT_EQ(Dependencies.size(), 1u);
   EXPECT_TRUE(std::find(Dependencies.begin(), Dependencies.end(), "C") !=
               Dependencies.end());
 
   // Get dependencies of C
-  Dependencies = Graph.getDependencies("C");
+  Dependencies = Graph.getDependendees("C");
   EXPECT_EQ(Dependencies.size(), 0u);
 }
 

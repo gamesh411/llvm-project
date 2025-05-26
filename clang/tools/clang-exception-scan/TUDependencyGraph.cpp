@@ -38,28 +38,38 @@ bool TUDependencyGraph::hasDependency(llvm::StringRef From,
   return It->second.count(To);
 }
 
+/// Get the translation units Xs for TU for which there is a dependency in the
+/// form of TU -> X, i.e.: TU depends on X, in case of call a call dependency,
+/// TUs for which there is a call from TU T. Get all translation unit that TU
+/// calls.
 llvm::SmallVector<PathTy, 4>
-TUDependencyGraph::getDependencies(llvm::StringRef TU) const {
+TUDependencyGraph::getDependendees(llvm::StringRef TU) const {
   std::lock_guard<std::mutex> Lock(GraphMutex);
 
   llvm::SmallVector<PathTy, 4> Result;
   auto It = AdjacencyList.find(TU);
-  if (It != AdjacencyList.end()) {
-    for (const auto &Dep : It->second) {
-      Result.push_back(Dep.getKey());
-    }
+  if (It == AdjacencyList.end()) {
+    return Result;
   }
+  Result.reserve(It->second.size());
+  llvm::transform(It->second, std::back_inserter(Result),
+                  [](auto &&TU) { return TU.getKey(); });
 
   return Result;
 }
 
+/// Get the translation units X for TU for which there is a dependency in the
+/// form of X -> T, i.e.: X depends on T, in case of call a call dependency, TUs
+/// that call T.
+/// Get all translation units that call TU.
 llvm::SmallVector<PathTy, 4>
 TUDependencyGraph::getDependents(llvm::StringRef TU) const {
   std::lock_guard<std::mutex> Lock(GraphMutex);
 
   llvm::SmallVector<PathTy, 4> Result;
+  Result.reserve(AdjacencyList.size());
   for (const auto &Entry : AdjacencyList) {
-    if (Entry.second.count(TU)) {
+    if (Entry.second.find(TU) != Entry.second.end()) {
       Result.push_back(Entry.getKey());
     }
   }
