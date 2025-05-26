@@ -139,20 +139,6 @@ private:
 static SynchronizedOstream sync_outs(llvm::outs());
 static SynchronizedOstream sync_errs(llvm::errs());
 
-void logCurrentWorkingDirectory() {
-  static std::mutex LogMutex;
-  SmallVector<char, 128> CurrentWorkingDirectory;
-  llvm::sys::fs::current_path(CurrentWorkingDirectory);
-  std::string CurrentWorkingDirectoryStr(CurrentWorkingDirectory.begin(),
-                                         CurrentWorkingDirectory.end());
-  std::stringstream ThreadId;
-  ThreadId << std::this_thread::get_id();
-  std::string ThreadIdStr = ThreadId.str();
-  std::lock_guard<std::mutex> Lock(LogMutex);
-  sync_outs << "[" << ThreadIdStr
-            << "] Current working directory: " << CurrentWorkingDirectoryStr
-            << '\n';
-}
 
 // Runs a Clang Tool analysis phase in parallel using a thread pool.
 // Returns true on success, false on failure.
