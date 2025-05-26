@@ -81,7 +81,7 @@ public:
           }
         }
         if (ExceptionAnalyzer.hasChanged()) {
-          ChangedFlag_.store(true, std::memory_order_relaxed);
+          ChangedFlag_.store(true, std::memory_order_release);
         }
       }
 
@@ -159,7 +159,7 @@ AnalysisPhaseResult runAnalysisPhaseParallel(
   llvm::DefaultThreadPool Pool;
   ChangedFlag.store(
       false,
-      std::memory_order_relaxed); // Ensure the flag is clear before starting
+      std::memory_order_release); // Ensure the flag is clear before starting
 
   llvm::ThreadPoolTaskGroup MainAnalysisTasks(Pool);
 
@@ -191,7 +191,7 @@ AnalysisPhaseResult runAnalysisPhaseParallel(
       // This could lead to additional work, but it is a very simple solution.
       // TODO: We should be able to do better by tracking which analysis caused
       // the ChangedFlag to be true.
-      if (ChangedFlag.load(std::memory_order_relaxed)) {
+      if (ChangedFlag.load(std::memory_order_acquire)) {
         std::scoped_lock Lock(ChangedFilesMutex);
         for (auto &&depFile : TUDependencies.getDependents(File)) {
           if (llvm::find(AnalysisPhaseResult.ChangedFiles, depFile) ==
@@ -272,7 +272,7 @@ AnalysisPhaseResult runAnalysisPhaseSequential(
       AnalysisPhaseResult.FailedFiles.push_back(File);
     }
 
-    if (ChangedFlag.load(std::memory_order_relaxed)) {
+    if (ChangedFlag.load(std::memory_order_acquire)) {
       for (auto &&File : TUDependencies.getDependents(File)) {
         if (llvm::find(AnalysisPhaseResult.ChangedFiles, File) !=
             AnalysisPhaseResult.ChangedFiles.end()) {
@@ -325,7 +325,7 @@ bool runAnalysisUntilFixedPoint(
   while (AnalysisSuccess && !WorkList.empty()) {
     ++Iteration;
     sync_outs << PhaseName << " #" << Iteration << '\n';
-    ChangedFlag.store(false, std::memory_order_relaxed);
+    ChangedFlag.store(false, std::memory_order_release);
     AnalysisPhaseResult AnalysisPhaseResult =
         PhaseRunner(PhaseName, Compilations, WorkList, Factory, ChangedFlag,
                     TUDependencies);
