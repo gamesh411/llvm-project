@@ -139,99 +139,36 @@ private:
 static SynchronizedOstream sync_outs(llvm::outs());
 static SynchronizedOstream sync_errs(llvm::errs());
 
+struct AnalysisPhaseResult {
+  std::vector<std::string> ChangedFiles;
+  std::vector<std::string> FailedFiles;
+};
 
 // Runs a Clang Tool analysis phase in parallel using a thread pool.
 // Returns true on success, false on failure.
-template <bool Parallel>
-bool runAnalysisPhase(llvm::StringRef PhaseName,
-                      const clang::tooling::CompilationDatabase &Compilations,
-                      const std::vector<std::string> &SourceFiles,
-                      clang::tooling::FrontendActionFactory *Factory,
-                      std::atomic<bool> &FailedFlag) {
-  if constexpr (Parallel) {
-    std::atomic<size_t> SuccessCount{0u};
-    std::atomic<size_t> FailedCount{0u};
-    sync_outs << "Running " << PhaseName << " in parallel on all files... \n";
-    llvm::DefaultThreadPool Pool;
-    FailedFlag.store(
-        false,
-        std::memory_order_relaxed); // Ensure the flag is clear before starting
+AnalysisPhaseResult runAnalysisPhaseParallel(
+    llvm::StringRef PhaseName,
+    const clang::tooling::CompilationDatabase &Compilations,
+    const std::vector<std::string> &SourceFiles,
+    clang::tooling::FrontendActionFactory *Factory,
+    std::atomic<bool> &ChangedFlag, TUDependencyGraph &TUDependencies) {
+  AnalysisPhaseResult AnalysisPhaseResult;
+  std::mutex AnalysisPhaseMutex;
+  std::mutex ChangedFilesMutex;
+  sync_outs << "Running " << PhaseName << " in parallel on all files... \n";
+  llvm::DefaultThreadPool Pool;
+  ChangedFlag.store(
+      false,
+      std::memory_order_relaxed); // Ensure the flag is clear before starting
 
-    llvm::ThreadPoolTaskGroup MainAnalysisTasks(Pool);
+  llvm::ThreadPoolTaskGroup MainAnalysisTasks(Pool);
 
-    for (const std::string &File : SourceFiles) {
-      Pool.async(MainAnalysisTasks, [&Compilations, &File, Factory, &FailedFlag,
-                                     &SuccessCount, &FailedCount]() {
-        // Each thread needs its own ClangTool instance.
-        // Each thread gets an independent copy of a VFS to allow
-        // different concurrent working directories.
-        IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS =
-            llvm::vfs::createPhysicalFileSystem();
-        ClangTool Tool(Compilations, {File},
-                       std::make_shared<PCHContainerOperations>(), FS);
-        // Disable default error messages, we handle failure reporting.
-        Tool.setPrintErrorMessage(false);
-
-        int Result = Tool.run(Factory);
-        if (Result != 0) {
-          // test_and_set returns the *previous* value. If it was
-          // false, this thread is the first one to set it.
-          FailedFlag.store(true, std::memory_order_relaxed);
-          FailedCount.fetch_add(1, std::memory_order_relaxed);
-          // Optionally log the specific file that failed
-          // llvm::errs() << "Error: " << PhaseName << " failed for
-          // file: " << File << " ";
-        } else {
-          SuccessCount.fetch_add(1, std::memory_order_relaxed);
-          // If a ChangedFlag is provided, assume the factory handles
-          // setting it.
-        }
-      });
-    }
-
-    // Monitoring thread
-    Pool.async([&SuccessCount, &FailedCount, &PhaseName,
-                TotalJobs = SourceFiles.size()]() {
-      size_t CurrentSuccess = 0u;
-      size_t CurrentFailed = 0u;
-      while (CurrentSuccess + CurrentFailed < TotalJobs) {
-        CurrentSuccess = SuccessCount.load(std::memory_order_relaxed);
-        CurrentFailed = FailedCount.load(std::memory_order_relaxed);
-        sync_outs << PhaseName << ": " << CurrentSuccess + CurrentFailed << "/"
-                  << TotalJobs << " (" << CurrentFailed << " failed)\r";
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
-      // Clear the progress line
-      sync_outs << std::string(80, ' ') << '\r';
-      sync_outs.flush();
-    });
-
-    sync_outs << "Waiting for main analysis tasks to finish...\n";
-    Pool.wait(MainAnalysisTasks); // Wait for all analysis tasks
-    sync_outs << "Main analysis tasks finished\n";
-    sync_outs << "Waiting for monitor task to finish...\n";
-    Pool.wait(); // Wait for the monitor task
-    sync_outs << "Monitor task finished\n";
-
-    if (FailedFlag.load(std::memory_order_relaxed)) {
-      sync_errs << "Error: " << PhaseName << " failed for "
-                << FailedCount.load(std::memory_order_relaxed) << " file(s).\n";
-      return false;
-    }
-
-    sync_outs << PhaseName << " succeeded for all "
-              << SuccessCount.load(std::memory_order_relaxed) << " file(s).\n";
-    return true;
-
-    // Sequential
-  } else {
-    llvm::outs() << "Running " << PhaseName
-                 << " sequentially on all files... \n";
-
-    size_t SuccessCount{0u};
-    size_t FailedCount{0u};
-    const size_t TotalJobs = SourceFiles.size();
-    for (const std::string &File : SourceFiles) {
+  std::atomic<uint64_t> FinishedCount{0u};
+  for (const std::string &File : SourceFiles) {
+    Pool.async(MainAnalysisTasks, [&Compilations, &File, Factory,
+                                   &FinishedCount, &AnalysisPhaseResult,
+                                   &AnalysisPhaseMutex, &ChangedFlag,
+                                   &TUDependencies, &ChangedFilesMutex] {
       // Each thread needs its own ClangTool instance.
       // Each thread gets an independent copy of a VFS to allow
       // different concurrent working directories.
@@ -244,59 +181,164 @@ bool runAnalysisPhase(llvm::StringRef PhaseName,
 
       int Result = Tool.run(Factory);
       if (Result != 0) {
-        // test_and_set returns the *previous* value. If it was
-        // false, this thread is the first one to set it.
-        ++FailedCount;
-        // Optionally log the specific file that failed
-        // llvm::errs() << "Error: " << PhaseName << " failed for
-        // file: " << File << " ";
-      } else {
-        ++SuccessCount;
-        // If a ChangedFlag is provided, assume the factory handles
-        // setting it.
+        std::scoped_lock Lock(AnalysisPhaseMutex);
+        AnalysisPhaseResult.FailedFiles.push_back(File);
       }
 
-      llvm::outs() << PhaseName << ": " << SuccessCount + FailedCount << "/"
-                   << TotalJobs << " (" << FailedCount << " failed)\r";
-    }
-    llvm::outs() << std::string(80, ' ') << '\r';
-    llvm::outs().flush();
+      // NOTE: This is a very naive approximation of the changed files.
+      // As analyses overlap, we cannot be sure which analysis caused the
+      // ChangedFlag to be true. So we add all files to the ChangedFiles list.
+      // This could lead to additional work, but it is a very simple solution.
+      // TODO: We should be able to do better by tracking which analysis caused
+      // the ChangedFlag to be true.
+      if (ChangedFlag.load(std::memory_order_relaxed)) {
+        std::scoped_lock Lock(ChangedFilesMutex);
+        for (auto &&depFile : TUDependencies.getDependents(File)) {
+          if (llvm::find(AnalysisPhaseResult.ChangedFiles, depFile) ==
+              AnalysisPhaseResult.ChangedFiles.end()) {
+            AnalysisPhaseResult.ChangedFiles.push_back(depFile.str().str());
+          }
+        }
+      }
 
-    if (FailedFlag.load(std::memory_order_relaxed)) {
-      sync_errs << "Error: " << PhaseName << " failed for " << FailedCount
-                << " file(s).\n";
-      return false;
-    }
-
-    llvm::outs() << PhaseName << " succeeded for all " << SuccessCount
-                 << " file(s).\n";
-    return true;
+      FinishedCount.fetch_add(1, std::memory_order_relaxed);
+    });
   }
+
+  // Monitoring thread
+  Pool.async([&AnalysisPhaseResult, &AnalysisPhaseMutex, &PhaseName,
+              &FinishedCount, TotalJobs = SourceFiles.size()]() {
+    uint64_t FinishedJobs = 0u;
+    do {
+      FinishedJobs = FinishedCount.load(std::memory_order_relaxed);
+      uint64_t FailedJobs;
+      {
+        std::scoped_lock Lock(AnalysisPhaseMutex);
+        FailedJobs = AnalysisPhaseResult.FailedFiles.size();
+      }
+      sync_outs << PhaseName << ": " << FinishedJobs << "/" << TotalJobs << " ("
+                << FailedJobs << " failed)\r";
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    } while (FinishedJobs < TotalJobs);
+    sync_outs << std::string(80, ' ') << '\r';
+    sync_outs.flush();
+  });
+
+  sync_outs << "Waiting for main analysis tasks to finish...\n";
+  Pool.wait(MainAnalysisTasks); // Wait for all analysis tasks
+  sync_outs << "Main analysis tasks finished\n";
+  sync_outs << "Waiting for monitor task to finish...\n";
+  Pool.wait(); // Wait for the monitor task
+  sync_outs << "Monitor task finished\n";
+
+  uint64_t FailedCount = AnalysisPhaseResult.FailedFiles.size();
+  if (FailedCount == 0u) {
+    sync_errs << "Error: " << PhaseName << " failed for " << FailedCount
+              << " file(s).\n";
+  }
+
+  sync_outs << PhaseName << " succeeded for all " << SourceFiles.size()
+            << " file(s).\n";
+
+  return AnalysisPhaseResult;
 }
 
-template <bool Parallel>
+// Sequential
+AnalysisPhaseResult runAnalysisPhaseSequential(
+    llvm::StringRef PhaseName,
+    const clang::tooling::CompilationDatabase &Compilations,
+    const std::vector<std::string> &SourceFiles,
+    clang::tooling::FrontendActionFactory *Factory,
+    const std::atomic<bool> &ChangedFlag,
+    const TUDependencyGraph &TUDependencies) {
+  AnalysisPhaseResult AnalysisPhaseResult;
+  llvm::outs() << "Running " << PhaseName << " sequentially on all files... \n";
+
+  uint64_t FinishedCount{0u};
+  const size_t TotalJobs = SourceFiles.size();
+  for (const std::string &File : SourceFiles) {
+    // Each thread needs its own ClangTool instance.
+    // Each thread gets an independent copy of a VFS to allow
+    // different concurrent working directories.
+    IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS =
+        llvm::vfs::createPhysicalFileSystem();
+    ClangTool Tool(Compilations, {File},
+                   std::make_shared<PCHContainerOperations>(), FS);
+    // Disable default error messages, we handle failure reporting.
+    Tool.setPrintErrorMessage(false);
+
+    int Result = Tool.run(Factory);
+    if (Result != 0) {
+      AnalysisPhaseResult.FailedFiles.push_back(File);
+    }
+
+    if (ChangedFlag.load(std::memory_order_relaxed)) {
+      for (auto &&File : TUDependencies.getDependents(File)) {
+        if (llvm::find(AnalysisPhaseResult.ChangedFiles, File) !=
+            AnalysisPhaseResult.ChangedFiles.end()) {
+          continue;
+        }
+        AnalysisPhaseResult.ChangedFiles.push_back(File.str().str());
+      }
+    }
+
+    ++FinishedCount;
+
+    llvm::outs() << PhaseName << ": " << FinishedCount << "/" << TotalJobs
+                 << " (" << AnalysisPhaseResult.FailedFiles.size()
+                 << " failed)\r";
+  }
+  llvm::outs() << std::string(80, ' ') << '\r';
+  llvm::outs().flush();
+
+  uint64_t FailedCount = AnalysisPhaseResult.FailedFiles.size();
+  if (FailedCount == 0u) {
+    sync_errs << "Error: " << PhaseName << " failed for " << FailedCount
+              << " file(s).\n";
+  }
+
+  sync_outs << PhaseName << " succeeded for all " << SourceFiles.size()
+            << " file(s).\n";
+  ;
+
+  return AnalysisPhaseResult;
+}
+
+using AnalysisPhaseRunner = std::function<AnalysisPhaseResult(
+    llvm::StringRef PhaseName,
+    const clang::tooling::CompilationDatabase &Compilations,
+    const std::vector<std::string> &SourceFiles,
+    clang::tooling::FrontendActionFactory *Factory,
+    std::atomic<bool> &ChangedFlag, TUDependencyGraph &TUDependencies)>;
+
 bool runAnalysisUntilFixedPoint(
     const std::string &PhaseName,
     const clang::tooling::CompilationDatabase &Compilations,
     const std::vector<std::string> &SourcePaths,
     clang::tooling::FrontendActionFactory *Factory,
-    std::atomic<bool> &FailedFlag, std::atomic<bool> &ChangedFlag) {
-  bool ReachedFixedPoint = false;
+    std::atomic<bool> &ChangedFlag, TUDependencyGraph &TUDependencies,
+    const AnalysisPhaseRunner &PhaseRunner) {
   bool AnalysisSuccess = true; // Assume success to enter the loop
   size_t Iteration = 0;
-  while (AnalysisSuccess && !ReachedFixedPoint) {
+
+  std::vector<std::string> WorkList{SourcePaths};
+  while (AnalysisSuccess && !WorkList.empty()) {
     ++Iteration;
     sync_outs << PhaseName << " #" << Iteration << '\n';
     ChangedFlag.store(false, std::memory_order_relaxed);
-    AnalysisSuccess = runAnalysisPhase<Parallel>(
-        PhaseName, Compilations, SourcePaths, Factory, FailedFlag);
-    const bool ChangedFlagValue = ChangedFlag.load(std::memory_order_relaxed);
-    sync_outs << "ChangedFlag: " << ChangedFlagValue << '\n';
-    ReachedFixedPoint = !ChangedFlagValue;
+    AnalysisPhaseResult AnalysisPhaseResult =
+        PhaseRunner(PhaseName, Compilations, WorkList, Factory, ChangedFlag,
+                    TUDependencies);
+    if (AnalysisPhaseResult.FailedFiles.size() > 0) {
+      sync_errs << "Error: " << PhaseName << " failed for "
+                << AnalysisPhaseResult.FailedFiles.size() << " file(s).\n";
+      AnalysisSuccess = false;
+      break;
+    }
+    WorkList = AnalysisPhaseResult.ChangedFiles;
   }
+
   if (AnalysisSuccess) {
-    assert(ReachedFixedPoint && "Analysis was updated, but fixed point was "
-                                "not reached");
     sync_outs << PhaseName
               << " was updated, and fixed point was reached "
                  "after "
@@ -372,11 +414,11 @@ int main(int argc, const char **argv) {
   GlobalExceptionInfo GEI;
 
   // --- Phase 1: USR Mapping ---
+  std::atomic<bool> USRMappingChanged{false};
   auto USRMappingFactory = std::make_unique<USRMappingActionFactory>(GEI);
-  std::atomic<bool> USRMappingFailed{false};
-  bool USRMappingSuccess = runAnalysisPhase</*Parallel=*/true>(
+  bool USRMappingSuccess = runAnalysisUntilFixedPoint(
       "USRMapping", *Compilations, SourcePaths, USRMappingFactory.get(),
-      USRMappingFailed);
+      USRMappingChanged, GEI.TUDependencies, runAnalysisPhaseParallel);
   if (!USRMappingSuccess) {
     sync_errs << "USR mapping failed, stopping analysis...\n";
     return 1; // Exit if the phase failed
@@ -387,13 +429,10 @@ int main(int argc, const char **argv) {
   auto CallGraphGeneratorFactory =
       std::make_unique<CallGraphGeneratorActionFactory>(
           GEI, CallGraphGenerationChanged);
-  std::atomic<bool> CallGraphGeneratorFailed{false};
-
-  bool CallGraphGeneratorSuccess =
-      runAnalysisUntilFixedPoint</*Parallel=*/true>(
-          "CallGraphGenerator", *Compilations, SourcePaths,
-          CallGraphGeneratorFactory.get(), CallGraphGeneratorFailed,
-          CallGraphGenerationChanged);
+  bool CallGraphGeneratorSuccess = runAnalysisUntilFixedPoint(
+      "CallGraphGenerator", *Compilations, SourcePaths,
+      CallGraphGeneratorFactory.get(), CallGraphGenerationChanged,
+      GEI.TUDependencies, runAnalysisPhaseParallel);
 
   if (!CallGraphGeneratorSuccess) {
     sync_errs
@@ -412,11 +451,11 @@ int main(int argc, const char **argv) {
   }
 
   // --- Phase 2.5: Type Mapping ---
+  std::atomic<bool> TypeMappingChanged{false};
   auto TypeMappingFactory = std::make_unique<TypeMappingActionFactory>(GEI);
-  std::atomic<bool> TypeMappingFailed{false};
-  bool TypeMappingSuccess = runAnalysisPhase</*Parallel=*/false>(
+  bool TypeMappingSuccess = runAnalysisUntilFixedPoint(
       "TypeMapping", *Compilations, SortedSourcePaths, TypeMappingFactory.get(),
-      TypeMappingFailed);
+      TypeMappingChanged, GEI.TUDependencies, runAnalysisPhaseSequential);
   if (!TypeMappingSuccess) {
     sync_errs << "Type mapping failed, stopping analysis...\n";
     return 1; // Exit if the phase failed
@@ -427,12 +466,10 @@ int main(int argc, const char **argv) {
   auto ExceptionAnalyzerFactory =
       std::make_unique<ExceptionAnalyzerActionFactory>(
           GEI, ExceptionAnalyzerChanged);
-  std::atomic<bool> ExceptionAnalyzerFailed{false};
-  bool ExceptionAnalyzerSuccess =
-      runAnalysisUntilFixedPoint</*Parallel=*/false>(
-          "MainAnalysis", *Compilations, SortedSourcePaths,
-          ExceptionAnalyzerFactory.get(), ExceptionAnalyzerFailed,
-          ExceptionAnalyzerChanged);
+  bool ExceptionAnalyzerSuccess = runAnalysisUntilFixedPoint(
+      "MainAnalysis", *Compilations, SortedSourcePaths,
+      ExceptionAnalyzerFactory.get(), ExceptionAnalyzerChanged,
+      GEI.TUDependencies, runAnalysisPhaseSequential);
   if (!ExceptionAnalyzerSuccess) {
     sync_errs << "Main analysis failed, stopping analysis...\n";
     return 1; // Exit if the phase failed
