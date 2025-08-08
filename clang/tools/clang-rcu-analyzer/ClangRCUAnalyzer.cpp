@@ -44,6 +44,12 @@ public:
     if (!isTargetRCUName(CalleeName))
       return true;
 
+    // Ignore calls that are not located in the main file.
+    const SourceManager &SM = Ctx.getSourceManager();
+    SourceLocation Loc = CE->getExprLoc();
+    if (!SM.isInMainFile(Loc))
+      return true;
+
     // Find the nearest enclosing FunctionDecl by walking parents.
     const FunctionDecl *NearestFD = nullptr;
     DynTypedNode Node = DynTypedNode::create(*CE);
@@ -68,8 +74,6 @@ public:
       FuncName = "<global>";
     }
 
-    const SourceManager &SM = Ctx.getSourceManager();
-    SourceLocation Loc = CE->getExprLoc();
     PresumedLoc PLoc = SM.getPresumedLoc(Loc);
 
     // Print a single-line JSON-ish record that FileCheck can match without
