@@ -15,6 +15,8 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 #include <string>
 
 using namespace clang;
@@ -51,19 +53,7 @@ public:
       return true;
 
     // Find the nearest enclosing FunctionDecl by walking parents.
-    const FunctionDecl *NearestFD = nullptr;
-    DynTypedNode Node = DynTypedNode::create(*CE);
-    while (true) {
-      auto Parents = Ctx.getParents(Node);
-      if (Parents.empty())
-        break;
-      Node = Parents[0];
-      if (const auto *FDp = Node.get<FunctionDecl>()) {
-        NearestFD = FDp;
-        break;
-      }
-      // Keep walking up through statements/declarations.
-    }
+    const FunctionDecl *NearestFD = getEnclosingFunction(CE);
     std::string FuncName;
     if (NearestFD) {
       SmallString<128> S;
@@ -84,11 +74,56 @@ public:
                  << "\",\"line\":" << (PLoc.isValid() ? PLoc.getLine() : 0)
                  << "}\n";
 
+    // Minimal read-section grouping for same-function linear sections:
+    if (NearestFD) {
+      if (CalleeName == "rcu_read_lock") {
+        LockStack[NearestFD].push_back(Loc);
+      } else if (CalleeName == "rcu_read_unlock") {
+        auto It = LockStack.find(NearestFD);
+        if (It != LockStack.end() && !It->second.empty()) {
+          SourceLocation BeginLoc = It->second.pop_back_val();
+          PresumedLoc PBegin = SM.getPresumedLoc(BeginLoc);
+          PresumedLoc PEnd = PLoc;
+
+          SmallString<128> S;
+          llvm::raw_svector_ostream OS(S);
+          NearestFD->printQualifiedName(OS);
+          std::string Fn = std::string(OS.str());
+
+          llvm::outs() << "{\"type\":\"read_section\",\"kind\":\"linear\",\"function\":\""
+                       << Fn << "\",\"file\":\""
+                       << (PBegin.isValid() ? PBegin.getFilename() : "")
+                       << "\",\"begin_line\":"
+                       << (PBegin.isValid() ? PBegin.getLine() : 0)
+                       << ",\"end_line\":" << (PEnd.isValid() ? PEnd.getLine() : 0)
+                       << "}\n";
+        }
+      }
+    }
+
     return true;
   }
 
 private:
+  const FunctionDecl *getEnclosingFunction(const Stmt *S) {
+    const FunctionDecl *NearestFD = nullptr;
+    DynTypedNode Node = DynTypedNode::create(*S);
+    while (true) {
+      auto Parents = Ctx.getParents(Node);
+      if (Parents.empty())
+        break;
+      Node = Parents[0];
+      if (const auto *FDp = Node.get<FunctionDecl>()) {
+        NearestFD = FDp;
+        break;
+      }
+    }
+    return NearestFD;
+  }
+
   ASTContext &Ctx;
+  llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<SourceLocation, 4>>
+      LockStack;
 };
 
 class RCUConsumer : public ASTConsumer {
