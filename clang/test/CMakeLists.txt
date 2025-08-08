@@ -122,6 +122,7 @@ if(CLANG_ENABLE_STATIC_ANALYZER)
   list(APPEND CLANG_TEST_DEPS
     clang-check
     clang-extdef-mapping
+    clang-rcu-analyzer
     )
 endif()
 
