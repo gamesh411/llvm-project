@@ -19,6 +19,7 @@
 #include "clang/Analysis/FlowSensitive/WatchedLiteralsSolver.h"
 #include "clang/Analysis/FlowSensitive/TypeErasedDataflowAnalysis.h"
 #include "clang/Analysis/FlowSensitive/DataflowEnvironment.h"
+#include "clang/Analysis/CFG.h"
 #include "clang/Analysis/Analyses/Dominators.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Signals.h"
@@ -86,21 +87,63 @@ public:
     PresumedLoc PLoc = SM.getPresumedLoc(Loc);
 
     if (ModeOpt == AnalysisMode::Points) {
-      // Compute dominating control conditions for this point using CFG dominator tree.
+      // Minimal computation of dominating control conditions for this call.
       struct DomInfo { SourceLocation Loc; std::string Text; bool Value; };
       llvm::SmallVector<DomInfo, 16> Dominators;
 
       if (NearestFD && NearestFD->doesThisDeclarationHaveABody()) {
-        auto ACFGExp = cdf::AdornedCFG::build(*NearestFD);
-        if (ACFGExp) {
-          cdf::AdornedCFG &ACFG = *ACFGExp;
-          const CFG &Cfg = ACFG.getCFG();
-          CFGDomTree DT(const_cast<CFG *>(&Cfg));
-          const CFGBlock *TargetBB = ACFG.blockForStmt(*CE);
+        const FunctionDecl *DefFD = NearestFD;
+        (void)NearestFD->hasBody(DefFD);
+        // Build a plain CFG that works for C as well.
+        CFG::BuildOptions Opts;
+        Opts.PruneTriviallyFalseEdges = true;
+        Opts.setAllAlwaysAdd();
+        std::unique_ptr<CFG> Cfg = CFG::buildCFG(DefFD, DefFD->getBody(), &Ctx, Opts);
+        if (Cfg) {
+          CFGDomTree DT;
+          DT.buildDominatorTree(Cfg.get());
+
+          // Map call to its CFG block by scanning elements.
+          const CFGBlock *TargetBB = nullptr;
+          for (const CFGBlock *BB : *Cfg) {
+            if (!BB) continue;
+            for (const auto &Elt : *BB) {
+              if (auto CS = Elt.getAs<CFGStmt>()) {
+                if (CS->getStmt() == CE) { TargetBB = BB; break; }
+              }
+            }
+            if (TargetBB) break;
+          }
+
           if (TargetBB) {
-            for (const CFGBlock *BB : Cfg) {
-              if (!BB) continue;
-              const Stmt *Term = BB->getTerminatorStmt();
+            auto reaches = [&](const CFGBlock *Start, const CFGBlock *Goal) {
+              if (!Start) return false;
+              llvm::SmallVector<const CFGBlock *, 32> Stack;
+              llvm::SmallPtrSet<const CFGBlock *, 32> Visited;
+              Stack.push_back(Start);
+              while (!Stack.empty()) {
+                const CFGBlock *B = Stack.pop_back_val();
+                if (!B || Visited.count(B)) continue;
+                Visited.insert(B);
+                if (B == Goal) return true;
+                for (auto SI = B->succ_begin(); SI != B->succ_end(); ++SI) {
+                  const CFGBlock *NB = SI->getReachableBlock();
+                  if (NB && !Visited.count(NB)) Stack.push_back(NB);
+                }
+              }
+              return false;
+            };
+
+            auto &DTBase = DT.getBase();
+            const CFGBlock *Cur = TargetBB;
+            while (true) {
+              auto *Node = DTBase.getNode(const_cast<CFGBlock *>(Cur));
+              if (!Node) break;
+              auto *IDom = Node->getIDom();
+              if (!IDom) break; // reached entry
+              const CFGBlock *DomBB = IDom->getBlock();
+              if (!DomBB) break;
+              const Stmt *Term = DomBB->getTerminatorStmt();
               const Expr *Cond = nullptr;
               if (const auto *IS = dyn_cast_or_null<IfStmt>(Term)) Cond = IS->getCond();
               else if (const auto *WS = dyn_cast_or_null<WhileStmt>(Term)) Cond = WS->getCond();
@@ -108,34 +151,24 @@ public:
               else if (const auto *DS = dyn_cast_or_null<DoStmt>(Term)) Cond = DS->getCond();
               else if (const auto *CO = dyn_cast_or_null<ConditionalOperator>(Term)) Cond = CO->getCond();
               else if (const auto *SS = dyn_cast_or_null<SwitchStmt>(Term)) Cond = SS->getCond();
-              if (!Cond) continue;
-              if (!DT.dominates(BB, TargetBB)) continue;
-              // Determine branch direction: which successor dominates target.
-              bool found = false;
-              bool value = false;
-              unsigned idx = 0;
-              for (auto SI = BB->succ_begin(); SI != BB->succ_end(); ++SI, ++idx) {
-                const CFGBlock *Succ = SI->getReachableBlock();
-                if (!Succ) continue;
-                if (DT.dominates(Succ, TargetBB)) {
-                  // Assume successor index 0 is 'true' branch.
-                  value = (idx == 0);
-                  found = true;
-                  break;
+              if (Cond) {
+                const CFGBlock *Succ0 = (DomBB->succ_size() > 0) ? DomBB->succ_begin()->getReachableBlock() : nullptr;
+                const CFGBlock *Succ1 = (DomBB->succ_size() > 1) ? (DomBB->succ_begin() + 1)->getReachableBlock() : nullptr;
+                bool r0 = reaches(Succ0, Cur);
+                bool r1 = reaches(Succ1, Cur);
+                if (r0 != r1) {
+                  bool value = r0; // successor 0 corresponds to 'true'
+                  std::string Text = getSourceText(Ctx, Cond->getSourceRange());
+                  if (!Text.empty()) Dominators.push_back({Cond->getExprLoc(), std::move(Text), value});
                 }
               }
-              if (found) {
-                std::string Text = getSourceText(Ctx, Cond->getSourceRange());
-                if (!Text.empty()) Dominators.push_back({Cond->getExprLoc(), std::move(Text), value});
-              }
+              Cur = DomBB;
             }
           }
-        } else {
-          consumeError(ACFGExp.takeError());
         }
       }
 
-      // Sort dominators by location for stability
+      // Stable ordering by presumed location
       std::sort(Dominators.begin(), Dominators.end(), [&](const DomInfo &A, const DomInfo &B) {
         PresumedLoc PA = SM.getPresumedLoc(A.Loc);
         PresumedLoc PB2 = SM.getPresumedLoc(B.Loc);
@@ -147,11 +180,10 @@ public:
         return (PA.isValid() ? PA.getColumn() : 0) < (PB2.isValid() ? PB2.getColumn() : 0);
       });
 
-      // Print JSON with dominators (always include array)
+      // Emit JSON
       llvm::outs() << "{\"type\":\"call\",\"name\":\"" << CalleeName
                    << "\",\"function\":\"" << FuncName
-                   << "\",\"file\":\""
-                   << (PLoc.isValid() ? PLoc.getFilename() : "")
+                   << "\",\"file\":\"" << (PLoc.isValid() ? PLoc.getFilename() : "")
                    << "\",\"line\":" << (PLoc.isValid() ? PLoc.getLine() : 0)
                    << ",\"col\":" << (PLoc.isValid() ? PLoc.getColumn() : 0)
                    << ",\"dominators\":[";
@@ -164,7 +196,7 @@ public:
                      << "\",\"line\":" << (PD.isValid() ? PD.getLine() : 0)
                      << ",\"col\":" << (PD.isValid() ? PD.getColumn() : 0) << "}";
       }
-      llvm::outs() << "]}" << "\n";
+      llvm::outs() << "]}\n";
     }
 
     // Minimal read-section grouping for same-function linear sections:
@@ -341,7 +373,7 @@ public:
   explicit RCUConsumer(ASTContext &Context) : Visitor(Context) {}
   void HandleTranslationUnit(ASTContext &Context) override {
     if (ModeOpt == AnalysisMode::Points) {
-      // For points mode, run the simple AST visitor which now computes dominators.
+      // Use the existing visitor for points mode
       Visitor.TraverseDecl(Context.getTranslationUnitDecl());
       return;
     }
