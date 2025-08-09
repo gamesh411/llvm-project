@@ -1,4 +1,4 @@
-// RUN: clang-rcu-analyzer %s -- -I%S/Inputs 2>&1 | FileCheck %s --allow-empty
+// RUN: clang-rcu-analyzer --mode=points %s -- -I%S/Inputs 2>&1 | FileCheck %s --allow-empty
 
 #include "has-rcu-calls.h"
 

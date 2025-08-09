@@ -1,4 +1,4 @@
-// RUN: clang-rcu-analyzer %s -- 2>&1 | FileCheck %s
+// RUN: clang-rcu-analyzer --mode=points %s -- -x c 2>&1 | FileCheck %s
 
 struct foo { int x; };
 void *rcu_dereference(void *p);
@@ -10,6 +10,8 @@ int use() {
   return ptr ? ptr->x : 0;
 }
 
-// CHECK: {"type":"call","name":"rcu_dereference","function":"use"
+// CHECK: {"type":"call","name":"rcu_dereference","function":"use","file":"
+// CHECK-SAME: ,"line":9
+// CHECK-SAME: ,"dominators":[
 
 

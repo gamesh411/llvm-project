@@ -1,4 +1,4 @@
-// RUN: clang-rcu-analyzer %s -- 2>&1 | FileCheck %s
+// RUN: clang-rcu-analyzer --mode=points %s -- -x c 2>&1 | FileCheck %s
 
 void synchronize_rcu(void);
 void rcu_assign_pointer(void **p, void *v);
@@ -10,7 +10,9 @@ void bar(void *newp) {
   synchronize_rcu();
 }
 
-// CHECK: {"type":"call","name":"rcu_assign_pointer","function":"bar"
-// CHECK: {"type":"call","name":"synchronize_rcu","function":"bar"
+// CHECK: {"type":"call","name":"rcu_assign_pointer","function":"bar","file":"
+// CHECK-SAME: ,"line":9
+// CHECK: {"type":"call","name":"synchronize_rcu","function":"bar","file":"
+// CHECK-SAME: ,"line":10
 
 

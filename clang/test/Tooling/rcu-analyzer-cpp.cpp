@@ -1,4 +1,4 @@
-// RUN: clang-rcu-analyzer %s -- -std=c++17 2>&1 | FileCheck %s
+// RUN: clang-rcu-analyzer --mode=points %s -- -std=c++17 2>&1 | FileCheck %s
 
 extern "C" void rcu_read_lock(void);
 extern "C" void rcu_read_unlock(void);
@@ -13,7 +13,11 @@ struct S {
 };
 }
 
-// CHECK: {"type":"call","name":"rcu_read_lock","function":"ns::S::f"
-// CHECK: {"type":"call","name":"rcu_read_unlock","function":"ns::S::f"
+// CHECK: {"type":"call","name":"rcu_read_lock","function":"ns::S::f","file":"
+// CHECK-SAME: ,"line":9
+// CHECK-SAME: ,"dominators":[
+// CHECK: {"type":"call","name":"rcu_read_unlock","function":"ns::S::f","file":"
+// CHECK-SAME: ,"line":10
+// CHECK-SAME: ,"dominators":[
 
 

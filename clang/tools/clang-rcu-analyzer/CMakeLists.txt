@@ -11,6 +11,9 @@ clang_target_link_libraries(clang-rcu-analyzer
   clangAST
   clangASTMatchers
   clangBasic
+  clangLex
+  clangAnalysisFlowSensitive
+  clangAnalysis
   clangFrontend
   clangSerialization
   clangTooling
