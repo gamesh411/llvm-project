@@ -12,9 +12,9 @@ int foo() {
 
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"foo","file":"
 // CHECK-SAME: ,"line":7
-// CHECK-SAME: ,"dominators":[
+// CHECK-SAME: ,"dominators":[]
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"foo","file":"
 // CHECK-SAME: ,"line":9
-// CHECK-SAME: ,"dominators":[
+// CHECK-SAME: ,"dominators":[]
 
 

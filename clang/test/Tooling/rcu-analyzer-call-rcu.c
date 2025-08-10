@@ -9,6 +9,6 @@ void g(struct rcu_head *h) { call_rcu(h, cb); }
 
 // CHECK: {"type":"call","name":"call_rcu","function":"g","file":"
 // CHECK-SAME: ,"line":8
-// CHECK-SAME: ,"dominators":[
+// CHECK-SAME: ,"dominators":[]
 
 

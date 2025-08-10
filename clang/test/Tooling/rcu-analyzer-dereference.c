@@ -12,6 +12,6 @@ int use() {
 
 // CHECK: {"type":"call","name":"rcu_dereference","function":"use","file":"
 // CHECK-SAME: ,"line":9
-// CHECK-SAME: ,"dominators":[
+// CHECK-SAME: ,"dominators":[]
 
 

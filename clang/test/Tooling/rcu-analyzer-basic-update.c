@@ -12,7 +12,9 @@ void bar(void *newp) {
 
 // CHECK: {"type":"call","name":"rcu_assign_pointer","function":"bar","file":"
 // CHECK-SAME: ,"line":9
+// CHECK-SAME: ,"dominators":[]
 // CHECK: {"type":"call","name":"synchronize_rcu","function":"bar","file":"
 // CHECK-SAME: ,"line":10
+// CHECK-SAME: ,"dominators":[]
 
 

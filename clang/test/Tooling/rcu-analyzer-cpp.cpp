@@ -15,9 +15,9 @@ struct S {
 
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"ns::S::f","file":"
 // CHECK-SAME: ,"line":9
-// CHECK-SAME: ,"dominators":[
+// CHECK-SAME: ,"dominators":[]
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"ns::S::f","file":"
 // CHECK-SAME: ,"line":10
-// CHECK-SAME: ,"dominators":[
+// CHECK-SAME: ,"dominators":[]
 
 
