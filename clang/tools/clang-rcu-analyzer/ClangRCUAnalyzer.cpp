@@ -199,66 +199,7 @@ public:
       llvm::outs() << "]}\n";
     }
 
-    // Minimal read-section grouping for same-function linear sections:
-    if (ModeOpt == AnalysisMode::Sections && NearestFD) {
-      if (CalleeName == "rcu_read_lock") {
-        LockStack[NearestFD].push_back(Loc);
-        BranchStartIdx[NearestFD].push_back(BranchTexts[NearestFD].size());
-      } else if (CalleeName == "rcu_read_unlock") {
-        auto It = LockStack.find(NearestFD);
-        if (It != LockStack.end() && !It->second.empty()) {
-          SourceLocation BeginLoc = It->second.pop_back_val();
-          PresumedLoc PBegin = SM.getPresumedLoc(BeginLoc);
-          PresumedLoc PEnd = PLoc;
-
-          SmallString<128> S;
-          llvm::raw_svector_ostream OS(S);
-          NearestFD->printQualifiedName(OS);
-          std::string Fn = std::string(OS.str());
-
-          // Gather branch conditions recorded since this lock.
-          SmallVector<std::string, 4> Conditions;
-          auto &StartIdxStack = BranchStartIdx[NearestFD];
-          size_t StartIdx = 0;
-          if (!StartIdxStack.empty()) {
-            StartIdx = StartIdxStack.pop_back_val();
-          }
-          auto &BT = BranchTexts[NearestFD];
-          if (StartIdx < BT.size()) {
-            for (size_t i = StartIdx; i < BT.size(); ++i)
-              Conditions.push_back(BT[i]);
-            BT.resize(StartIdx);
-          }
-
-          const char *Kind = Conditions.empty() ? "linear" : "branched";
-
-          llvm::outs() << "{\"type\":\"read_section\",\"kind\":\"" << Kind
-                       << "\",\"function\":\"" << Fn
-                       << "\",\"begin_file\":\""
-                       << (PBegin.isValid() ? PBegin.getFilename() : "")
-                       << "\",\"begin_line\":"
-                       << (PBegin.isValid() ? PBegin.getLine() : 0)
-                       << ",\"begin_col\":"
-                       << (PBegin.isValid() ? PBegin.getColumn() : 0)
-                       << ",\"end_file\":\""
-                       << (PEnd.isValid() ? PEnd.getFilename() : "")
-                       << "\",\"end_line\":"
-                       << (PEnd.isValid() ? PEnd.getLine() : 0)
-                       << ",\"end_col\":"
-                       << (PEnd.isValid() ? PEnd.getColumn() : 0);
-          if (!Conditions.empty()) {
-            llvm::outs() << ",\"conditions\":[";
-            for (size_t i = 0; i < Conditions.size(); ++i) {
-              if (i)
-                llvm::outs() << ",";
-              llvm::outs() << "\"" << Conditions[i] << "\"";
-            }
-            llvm::outs() << "]";
-          }
-          llvm::outs() << "}\n";
-        }
-      }
-    }
+    // Sections mode handled in translation unit processing.
 
     return true;
   }
@@ -332,97 +273,46 @@ public:
       BranchTexts;
 };
 
-// --- Flow-sensitive sections detection (uses dataflow framework) ---
+// --- Conservative sections detection via dominance and post-dominance ---
 
-struct RCUState {
-  int lockDepth = 0;
-  // Join: keep the maximum depth observed to approximate being inside.
-  cdf::LatticeJoinEffect join(const RCUState &Other) {
-    int Old = lockDepth;
-    lockDepth = std::max(lockDepth, Other.lockDepth);
-    return lockDepth == Old ? cdf::LatticeJoinEffect::Unchanged
-                            : cdf::LatticeJoinEffect::Changed;
-  }
-  bool operator==(const RCUState &O) const { return lockDepth == O.lockDepth; }
-};
-
-class RCUSectionsAnalysis : public cdf::DataflowAnalysis<RCUSectionsAnalysis, RCUState> {
+class RCUPointsConsumer : public ASTConsumer {
 public:
-  explicit RCUSectionsAnalysis(ASTContext &Ctx) : DataflowAnalysis(Ctx) {}
-  RCUState initialElement() { return {}; }
-
-  void transfer(const CFGElement &Elt, RCUState &State, cdf::Environment &) {
-    if (auto StmtElt = Elt.getAs<CFGStmt>()) {
-      const Stmt *S = StmtElt->getStmt();
-      if (const auto *CE = dyn_cast<CallExpr>(S)) {
-        if (const FunctionDecl *FD = CE->getDirectCallee()) {
-          StringRef Name = FD->getName();
-          if (Name == "rcu_read_lock") {
-            State.lockDepth = std::min(State.lockDepth + 1, 1024);
-          } else if (Name == "rcu_read_unlock") {
-            State.lockDepth = std::max(State.lockDepth - 1, 0);
-          }
-        }
-      }
-    }
-  }
-};
-
-class RCUConsumer : public ASTConsumer {
-public:
-  explicit RCUConsumer(ASTContext &Context) : Visitor(Context) {}
+  explicit RCUPointsConsumer(ASTContext &Context) : Visitor(Context) {}
   void HandleTranslationUnit(ASTContext &Context) override {
-    if (ModeOpt == AnalysisMode::Points) {
-      // Use the existing visitor for points mode
-      Visitor.TraverseDecl(Context.getTranslationUnitDecl());
-      return;
-    }
+    Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+  }
+private:
+  RCUVisitor Visitor;
+};
 
+class RCUSectionsConsumer : public ASTConsumer {
+public:
+  explicit RCUSectionsConsumer(ASTContext &Context) : Ctx(Context) {}
+  void HandleTranslationUnit(ASTContext &Context) override {
     const SourceManager &SM = Context.getSourceManager();
-    // Sections mode below.
-
-    // Sections mode: run dataflow per function in main file.
-    
     auto processFunction = [&](const FunctionDecl *FD) {
-      if (!FD->doesThisDeclarationHaveABody())
-        return;
-      if (!SM.isInMainFile(FD->getLocation()))
-        return;
+      if (!FD->doesThisDeclarationHaveABody()) return;
+      if (!SM.isInMainFile(FD->getLocation())) return;
 
-      llvm::SmallVector<std::pair<SourceLocation, SourceLocation>, 8> SectionsFound;
-
-      struct ConditionInfo {
-        SourceLocation Loc;
-        std::string Text;
-      };
-
+      struct ConditionInfo { SourceLocation Loc; std::string Text; };
       auto printSection = [&](SourceLocation Begin, SourceLocation End, ArrayRef<ConditionInfo> Conds) {
         PresumedLoc PB = SM.getPresumedLoc(Begin);
         PresumedLoc PE = SM.getPresumedLoc(End);
-        SmallString<128> S;
-        llvm::raw_svector_ostream OS(S);
-        FD->printQualifiedName(OS);
-        std::string Fn = std::string(OS.str());
+        SmallString<128> S; llvm::raw_svector_ostream OS(S);
+        FD->printQualifiedName(OS); std::string Fn = std::string(OS.str());
         const char *Kind = Conds.empty() ? "linear" : "branched";
         llvm::outs() << "{\"type\":\"read_section\",\"kind\":\"" << Kind
                      << "\",\"function\":\"" << Fn
-                     << "\",\"begin_file\":\""
-                     << (PB.isValid() ? PB.getFilename() : "")
-                     << "\",\"begin_line\":"
-                     << (PB.isValid() ? PB.getLine() : 0)
-                     << ",\"begin_col\":"
-                     << (PB.isValid() ? PB.getColumn() : 0)
-                     << ",\"end_file\":\""
-                     << (PE.isValid() ? PE.getFilename() : "")
-                     << "\",\"end_line\":"
-                     << (PE.isValid() ? PE.getLine() : 0)
-                     << ",\"end_col\":"
-                     << (PE.isValid() ? PE.getColumn() : 0);
+                     << "\",\"begin_file\":\"" << (PB.isValid() ? PB.getFilename() : "")
+                     << "\",\"begin_line\":" << (PB.isValid() ? PB.getLine() : 0)
+                     << ",\"begin_col\":" << (PB.isValid() ? PB.getColumn() : 0)
+                     << ",\"end_file\":\"" << (PE.isValid() ? PE.getFilename() : "")
+                     << "\",\"end_line\":" << (PE.isValid() ? PE.getLine() : 0)
+                     << ",\"end_col\":" << (PE.isValid() ? PE.getColumn() : 0);
         if (!Conds.empty()) {
           llvm::outs() << ",\"conditions\":[";
           for (size_t i = 0; i < Conds.size(); ++i) {
-            if (i)
-              llvm::outs() << ",";
+            if (i) llvm::outs() << ",";
             PresumedLoc PC = SM.getPresumedLoc(Conds[i].Loc);
             llvm::outs() << "{\"text\":\"" << Conds[i].Text << "\",\"file\":\""
                          << (PC.isValid() ? PC.getFilename() : "")
@@ -434,83 +324,57 @@ public:
         llvm::outs() << "}\n";
       };
 
-      // Build ACFG and analysis context.
-      auto ACFGExp = cdf::AdornedCFG::build(*FD);
-      if (!ACFGExp) {
-        consumeError(ACFGExp.takeError());
-        return;
-      }
-      cdf::AdornedCFG &ACFG = *ACFGExp;
-      auto Solver = std::make_unique<cdf::WatchedLiteralsSolver>(cdf::kDefaultMaxSATIterations);
-      cdf::DataflowAnalysisContext DFContext2(*Solver);
-      cdf::Environment InitEnv(DFContext2, *FD);
-      RCUSectionsAnalysis Analysis(Context);
+      CFG::BuildOptions Opts; Opts.PruneTriviallyFalseEdges = true; Opts.setAllAlwaysAdd();
+      std::unique_ptr<CFG> Cfg = CFG::buildCFG(FD, FD->getBody(), &Context, Opts);
+      if (!Cfg) return;
+      CFGDomTree Dom; Dom.buildDominatorTree(Cfg.get());
+      CFGPostDomTree PostDom; PostDom.buildDominatorTree(Cfg.get());
 
-      // Collect section pairs via a simple AST walk (function-local, linear pairing).
-      std::function<void(const Stmt *)> Walk = [&](const Stmt *S) {
-        if (!S) return;
-        if (const auto *CE = dyn_cast<CallExpr>(S)) {
-          if (const FunctionDecl *Callee = CE->getDirectCallee()) {
-            StringRef Name = Callee->getName();
-            static llvm::SmallVector<SourceLocation, 8> AstLockStack;
-            if (Name == "rcu_read_lock") {
-              AstLockStack.push_back(CE->getExprLoc());
-            } else if (Name == "rcu_read_unlock") {
-              if (!AstLockStack.empty()) {
-                SourceLocation BeginLoc = AstLockStack.back();
-                AstLockStack.pop_back();
-                SectionsFound.emplace_back(BeginLoc, CE->getExprLoc());
+      struct CallSite { const CFGBlock *BB; SourceLocation Loc; const CallExpr *CE; };
+      llvm::SmallVector<CallSite, 16> Locks, Unlocks;
+      for (const CFGBlock *BB : *Cfg) {
+        if (!BB) continue;
+        for (const auto &Elt : *BB) {
+          if (auto CS = Elt.getAs<CFGStmt>()) {
+            if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
+              if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+                StringRef N = Callee->getName();
+                if (N == "rcu_read_lock") Locks.push_back({BB, CE->getExprLoc(), CE});
+                else if (N == "rcu_read_unlock") Unlocks.push_back({BB, CE->getExprLoc(), CE});
               }
             }
           }
         }
-        for (const Stmt *Child : S->children()) Walk(Child);
-      };
-      Walk(FD->getBody());
+      }
 
-      cdf::CFGEltCallbacks<RCUSectionsAnalysis> Cbs{};
-      Cbs.After = [&](const CFGElement &, const cdf::DataflowAnalysisState<RCUState> &) {};
-
-      if (auto States = cdf::runDataflowAnalysis(ACFG, Analysis, InitEnv, Cbs)) {
-        // Collect branch conditions from block terminators where inside-section state holds.
+      auto collectCondsInRegion = [&](const CFGBlock *LBB, const CFGBlock *UBB) {
         llvm::SmallVector<ConditionInfo, 16> Conds;
-        auto addCond = [&](const Expr *E) {
-          if (!E) return;
-          std::string Text = RCUVisitor::getSourceText(Context, E->getSourceRange());
-          if (Text.empty()) return;
-          SourceLocation L = E->getExprLoc();
-          // Deduplicate by text and presumed location
-          PresumedLoc Pnew = SM.getPresumedLoc(L);
+        for (const CFGBlock *B : *Cfg) {
+          if (!B) continue;
+          if (!Dom.dominates(const_cast<CFGBlock *>(LBB), const_cast<CFGBlock *>(B))) continue;
+          if (!PostDom.dominates(const_cast<CFGBlock *>(UBB), const_cast<CFGBlock *>(B))) continue;
+          const Stmt *Term = B->getTerminatorStmt();
+          const Expr *Cond = nullptr;
+          if (const auto *IS = dyn_cast_or_null<IfStmt>(Term)) Cond = IS->getCond();
+          else if (const auto *WS = dyn_cast_or_null<WhileStmt>(Term)) Cond = WS->getCond();
+          else if (const auto *FS = dyn_cast_or_null<ForStmt>(Term)) Cond = FS->getCond();
+          else if (const auto *DS = dyn_cast_or_null<DoStmt>(Term)) Cond = DS->getCond();
+          else if (const auto *CO = dyn_cast_or_null<ConditionalOperator>(Term)) Cond = CO->getCond();
+          else if (const auto *SS = dyn_cast_or_null<SwitchStmt>(Term)) Cond = SS->getCond();
+          if (!Cond) continue;
+          std::string Text = RCUVisitor::getSourceText(Context, Cond->getSourceRange());
+          if (Text.empty()) continue;
+          bool exists = false;
+          PresumedLoc Pnew = SM.getPresumedLoc(Cond->getExprLoc());
           for (const auto &CI : Conds) {
             PresumedLoc Pold = SM.getPresumedLoc(CI.Loc);
             if (CI.Text == Text && ((Pnew.isValid() && Pold.isValid() &&
                                      std::string(Pnew.getFilename()) == std::string(Pold.getFilename()) &&
                                      Pnew.getLine() == Pold.getLine() && Pnew.getColumn() == Pold.getColumn()) ||
-                                    (!Pnew.isValid() && !Pold.isValid()))) {
-              return;
-            }
+                                    (!Pnew.isValid() && !Pold.isValid()))) { exists = true; break; }
           }
-          Conds.push_back({L, std::move(Text)});
-        };
-        const CFG &Cfg = ACFG.getCFG();
-        for (const CFGBlock *B : Cfg) {
-          if (!B) continue;
-          unsigned ID = B->getBlockID();
-          if (ID >= States->size()) continue;
-          const auto &OptState = (*States)[ID];
-          if (!OptState) continue;
-          const RCUState &St = OptState->Lattice;
-          if (St.lockDepth <= 0) continue;
-          if (const Stmt *Term = B->getTerminatorStmt()) {
-            if (const auto *IS = dyn_cast<IfStmt>(Term)) addCond(IS->getCond());
-            else if (const auto *WS = dyn_cast<WhileStmt>(Term)) addCond(WS->getCond());
-            else if (const auto *FS = dyn_cast<ForStmt>(Term)) addCond(FS->getCond());
-            else if (const auto *DS = dyn_cast<DoStmt>(Term)) addCond(DS->getCond());
-            else if (const auto *CO = dyn_cast<ConditionalOperator>(Term)) addCond(CO->getCond());
-            else if (const auto *SS = dyn_cast<SwitchStmt>(Term)) addCond(SS->getCond());
-          }
+          if (!exists) Conds.push_back({Cond->getExprLoc(), std::move(Text)});
         }
-        // Sort by presumed source location (file, line, col).
         std::sort(Conds.begin(), Conds.end(), [&](const ConditionInfo &A, const ConditionInfo &B) {
           PresumedLoc PA = SM.getPresumedLoc(A.Loc);
           PresumedLoc PB2 = SM.getPresumedLoc(B.Loc);
@@ -521,31 +385,34 @@ public:
             return (PA.isValid() ? PA.getLine() : 0) < (PB2.isValid() ? PB2.getLine() : 0);
           return (PA.isValid() ? PA.getColumn() : 0) < (PB2.isValid() ? PB2.getColumn() : 0);
         });
-        // Emit all found sections with collected conditions.
-        for (const auto &Sec : SectionsFound) {
-          printSection(Sec.first, Sec.second, Conds);
+        return Conds;
+      };
+
+      for (const auto &L : Locks) {
+        for (const auto &U : Unlocks) {
+          if (!Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(U.BB))) continue;
+          if (!PostDom.dominates(const_cast<CFGBlock *>(U.BB), const_cast<CFGBlock *>(L.BB))) continue;
+          auto Conds = collectCondsInRegion(L.BB, U.BB);
+          printSection(L.Loc, U.Loc, Conds);
         }
-      } else {
-        consumeError(States.takeError());
       }
     };
 
     const TranslationUnitDecl *TU = Context.getTranslationUnitDecl();
-    for (const Decl *D : TU->decls()) {
-      if (const auto *FD = dyn_cast<FunctionDecl>(D))
-        processFunction(FD);
-    }
+    for (const Decl *D : TU->decls()) if (const auto *FD = dyn_cast<FunctionDecl>(D)) processFunction(FD);
   }
-
 private:
-  RCUVisitor Visitor;
+  ASTContext &Ctx;
 };
 
 class RCUAction : public ASTFrontendAction {
 public:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef) override {
-    return std::make_unique<RCUConsumer>(CI.getASTContext());
+    if (ModeOpt == AnalysisMode::Points) {
+      return std::make_unique<RCUPointsConsumer>(CI.getASTContext());
+    }
+    return std::make_unique<RCUSectionsConsumer>(CI.getASTContext());
   }
 };
 
