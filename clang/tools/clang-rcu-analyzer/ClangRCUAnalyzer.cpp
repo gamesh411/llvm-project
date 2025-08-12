@@ -649,11 +649,83 @@ public:
         for (const auto &U : Unlocks) {
           // Skip pairs already emitted via intrablock linear pairing.
           if (UsedLock.count(L.CE) || UsedUnlock.count(U.CE)) continue;
-          if (!Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(U.BB))) continue;
-          if (!PostDom.dominates(const_cast<CFGBlock *>(U.BB), const_cast<CFGBlock *>(L.BB))) continue;
-          // Only consider inter-block pairs here; same-block were handled above.
           if (L.BB == U.BB) continue;
-          printSection(L.Loc, U.Loc, "branched");
+          const bool DomOK = Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(U.BB));
+          const bool PostOK = PostDom.dominates(const_cast<CFGBlock *>(U.BB), const_cast<CFGBlock *>(L.BB));
+          if (DomOK && PostOK) {
+            printSection(L.Loc, U.Loc, "branched");
+          }
+        }
+      }
+
+      // Interprocedural heuristics: if the function calls a callee that always unlocks, elevate a section.
+      // Build a map of callees that definitely perform an unlock (single call-site heuristic).
+      llvm::DenseSet<const FunctionDecl *> CalleesThatUnlock;
+      for (const CFGBlock *BB : *Cfg) {
+        if (!BB) continue;
+        for (const auto &Elt : *BB) {
+          if (auto CS = Elt.getAs<CFGStmt>()) {
+            if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
+              if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+                if (Callee->doesThisDeclarationHaveABody()) {
+                  // Simple scan: does the callee contain an unlock call unconditionally in its body (approx)?
+                  const Stmt *Body = Callee->getBody();
+                  bool HasUnlock = false;
+                  std::function<void(const Stmt*)> rec = [&](const Stmt *S){
+                    if (!S || HasUnlock) return;
+                    if (const auto *ICE = dyn_cast<CallExpr>(S)) {
+                      if (const FunctionDecl *CF = ICE->getDirectCallee()) {
+                        if (CF->getName() == "rcu_read_unlock") HasUnlock = true;
+                      }
+                    }
+                    for (const Stmt *Ch : S->children()) rec(Ch);
+                  };
+                  rec(Body);
+                  if (HasUnlock) CalleesThatUnlock.insert(Callee);
+                }
+              }
+            }
+          }
+        }
+      }
+      // If current function has a lock and calls a callee that unlocks, emit an interprocedural section.
+      if (!Locks.empty()) {
+        for (const CFGBlock *BB : *Cfg) {
+          if (!BB) continue;
+          for (const auto &Elt : *BB) {
+            if (auto CS = Elt.getAs<CFGStmt>()) {
+              if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
+                if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+                  if (CalleesThatUnlock.count(Callee)) {
+                    // Pick first lock as begin, and use callee unlock loc as end (approx: use call loc).
+                    SourceLocation Begin = Locks.front().Loc;
+                    SourceLocation End = CE->getExprLoc();
+                    // Confidence: definite if single call-site; probable otherwise
+                    const char *Conf = "probable";
+                    unsigned CallsToCallee = 0;
+                    for (const auto &LBB : *Cfg) if (LBB)
+                      for (const auto &E2 : *LBB) if (auto CS2 = E2.getAs<CFGStmt>())
+                        if (const auto *CE2 = dyn_cast<CallExpr>(CS2->getStmt()))
+                          if (CE2->getDirectCallee() == Callee) ++CallsToCallee;
+                    if (CallsToCallee == 1) Conf = "definite";
+                    // Emit
+                    SmallString<128> S; llvm::raw_svector_ostream OS(S);
+                    FD->printQualifiedName(OS); std::string Fn = std::string(OS.str());
+                    PresumedLoc PB = SM.getPresumedLoc(Begin);
+                    PresumedLoc PE = SM.getPresumedLoc(End);
+                    llvm::outs() << "{\"type\":\"read_section\",\"kind\":\"interprocedural\",\"confidence\":\"" << Conf
+                                 << "\",\"function\":\"" << Fn
+                                 << "\",\"begin_file\":\"" << (PB.isValid() ? PB.getFilename() : "")
+                                 << "\",\"begin_line\":" << (PB.isValid() ? PB.getLine() : 0)
+                                 << ",\"begin_col\":" << (PB.isValid() ? PB.getColumn() : 0)
+                                 << ",\"end_file\":\"" << (PE.isValid() ? PE.getFilename() : "")
+                                 << "\",\"end_line\":" << (PE.isValid() ? PE.getLine() : 0)
+                                 << ",\"end_col\":" << (PE.isValid() ? PE.getColumn() : 0) << "}\n";
+                  }
+                }
+              }
+            }
+          }
         }
       }
     };
