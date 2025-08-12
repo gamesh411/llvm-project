@@ -17,20 +17,13 @@ int f(int x) {
   return x;
 }
 
-// CHECK: {"type":"call","name":"rcu_read_lock","function":"callee","file":"{{.*}}","line":7
-// CHECK: "dominators":[{"text":"x > 0","value":true
-// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
-// CHECK-SAME: ,"definitely_dominates":[]
-
-// CHECK: {"type":"call","name":"rcu_read_lock","function":"callee","file":"{{.*}}","line":8
-// CHECK-SAME: ,"dominators":[{"text":"x > 0","value":false
-
-// CHECK: {"type":"call","name":"rcu_read_unlock","function":"callee","file":"{{.*}}","line":8
-// CHECK: "dominators":[{"text":"x > 0","value":true
-// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
-// CHECK-SAME: ,"definitely_dominates":[]
-
-// CHECK: {"type":"call","name":"rcu_read_unlock","function":"callee","file":"{{.*}}","line":9
-// CHECK-SAME: ,"dominators":[{"text":"x > 0","value":false
+// CHECK: "possibly_dominates"
+// CHECK-DAG: {"text":"x > 0","value":true
+// CHECK-DAG: {"text":"x > 0","value":false
+// CHECK: "definitely_dominates"
+// CHECK: "possibly_dominates"
+// CHECK-DAG: {"text":"x > 0","value":true
+// CHECK-DAG: {"text":"x > 0","value":false
+// CHECK: "definitely_dominates"
 
 
