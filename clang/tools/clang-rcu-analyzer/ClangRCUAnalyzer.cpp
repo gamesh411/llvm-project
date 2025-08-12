@@ -287,20 +287,18 @@ private:
 
 class RCUSectionsConsumer : public ASTConsumer {
 public:
-  explicit RCUSectionsConsumer(ASTContext &Context) : Ctx(Context) {}
+  explicit RCUSectionsConsumer(ASTContext &Context) { (void)Context; }
   void HandleTranslationUnit(ASTContext &Context) override {
     const SourceManager &SM = Context.getSourceManager();
     auto processFunction = [&](const FunctionDecl *FD) {
       if (!FD->doesThisDeclarationHaveABody()) return;
       if (!SM.isInMainFile(FD->getLocation())) return;
 
-      struct ConditionInfo { SourceLocation Loc; std::string Text; };
-      auto printSection = [&](SourceLocation Begin, SourceLocation End, ArrayRef<ConditionInfo> Conds) {
+      auto printSection = [&](SourceLocation Begin, SourceLocation End, const char *Kind) {
         PresumedLoc PB = SM.getPresumedLoc(Begin);
         PresumedLoc PE = SM.getPresumedLoc(End);
         SmallString<128> S; llvm::raw_svector_ostream OS(S);
         FD->printQualifiedName(OS); std::string Fn = std::string(OS.str());
-        const char *Kind = Conds.empty() ? "linear" : "branched";
         llvm::outs() << "{\"type\":\"read_section\",\"kind\":\"" << Kind
                      << "\",\"function\":\"" << Fn
                      << "\",\"begin_file\":\"" << (PB.isValid() ? PB.getFilename() : "")
@@ -308,20 +306,8 @@ public:
                      << ",\"begin_col\":" << (PB.isValid() ? PB.getColumn() : 0)
                      << ",\"end_file\":\"" << (PE.isValid() ? PE.getFilename() : "")
                      << "\",\"end_line\":" << (PE.isValid() ? PE.getLine() : 0)
-                     << ",\"end_col\":" << (PE.isValid() ? PE.getColumn() : 0);
-        if (!Conds.empty()) {
-          llvm::outs() << ",\"conditions\":[";
-          for (size_t i = 0; i < Conds.size(); ++i) {
-            if (i) llvm::outs() << ",";
-            PresumedLoc PC = SM.getPresumedLoc(Conds[i].Loc);
-            llvm::outs() << "{\"text\":\"" << Conds[i].Text << "\",\"file\":\""
-                         << (PC.isValid() ? PC.getFilename() : "")
-                         << "\",\"line\":" << (PC.isValid() ? PC.getLine() : 0)
-                         << ",\"col\":" << (PC.isValid() ? PC.getColumn() : 0) << "}";
-          }
-          llvm::outs() << "]";
-        }
-        llvm::outs() << "}\n";
+                     << ",\"end_col\":" << (PE.isValid() ? PE.getColumn() : 0)
+                     << "}\n";
       };
 
       CFG::BuildOptions Opts; Opts.PruneTriviallyFalseEdges = true; Opts.setAllAlwaysAdd();
@@ -347,53 +333,57 @@ public:
         }
       }
 
-      auto collectCondsInRegion = [&](const CFGBlock *LBB, const CFGBlock *UBB) {
-        llvm::SmallVector<ConditionInfo, 16> Conds;
-        for (const CFGBlock *B : *Cfg) {
-          if (!B) continue;
-          if (!Dom.dominates(const_cast<CFGBlock *>(LBB), const_cast<CFGBlock *>(B))) continue;
-          if (!PostDom.dominates(const_cast<CFGBlock *>(UBB), const_cast<CFGBlock *>(B))) continue;
-          const Stmt *Term = B->getTerminatorStmt();
-          const Expr *Cond = nullptr;
-          if (const auto *IS = dyn_cast_or_null<IfStmt>(Term)) Cond = IS->getCond();
-          else if (const auto *WS = dyn_cast_or_null<WhileStmt>(Term)) Cond = WS->getCond();
-          else if (const auto *FS = dyn_cast_or_null<ForStmt>(Term)) Cond = FS->getCond();
-          else if (const auto *DS = dyn_cast_or_null<DoStmt>(Term)) Cond = DS->getCond();
-          else if (const auto *CO = dyn_cast_or_null<ConditionalOperator>(Term)) Cond = CO->getCond();
-          else if (const auto *SS = dyn_cast_or_null<SwitchStmt>(Term)) Cond = SS->getCond();
-          if (!Cond) continue;
-          std::string Text = RCUVisitor::getSourceText(Context, Cond->getSourceRange());
-          if (Text.empty()) continue;
-          bool exists = false;
-          PresumedLoc Pnew = SM.getPresumedLoc(Cond->getExprLoc());
-          for (const auto &CI : Conds) {
-            PresumedLoc Pold = SM.getPresumedLoc(CI.Loc);
-            if (CI.Text == Text && ((Pnew.isValid() && Pold.isValid() &&
-                                     std::string(Pnew.getFilename()) == std::string(Pold.getFilename()) &&
-                                     Pnew.getLine() == Pold.getLine() && Pnew.getColumn() == Pold.getColumn()) ||
-                                    (!Pnew.isValid() && !Pold.isValid()))) { exists = true; break; }
+      // First handle same-block linear sections via intrablock stack pairing.
+      llvm::SmallPtrSet<const CallExpr *, 32> UsedLock, UsedUnlock;
+      for (const CFGBlock *BB : *Cfg) {
+        if (!BB) continue;
+        llvm::SmallVector<const CallExpr *, 8> Stack;
+        struct Pair { const CallExpr *Begin; const CallExpr *End; };
+        llvm::SmallVector<Pair, 8> Pairs;
+        for (const auto &Elt : *BB) {
+          if (auto CS = Elt.getAs<CFGStmt>()) {
+            if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
+              const FunctionDecl *Callee = CE->getDirectCallee();
+              if (!Callee) continue;
+              StringRef N = Callee->getName();
+              if (N == "rcu_read_lock") {
+                Stack.push_back(CE);
+              } else if (N == "rcu_read_unlock") {
+                if (!Stack.empty()) {
+                  const CallExpr *BeginCE = Stack.pop_back_val();
+                  UsedLock.insert(BeginCE);
+                  UsedUnlock.insert(CE);
+                  Pairs.push_back({BeginCE, CE});
+                }
+              }
+            }
           }
-          if (!exists) Conds.push_back({Cond->getExprLoc(), std::move(Text)});
         }
-        std::sort(Conds.begin(), Conds.end(), [&](const ConditionInfo &A, const ConditionInfo &B) {
-          PresumedLoc PA = SM.getPresumedLoc(A.Loc);
-          PresumedLoc PB2 = SM.getPresumedLoc(B.Loc);
+        // Print pairs sorted by begin location to ensure outer sections appear before inner ones.
+        std::sort(Pairs.begin(), Pairs.end(), [&](const Pair &A, const Pair &B){
+          PresumedLoc PA = SM.getPresumedLoc(A.Begin->getExprLoc());
+          PresumedLoc PB = SM.getPresumedLoc(B.Begin->getExprLoc());
           std::string AFile = PA.isValid() ? std::string(PA.getFilename()) : std::string();
-          std::string BFile = PB2.isValid() ? std::string(PB2.getFilename()) : std::string();
+          std::string BFile = PB.isValid() ? std::string(PB.getFilename()) : std::string();
           if (AFile != BFile) return AFile < BFile;
-          if ((PA.isValid() ? PA.getLine() : 0) != (PB2.isValid() ? PB2.getLine() : 0))
-            return (PA.isValid() ? PA.getLine() : 0) < (PB2.isValid() ? PB2.getLine() : 0);
-          return (PA.isValid() ? PA.getColumn() : 0) < (PB2.isValid() ? PB2.getColumn() : 0);
+          if ((PA.isValid() ? PA.getLine() : 0) != (PB.isValid() ? PB.getLine() : 0))
+            return (PA.isValid() ? PA.getLine() : 0) < (PB.isValid() ? PB.getLine() : 0);
+          return (PA.isValid() ? PA.getColumn() : 0) < (PB.isValid() ? PB.getColumn() : 0);
         });
-        return Conds;
-      };
+        for (const auto &P : Pairs) {
+          printSection(P.Begin->getExprLoc(), P.End->getExprLoc(), "linear");
+        }
+      }
 
       for (const auto &L : Locks) {
         for (const auto &U : Unlocks) {
+          // Skip pairs already emitted via intrablock linear pairing.
+          if (UsedLock.count(L.CE) || UsedUnlock.count(U.CE)) continue;
           if (!Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(U.BB))) continue;
           if (!PostDom.dominates(const_cast<CFGBlock *>(U.BB), const_cast<CFGBlock *>(L.BB))) continue;
-          auto Conds = collectCondsInRegion(L.BB, U.BB);
-          printSection(L.Loc, U.Loc, Conds);
+          // Only consider inter-block pairs here; same-block were handled above.
+          if (L.BB == U.BB) continue;
+          printSection(L.Loc, U.Loc, "branched");
         }
       }
     };
@@ -402,7 +392,6 @@ public:
     for (const Decl *D : TU->decls()) if (const auto *FD = dyn_cast<FunctionDecl>(D)) processFunction(FD);
   }
 private:
-  ASTContext &Ctx;
 };
 
 class RCUAction : public ASTFrontendAction {

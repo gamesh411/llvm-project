@@ -16,9 +16,5 @@ int f(int c) {
 // CHECK: {"type":"read_section","kind":"branched","function":"f","begin_file":"
 // CHECK-SAME: ,"begin_line":7
 // CHECK-SAME: ,"end_line":12
-// CHECK-SAME: ,"conditions":[
-// CHECK-SAME: {"text":"c > 0"
-// CHECK-SAME: {"text":"c < 3"
-// CHECK-SAME: ]
 
 
