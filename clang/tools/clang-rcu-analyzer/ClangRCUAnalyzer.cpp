@@ -49,6 +49,12 @@ static llvm::cl::opt<AnalysisMode> ModeOpt(
                           "ranges")),
     llvm::cl::init(AnalysisMode::Points), llvm::cl::cat(RCUAnalyzerCategory));
 
+static llvm::cl::opt<std::string> RootFunctionOpt(
+    "root-function",
+    llvm::cl::desc(
+        "Limit interprocedural dominator aggregation to call-sites reachable from the given function (qualified name)"),
+    llvm::cl::init(""), llvm::cl::cat(RCUAnalyzerCategory));
+
 static bool isTargetRCUName(StringRef Name) {
   return Name == "rcu_read_lock" || Name == "rcu_read_unlock" ||
          Name == "rcu_assign_pointer" || Name == "synchronize_rcu" ||
@@ -262,10 +268,15 @@ public:
               const auto &CountMap = ItC->second;
               unsigned TotalSites = ItN->second;
               llvm::SmallVector<DomInfo, 16> Definite;
-              for (const auto &D : Possibly) {
-                std::string Key = makeDomKey(Ctx, D);
-                auto Fit = CountMap.find(Key);
-                if (Fit != CountMap.end() && Fit->getValue() == TotalSites) Definite.push_back(D);
+              if (TotalSites == 1) {
+                // With a single call-site, union equals intersection.
+                Definite.append(Possibly.begin(), Possibly.end());
+              } else {
+                for (const auto &D : Possibly) {
+                  std::string Key = makeDomKey(Ctx, D);
+                  auto Fit = CountMap.find(Key);
+                  if (Fit != CountMap.end() && Fit->getValue() == TotalSites) Definite.push_back(D);
+                }
               }
               std::sort(Definite.begin(), Definite.end(), [&](const DomInfo &A, const DomInfo &B) {
                 PresumedLoc PA = SM.getPresumedLoc(A.Loc);
@@ -405,8 +416,39 @@ public:
     llvm::DenseSet<const FunctionDecl *> RCUFuncs;
     for (const FunctionDecl *FD : Functions) if (functionHasRCUCall(FD)) RCUFuncs.insert(FD);
 
+    // Optionally restrict to functions reachable from a specific root function
+    llvm::DenseSet<const FunctionDecl *> Allowed;
+    if (!RootFunctionOpt.empty()) {
+      const FunctionDecl *RootFD = nullptr;
+      for (const FunctionDecl *FD : Functions) {
+        SmallString<128> S; llvm::raw_svector_ostream OS(S); FD->printQualifiedName(OS);
+        if (OS.str() == RootFunctionOpt) { RootFD = FD; break; }
+      }
+      if (RootFD) {
+        // Build a naive call graph (intra-TU, direct calls only) and BFS from root
+        llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<const FunctionDecl *, 8>> CG;
+        for (const FunctionDecl *FD : Functions) {
+          std::function<void(const Stmt*)> rec = [&](const Stmt *S){
+            if (!S) return;
+            if (const auto *CE = dyn_cast<CallExpr>(S)) {
+              if (const FunctionDecl *Callee = CE->getDirectCallee()) CG[FD].push_back(Callee);
+            }
+            for (const Stmt *Ch : S->children()) rec(Ch);
+          };
+          if (const Stmt *B = FD->getBody()) rec(B);
+        }
+        llvm::SmallVector<const FunctionDecl *, 32> WL; llvm::DenseSet<const FunctionDecl *> Vis;
+        WL.push_back(RootFD); Vis.insert(RootFD);
+        while (!WL.empty()) {
+          const FunctionDecl *F = WL.pop_back_val(); Allowed.insert(F);
+          for (const FunctionDecl *C : CG[F]) if (Vis.insert(C).second) WL.push_back(C);
+        }
+      }
+    }
+
     // For each function, compute dominator conditions at call-sites to RCU-containing callees
     for (const FunctionDecl *FD : Functions) {
+      if (!Allowed.empty() && !Allowed.contains(FD)) continue;
       CFG::BuildOptions Opts; Opts.PruneTriviallyFalseEdges = true; Opts.setAllAlwaysAdd();
       std::unique_ptr<CFG> Cfg = CFG::buildCFG(FD, FD->getBody(), &Context, Opts);
       if (!Cfg) continue;
@@ -420,6 +462,7 @@ public:
             if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
               const FunctionDecl *Callee = CE->getDirectCallee();
               if (!Callee || !RCUFuncs.contains(Callee)) continue;
+              if (!Allowed.empty() && !Allowed.contains(Callee)) continue;
 
               // Compute dominating conditions for this call-site
               const CFGBlock *CallBB = nullptr;
