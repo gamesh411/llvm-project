@@ -560,6 +560,58 @@ public:
   explicit RCUSectionsConsumer(ASTContext &Context) { (void)Context; }
   void HandleTranslationUnit(ASTContext &Context) override {
     const SourceManager &SM = Context.getSourceManager();
+    // --- Build intra-TU call map and direct-unlock summaries (for provenance/chain) ---
+    llvm::SmallVector<const FunctionDecl *, 64> AllFuncs;
+    const TranslationUnitDecl *TUForSummary = Context.getTranslationUnitDecl();
+    for (const Decl *D : TUForSummary->decls())
+      if (const auto *FD = dyn_cast<FunctionDecl>(D))
+        if (FD->doesThisDeclarationHaveABody()) AllFuncs.push_back(FD);
+
+    struct CGCallSite { const FunctionDecl *Callee; const CallExpr *CE; };
+    llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<CGCallSite, 8>> CallsFrom;
+    llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<SourceLocation, 4>> DirectUnlockLocs;
+
+    for (const FunctionDecl *FD : AllFuncs) {
+      const Stmt *Body = FD->getBody();
+      if (!Body) continue;
+      std::function<void(const Stmt*)> rec = [&](const Stmt *S){
+        if (!S) return;
+        if (const auto *CE = dyn_cast<CallExpr>(S)) {
+          if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+            CallsFrom[FD].push_back({Callee, CE});
+            if (Callee->getName() == "rcu_read_unlock") {
+              DirectUnlockLocs[FD].push_back(CE->getExprLoc());
+            }
+          }
+        }
+        for (const Stmt *Ch : S->children()) rec(Ch);
+      };
+      rec(Body);
+    }
+
+    // Compute a transitive "does unlock" summary and store one witness edge per function.
+    llvm::DenseMap<const FunctionDecl *, bool> DoesUnlock;
+    llvm::DenseMap<const FunctionDecl *, std::pair<const FunctionDecl *, const CallExpr *>> UnlockVia;
+    for (const FunctionDecl *FD : AllFuncs)
+      DoesUnlock[FD] = !DirectUnlockLocs[FD].empty();
+    bool Changed = true;
+    while (Changed) {
+      Changed = false;
+      for (const FunctionDecl *FD : AllFuncs) {
+        if (DoesUnlock[FD]) continue;
+        auto It = CallsFrom.find(FD);
+        if (It == CallsFrom.end()) continue;
+        for (const auto &CS : It->second) {
+          if (DoesUnlock.lookup(CS.Callee)) {
+            DoesUnlock[FD] = true;
+            if (!DirectUnlockLocs[FD].size() && !UnlockVia.count(FD))
+              UnlockVia[FD] = {CS.Callee, CS.CE};
+            Changed = true;
+            break;
+          }
+        }
+      }
+    }
     auto processFunction = [&](const FunctionDecl *FD) {
       if (!FD->doesThisDeclarationHaveABody()) return;
       if (!SM.isInMainFile(FD->getLocation())) return;
@@ -658,37 +710,7 @@ public:
         }
       }
 
-      // Interprocedural heuristics: if the function calls a callee that always unlocks, elevate a section.
-      // Build a map of callees that definitely perform an unlock (single call-site heuristic).
-      llvm::DenseSet<const FunctionDecl *> CalleesThatUnlock;
-      for (const CFGBlock *BB : *Cfg) {
-        if (!BB) continue;
-        for (const auto &Elt : *BB) {
-          if (auto CS = Elt.getAs<CFGStmt>()) {
-            if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
-              if (const FunctionDecl *Callee = CE->getDirectCallee()) {
-                if (Callee->doesThisDeclarationHaveABody()) {
-                  // Simple scan: does the callee contain an unlock call unconditionally in its body (approx)?
-                  const Stmt *Body = Callee->getBody();
-                  bool HasUnlock = false;
-                  std::function<void(const Stmt*)> rec = [&](const Stmt *S){
-                    if (!S || HasUnlock) return;
-                    if (const auto *ICE = dyn_cast<CallExpr>(S)) {
-                      if (const FunctionDecl *CF = ICE->getDirectCallee()) {
-                        if (CF->getName() == "rcu_read_unlock") HasUnlock = true;
-                      }
-                    }
-                    for (const Stmt *Ch : S->children()) rec(Ch);
-                  };
-                  rec(Body);
-                  if (HasUnlock) CalleesThatUnlock.insert(Callee);
-                }
-              }
-            }
-          }
-        }
-      }
-      // If current function has a lock and calls a callee that unlocks, emit an interprocedural section.
+      // Interprocedural: if this function calls a callee summarized to unlock (transitively), emit an interprocedural section.
       if (!Locks.empty()) {
         for (const CFGBlock *BB : *Cfg) {
           if (!BB) continue;
@@ -696,7 +718,7 @@ public:
             if (auto CS = Elt.getAs<CFGStmt>()) {
               if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
                 if (const FunctionDecl *Callee = CE->getDirectCallee()) {
-                  if (CalleesThatUnlock.count(Callee)) {
+                  if (DoesUnlock.lookup(Callee)) {
                     // Pick first lock as begin, and use callee unlock loc as end (approx: use call loc).
                     SourceLocation Begin = Locks.front().Loc;
                     SourceLocation End = CE->getExprLoc();
@@ -708,6 +730,30 @@ public:
                         if (const auto *CE2 = dyn_cast<CallExpr>(CS2->getStmt()))
                           if (CE2->getDirectCallee() == Callee) ++CallsToCallee;
                     if (CallsToCallee == 1) Conf = "definite";
+                    // Build provenance and call_chain
+                    // Build call_chain frames starting from this call-site, then following UnlockVia until direct unlock.
+                    struct Frame { const FunctionDecl *F; SourceLocation Loc; bool IsUnlock; };
+                    llvm::SmallVector<Frame, 8> Chain;
+                    Chain.push_back({FD, CE->getExprLoc(), false});
+                    const FunctionDecl *Cur = Callee;
+                    SourceLocation FinalUnlockLoc;
+                    const FunctionDecl *FinalUnlockFunc = nullptr;
+                    // Limit depth to avoid pathological recursion; practical cases are shallow.
+                    unsigned Depth = 0;
+                    while (Cur && Depth++ < 16) {
+                      if (!DirectUnlockLocs[Cur].empty()) {
+                        FinalUnlockLoc = DirectUnlockLocs[Cur].front();
+                        FinalUnlockFunc = Cur;
+                        Chain.push_back({Cur, FinalUnlockLoc, true});
+                        break;
+                      }
+                      auto ItVia = UnlockVia.find(Cur);
+                      if (ItVia == UnlockVia.end()) break;
+                      const FunctionDecl *Next = ItVia->second.first;
+                      const CallExpr *InnerCE = ItVia->second.second;
+                      Chain.push_back({Cur, InnerCE ? InnerCE->getExprLoc() : Cur->getLocation(), false});
+                      Cur = Next;
+                    }
                     // Emit
                     SmallString<128> S; llvm::raw_svector_ostream OS(S);
                     FD->printQualifiedName(OS); std::string Fn = std::string(OS.str());
@@ -720,7 +766,29 @@ public:
                                  << ",\"begin_col\":" << (PB.isValid() ? PB.getColumn() : 0)
                                  << ",\"end_file\":\"" << (PE.isValid() ? PE.getFilename() : "")
                                  << "\",\"end_line\":" << (PE.isValid() ? PE.getLine() : 0)
-                                 << ",\"end_col\":" << (PE.isValid() ? PE.getColumn() : 0) << "}\n";
+                                 << ",\"end_col\":" << (PE.isValid() ? PE.getColumn() : 0);
+                    // provenance
+                    if (FinalUnlockFunc) {
+                      PresumedLoc PUL = SM.getPresumedLoc(FinalUnlockLoc);
+                      llvm::outs() << ",\"provenance\":{\"closed_by\":\"" << FinalUnlockFunc->getName()
+                                   << "\",\"file\":\"" << (PUL.isValid() ? PUL.getFilename() : "")
+                                   << "\",\"line\":" << (PUL.isValid() ? PUL.getLine() : 0)
+                                   << ",\"col\":" << (PUL.isValid() ? PUL.getColumn() : 0) << "}";
+                    }
+                    // call_chain
+                    if (!Chain.empty()) {
+                      llvm::outs() << ",\"call_chain\":[";
+                      for (size_t idx = 0; idx < Chain.size(); ++idx) {
+                        if (idx) llvm::outs() << ",";
+                        PresumedLoc PC = SM.getPresumedLoc(Chain[idx].Loc);
+                        llvm::outs() << "{\"function\":\"" << Chain[idx].F->getName()
+                                     << "\",\"file\":\"" << (PC.isValid() ? PC.getFilename() : "")
+                                     << "\",\"line\":" << (PC.isValid() ? PC.getLine() : 0)
+                                     << ",\"col\":" << (PC.isValid() ? PC.getColumn() : 0) << "}";
+                      }
+                      llvm::outs() << "]";
+                    }
+                    llvm::outs() << "}\n";
                   }
                 }
               }
