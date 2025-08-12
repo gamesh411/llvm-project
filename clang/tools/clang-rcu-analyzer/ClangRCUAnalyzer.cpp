@@ -25,6 +25,8 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/StringSet.h"
 #include <string>
 
 using namespace clang;
@@ -54,12 +56,26 @@ static bool isTargetRCUName(StringRef Name) {
 }
 
 struct DomInfo { SourceLocation Loc; std::string Text; bool Value; };
+static std::string makeDomKey(const ASTContext &Ctx, const DomInfo &D) {
+  const SourceManager &SM = Ctx.getSourceManager();
+  PresumedLoc P = SM.getPresumedLoc(D.Loc);
+  std::string File = P.isValid() ? std::string(P.getFilename()) : std::string();
+  unsigned Line = P.isValid() ? P.getLine() : 0;
+  unsigned Col = P.isValid() ? P.getColumn() : 0;
+  std::string Key;
+  Key.reserve(D.Text.size() + File.size() + 32);
+  Key.append(File).append(":").append(std::to_string(Line)).append(":").append(std::to_string(Col))
+     .append("|").append(D.Text).append("|").append(D.Value ? "T" : "F");
+  return Key;
+}
 
 class RCUVisitor : public RecursiveASTVisitor<RCUVisitor> {
 public:
   explicit RCUVisitor(ASTContext &Context,
-                      const llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> *Interproc)
-      : Ctx(Context), InterprocDomByFunc(Interproc) {}
+                      const llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> *Interproc,
+                      const llvm::DenseMap<const FunctionDecl *, llvm::StringMap<unsigned>> *InterprocCounts,
+                      const llvm::DenseMap<const FunctionDecl *, unsigned> *InterprocSites)
+      : Ctx(Context), InterprocDomByFunc(Interproc), InterprocDomCounts(InterprocCounts), InterprocCallSites(InterprocSites) {}
 
   bool VisitCallExpr(CallExpr *CE) {
     const FunctionDecl *FD = CE->getDirectCallee();
@@ -207,7 +223,77 @@ public:
                      << "\",\"line\":" << (PD.isValid() ? PD.getLine() : 0)
                      << ",\"col\":" << (PD.isValid() ? PD.getColumn() : 0) << "}";
       }
-      llvm::outs() << "]}\n";
+      llvm::outs() << "]";
+
+      // Interprocedural sets: possibly_dominates (union over call-sites) and definitely_dominates (intersection)
+      if (InterprocDomByFunc) {
+        const FunctionDecl *DefFD = NearestFD;
+        auto ItU = InterprocDomByFunc->find(DefFD);
+        if (ItU != InterprocDomByFunc->end()) {
+          // Stable-order union
+          llvm::SmallVector<DomInfo, 16> Possibly;
+          Possibly.append(ItU->second.begin(), ItU->second.end());
+          std::sort(Possibly.begin(), Possibly.end(), [&](const DomInfo &A, const DomInfo &B) {
+            PresumedLoc PA = SM.getPresumedLoc(A.Loc);
+            PresumedLoc PB2 = SM.getPresumedLoc(B.Loc);
+            std::string AFile = PA.isValid() ? std::string(PA.getFilename()) : std::string();
+            std::string BFile = PB2.isValid() ? std::string(PB2.getFilename()) : std::string();
+            if (AFile != BFile) return AFile < BFile;
+            if ((PA.isValid() ? PA.getLine() : 0) != (PB2.isValid() ? PB2.getLine() : 0))
+              return (PA.isValid() ? PA.getLine() : 0) < (PB2.isValid() ? PB2.getLine() : 0);
+            return (PA.isValid() ? PA.getColumn() : 0) < (PB2.isValid() ? PB2.getColumn() : 0);
+          });
+          llvm::outs() << ",\"possibly_dominates\":[";
+          for (size_t i = 0; i < Possibly.size(); ++i) {
+            if (i) llvm::outs() << ",";
+            PresumedLoc PD = SM.getPresumedLoc(Possibly[i].Loc);
+            llvm::outs() << "{\"text\":\"" << Possibly[i].Text << "\",\"value\":"
+                         << (Possibly[i].Value ? "true" : "false")
+                         << ",\"file\":\"" << (PD.isValid() ? PD.getFilename() : "")
+                         << "\",\"line\":" << (PD.isValid() ? PD.getLine() : 0)
+                         << ",\"col\":" << (PD.isValid() ? PD.getColumn() : 0) << "}";
+          }
+          llvm::outs() << "]";
+
+          if (InterprocDomCounts && InterprocCallSites) {
+            auto ItC = InterprocDomCounts->find(DefFD);
+            auto ItN = InterprocCallSites->find(DefFD);
+            if (ItC != InterprocDomCounts->end() && ItN != InterprocCallSites->end() && ItN->second > 0) {
+              const auto &CountMap = ItC->second;
+              unsigned TotalSites = ItN->second;
+              llvm::SmallVector<DomInfo, 16> Definite;
+              for (const auto &D : Possibly) {
+                std::string Key = makeDomKey(Ctx, D);
+                auto Fit = CountMap.find(Key);
+                if (Fit != CountMap.end() && Fit->getValue() == TotalSites) Definite.push_back(D);
+              }
+              std::sort(Definite.begin(), Definite.end(), [&](const DomInfo &A, const DomInfo &B) {
+                PresumedLoc PA = SM.getPresumedLoc(A.Loc);
+                PresumedLoc PB2 = SM.getPresumedLoc(B.Loc);
+                std::string AFile = PA.isValid() ? std::string(PA.getFilename()) : std::string();
+                std::string BFile = PB2.isValid() ? std::string(PB2.getFilename()) : std::string();
+                if (AFile != BFile) return AFile < BFile;
+                if ((PA.isValid() ? PA.getLine() : 0) != (PB2.isValid() ? PB2.getLine() : 0))
+                  return (PA.isValid() ? PA.getLine() : 0) < (PB2.isValid() ? PB2.getLine() : 0);
+                return (PA.isValid() ? PA.getColumn() : 0) < (PB2.isValid() ? PB2.getColumn() : 0);
+              });
+              llvm::outs() << ",\"definitely_dominates\":[";
+              for (size_t i = 0; i < Definite.size(); ++i) {
+                if (i) llvm::outs() << ",";
+                PresumedLoc PD = SM.getPresumedLoc(Definite[i].Loc);
+                llvm::outs() << "{\"text\":\"" << Definite[i].Text << "\",\"value\":"
+                             << (Definite[i].Value ? "true" : "false")
+                             << ",\"file\":\"" << (PD.isValid() ? PD.getFilename() : "")
+                             << "\",\"line\":" << (PD.isValid() ? PD.getLine() : 0)
+                             << ",\"col\":" << (PD.isValid() ? PD.getColumn() : 0) << "}";
+              }
+              llvm::outs() << "]";
+            }
+          }
+        }
+      }
+
+      llvm::outs() << "}\n";
     }
 
     // Sections mode handled in translation unit processing.
@@ -277,6 +363,8 @@ public:
 
   ASTContext &Ctx;
   const llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> *InterprocDomByFunc;
+  const llvm::DenseMap<const FunctionDecl *, llvm::StringMap<unsigned>> *InterprocDomCounts;
+  const llvm::DenseMap<const FunctionDecl *, unsigned> *InterprocCallSites;
   llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<SourceLocation, 4>>
       LockStack;
   llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<size_t, 4>>
@@ -289,7 +377,7 @@ public:
 
 class RCUPointsConsumer : public ASTConsumer {
 public:
-  explicit RCUPointsConsumer(ASTContext &Context) : Ctx(Context), Visitor(Context, &CallerDomByFunc) {}
+  explicit RCUPointsConsumer(ASTContext &Context) : Ctx(Context), Visitor(Context, &CallerDomByFunc, &CallerDomCountsByFunc, &CallerSiteCountByFunc) {}
   void HandleTranslationUnit(ASTContext &Context) override {
     // Precompute which functions contain RCU-related calls (intra-procedural scan)
     llvm::SmallVector<const FunctionDecl *, 32> Functions;
@@ -388,7 +476,7 @@ public:
                 Cur = DomBB;
               }
 
-              // Dedup and store for callee
+              // Dedup and store for callee (union)
               auto &Vec = CallerDomByFunc[Callee];
               for (auto &D : DomSet) {
                 bool exists = false;
@@ -397,6 +485,17 @@ public:
                 }
                 if (!exists) Vec.push_back(std::move(D));
               }
+
+              // Count occurrences for definitely_dominates
+              auto &CountMap = CallerDomCountsByFunc[Callee];
+              llvm::StringSet<> Seen;
+              for (const auto &D : DomSet) {
+                std::string K = makeDomKey(Context, D);
+                if (Seen.insert(K).second) CountMap[K] += 1;
+              }
+
+              // Increment number of call-sites observed for this callee
+              CallerSiteCountByFunc[Callee] += 1;
             }
           }
         }
@@ -408,6 +507,8 @@ public:
 private:
   ASTContext &Ctx;
   llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> CallerDomByFunc;
+  llvm::DenseMap<const FunctionDecl *, llvm::StringMap<unsigned>> CallerDomCountsByFunc;
+  llvm::DenseMap<const FunctionDecl *, unsigned> CallerSiteCountByFunc;
   RCUVisitor Visitor;
 };
 

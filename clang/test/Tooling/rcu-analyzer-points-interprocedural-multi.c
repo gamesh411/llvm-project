@@ -37,28 +37,50 @@ int f(int x, int y, int z) {
 
 // For calleeA events: dominators include x > 0 (true and false), and y == 1 (true)
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"calleeA"
-// CHECK-SAME: ,"dominators":[{"text":"x > 0","value":true
+// CHECK: "dominators":[{"text":"x > 0","value":true
+// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"calleeA"
-// CHECK-SAME: ,"dominators":[{"text":"x > 0","value":false
+// CHECK: "dominators":[{"text":"x > 0","value":false
+// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"calleeA"
-// CHECK-SAME: ,"dominators":[{"text":"y == 1","value":true
+// CHECK: "dominators":[{"text":"y == 1","value":true
+// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
+// CHECK-SAME: ,{"text":"y == 1","value":true
+// CHECK-SAME: ,"definitely_dominates":[]
 
 // Also propagate to unlock in calleeA
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"calleeA"
-// CHECK-SAME: ,"dominators":[{"text":"x > 0","value":true
+// CHECK: "dominators":[{"text":"x > 0","value":true
+// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"calleeA"
-// CHECK-SAME: ,"dominators":[{"text":"x > 0","value":false
+// CHECK: "dominators":[{"text":"x > 0","value":false
+// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"calleeA"
-// CHECK-SAME: ,"dominators":[{"text":"y == 1","value":true
+// CHECK: "dominators":[{"text":"y == 1","value":true
+// CHECK-SAME: ],"possibly_dominates":[{"text":"x > 0"
+// CHECK-SAME: ,{"text":"y == 1","value":true
+// CHECK-SAME: ,"definitely_dominates":[]
 
 // For calleeB events: dominators include z != 0 (true and false)
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"calleeB"
-// CHECK-SAME: ,"dominators":[{"text":"z != 0","value":true
+// CHECK: "dominators":[{"text":"z != 0","value":true
+// CHECK-SAME: ],"possibly_dominates":[{"text":"z != 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_lock","function":"calleeB"
-// CHECK-SAME: ,"dominators":[{"text":"z != 0","value":false
+// CHECK: "dominators":[{"text":"z != 0","value":false
+// CHECK-SAME: ],"possibly_dominates":[{"text":"z != 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"calleeB"
-// CHECK-SAME: ,"dominators":[{"text":"z != 0","value":true
+// CHECK: "dominators":[{"text":"z != 0","value":true
+// CHECK-SAME: ],"possibly_dominates":[{"text":"z != 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 // CHECK: {"type":"call","name":"rcu_read_unlock","function":"calleeB"
-// CHECK-SAME: ,"dominators":[{"text":"z != 0","value":false
+// CHECK: "dominators":[{"text":"z != 0","value":false
+// CHECK-SAME: ],"possibly_dominates":[{"text":"z != 0"
+// CHECK-SAME: ,"definitely_dominates":[]
 
 
