@@ -53,9 +53,13 @@ static bool isTargetRCUName(StringRef Name) {
          Name == "call_rcu" || Name == "rcu_dereference";
 }
 
+struct DomInfo { SourceLocation Loc; std::string Text; bool Value; };
+
 class RCUVisitor : public RecursiveASTVisitor<RCUVisitor> {
 public:
-  explicit RCUVisitor(ASTContext &Context) : Ctx(Context) {}
+  explicit RCUVisitor(ASTContext &Context,
+                      const llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> *Interproc)
+      : Ctx(Context), InterprocDomByFunc(Interproc) {}
 
   bool VisitCallExpr(CallExpr *CE) {
     const FunctionDecl *FD = CE->getDirectCallee();
@@ -88,7 +92,6 @@ public:
 
     if (ModeOpt == AnalysisMode::Points) {
       // Minimal computation of dominating control conditions for this call.
-      struct DomInfo { SourceLocation Loc; std::string Text; bool Value; };
       llvm::SmallVector<DomInfo, 16> Dominators;
 
       if (NearestFD && NearestFD->doesThisDeclarationHaveABody()) {
@@ -165,6 +168,14 @@ public:
               Cur = DomBB;
             }
           }
+        }
+      }
+
+      // Append interprocedural caller-site dominators if available for this function.
+      if (InterprocDomByFunc) {
+        auto It = InterprocDomByFunc->find(NearestFD);
+        if (It != InterprocDomByFunc->end()) {
+          for (const auto &D : It->second) Dominators.push_back(D);
         }
       }
 
@@ -265,6 +276,7 @@ public:
   }
 
   ASTContext &Ctx;
+  const llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> *InterprocDomByFunc;
   llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<SourceLocation, 4>>
       LockStack;
   llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<size_t, 4>>
@@ -277,11 +289,125 @@ public:
 
 class RCUPointsConsumer : public ASTConsumer {
 public:
-  explicit RCUPointsConsumer(ASTContext &Context) : Visitor(Context) {}
+  explicit RCUPointsConsumer(ASTContext &Context) : Ctx(Context), Visitor(Context, &CallerDomByFunc) {}
   void HandleTranslationUnit(ASTContext &Context) override {
+    // Precompute which functions contain RCU-related calls (intra-procedural scan)
+    llvm::SmallVector<const FunctionDecl *, 32> Functions;
+    for (const Decl *D : Context.getTranslationUnitDecl()->decls())
+      if (const auto *FD = dyn_cast<FunctionDecl>(D))
+        if (FD->doesThisDeclarationHaveABody()) Functions.push_back(FD);
+
+    auto functionHasRCUCall = [&](const FunctionDecl *FD) {
+      const Stmt *Body = FD->getBody(); if (!Body) return false;
+      std::function<bool(const Stmt*)> rec = [&](const Stmt *S)->bool{
+        if (!S) return false;
+        if (const auto *CE = dyn_cast<CallExpr>(S)) {
+          if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+            if (isTargetRCUName(Callee->getName())) return true;
+          }
+        }
+        for (const Stmt *Child : S->children()) {
+          if (rec(Child)) return true;
+        }
+        return false;
+      };
+      return rec(Body);
+    };
+
+    llvm::DenseSet<const FunctionDecl *> RCUFuncs;
+    for (const FunctionDecl *FD : Functions) if (functionHasRCUCall(FD)) RCUFuncs.insert(FD);
+
+    // For each function, compute dominator conditions at call-sites to RCU-containing callees
+    for (const FunctionDecl *FD : Functions) {
+      CFG::BuildOptions Opts; Opts.PruneTriviallyFalseEdges = true; Opts.setAllAlwaysAdd();
+      std::unique_ptr<CFG> Cfg = CFG::buildCFG(FD, FD->getBody(), &Context, Opts);
+      if (!Cfg) continue;
+      CFGDomTree DT; DT.buildDominatorTree(Cfg.get());
+
+      // Map CallExpr (call-site) to callee
+      for (const CFGBlock *BB : *Cfg) {
+        if (!BB) continue;
+        for (const auto &Elt : *BB) {
+          if (auto CS = Elt.getAs<CFGStmt>()) {
+            if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
+              const FunctionDecl *Callee = CE->getDirectCallee();
+              if (!Callee || !RCUFuncs.contains(Callee)) continue;
+
+              // Compute dominating conditions for this call-site
+              const CFGBlock *CallBB = nullptr;
+              for (const auto &Elt2 : *BB) {
+                if (auto CS2 = Elt2.getAs<CFGStmt>()) if (CS2->getStmt() == CE) { CallBB = BB; break; }
+              }
+              if (!CallBB) continue;
+
+              auto reaches = [&](const CFGBlock *Start, const CFGBlock *Goal) {
+                if (!Start) return false;
+                llvm::SmallVector<const CFGBlock *, 32> Stack;
+                llvm::SmallPtrSet<const CFGBlock *, 32> Vis;
+                Stack.push_back(Start);
+                while (!Stack.empty()) {
+                  const CFGBlock *B = Stack.pop_back_val();
+                  if (!B || Vis.count(B)) continue;
+                  Vis.insert(B);
+                  if (B == Goal) return true;
+                  for (auto SI = B->succ_begin(); SI != B->succ_end(); ++SI) {
+                    const CFGBlock *NB = SI->getReachableBlock();
+                    if (NB && !Vis.count(NB)) Stack.push_back(NB);
+                  }
+                }
+                return false;
+              };
+
+              llvm::SmallVector<DomInfo, 8> DomSet;
+              auto &DTBase = DT.getBase();
+              const CFGBlock *Cur = CallBB;
+              while (true) {
+                auto *Node = DTBase.getNode(const_cast<CFGBlock *>(Cur));
+                if (!Node) break;
+                auto *IDom = Node->getIDom(); if (!IDom) break;
+                const CFGBlock *DomBB = IDom->getBlock(); if (!DomBB) break;
+                const Stmt *Term = DomBB->getTerminatorStmt();
+                const Expr *Cond = nullptr;
+                if (const auto *IS = dyn_cast_or_null<IfStmt>(Term)) Cond = IS->getCond();
+                else if (const auto *WS = dyn_cast_or_null<WhileStmt>(Term)) Cond = WS->getCond();
+                else if (const auto *FS = dyn_cast_or_null<ForStmt>(Term)) Cond = FS->getCond();
+                else if (const auto *DS = dyn_cast_or_null<DoStmt>(Term)) Cond = DS->getCond();
+                else if (const auto *CO = dyn_cast_or_null<ConditionalOperator>(Term)) Cond = CO->getCond();
+                else if (const auto *SS = dyn_cast_or_null<SwitchStmt>(Term)) Cond = SS->getCond();
+                if (Cond) {
+                  const CFGBlock *Succ0 = (DomBB->succ_size() > 0) ? DomBB->succ_begin()->getReachableBlock() : nullptr;
+                  const CFGBlock *Succ1 = (DomBB->succ_size() > 1) ? (DomBB->succ_begin() + 1)->getReachableBlock() : nullptr;
+                  bool r0 = reaches(Succ0, Cur);
+                  bool r1 = reaches(Succ1, Cur);
+                  if (r0 != r1) {
+                    bool value = r0;
+                    std::string Text = RCUVisitor::getSourceText(Context, Cond->getSourceRange());
+                    if (!Text.empty()) DomSet.push_back({Cond->getExprLoc(), std::move(Text), value});
+                  }
+                }
+                Cur = DomBB;
+              }
+
+              // Dedup and store for callee
+              auto &Vec = CallerDomByFunc[Callee];
+              for (auto &D : DomSet) {
+                bool exists = false;
+                for (const auto &E : Vec) {
+                  if (E.Value == D.Value && E.Text == D.Text && E.Loc == D.Loc) { exists = true; break; }
+                }
+                if (!exists) Vec.push_back(std::move(D));
+              }
+            }
+          }
+        }
+      }
+    }
+
     Visitor.TraverseDecl(Context.getTranslationUnitDecl());
   }
 private:
+  ASTContext &Ctx;
+  llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> CallerDomByFunc;
   RCUVisitor Visitor;
 };
 
