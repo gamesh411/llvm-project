@@ -388,7 +388,7 @@ public:
 
 class RCUPointsConsumer : public ASTConsumer {
 public:
-  explicit RCUPointsConsumer(ASTContext &Context) : Ctx(Context), Visitor(Context, &CallerDomByFunc, &CallerDomCountsByFunc, &CallerSiteCountByFunc) {}
+  explicit RCUPointsConsumer(ASTContext &Context) : Visitor(Context, &CallerDomByFunc, &CallerDomCountsByFunc, &CallerSiteCountByFunc) {}
   void HandleTranslationUnit(ASTContext &Context) override {
     // Precompute which functions contain RCU-related calls (intra-procedural scan)
     llvm::SmallVector<const FunctionDecl *, 32> Functions;
@@ -548,7 +548,6 @@ public:
     Visitor.TraverseDecl(Context.getTranslationUnitDecl());
   }
 private:
-  ASTContext &Ctx;
   llvm::DenseMap<const FunctionDecl *, llvm::SmallVector<DomInfo, 8>> CallerDomByFunc;
   llvm::DenseMap<const FunctionDecl *, llvm::StringMap<unsigned>> CallerDomCountsByFunc;
   llvm::DenseMap<const FunctionDecl *, unsigned> CallerSiteCountByFunc;
