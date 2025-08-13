@@ -4,8 +4,8 @@ void rcu_read_lock(void);
 void rcu_read_unlock(void);
 
 static void callee(void) {
-  rcu_read_lock();   // line 8
-  rcu_read_unlock(); // line 9
+  rcu_read_lock();
+  rcu_read_unlock();
 }
 
 int f(int x) {

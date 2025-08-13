@@ -4,12 +4,12 @@ void rcu_read_lock(void);
 void rcu_read_unlock(void);
 
 static void callee(void) {
-  rcu_read_unlock(); // line 6
+  rcu_read_unlock();
 }
 
 int f(void) {
-  rcu_read_lock();  // line 10
-  callee();         // line 11
+  rcu_read_lock();
+  callee();
   return 0;
 }
 
