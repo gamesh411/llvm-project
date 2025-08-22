@@ -611,6 +611,97 @@ public:
         }
       }
     }
+
+    // Compute a conservative "must unlock" summary for direct bodies:
+    // MustUnlock[FD] = true if there exists an rcu_read_unlock() in FD that post-dominates the function entry
+    // (i.e., all paths to exit must pass through some unlock site inside FD).
+    llvm::DenseMap<const FunctionDecl *, bool> MustUnlock;
+    for (const FunctionDecl *FD : AllFuncs) {
+      bool Must = false;
+      if (FD->doesThisDeclarationHaveABody()) {
+        CFG::BuildOptions Opts; Opts.PruneTriviallyFalseEdges = true; Opts.setAllAlwaysAdd();
+        std::unique_ptr<CFG> Cfg = CFG::buildCFG(FD, FD->getBody(), &Context, Opts);
+        if (Cfg) {
+          // Collect unlock blocks
+          llvm::SmallVector<const CFGBlock *, 8> UnlockBlocks;
+          for (const CFGBlock *BB : *Cfg) {
+            if (!BB) continue;
+            for (const auto &Elt : *BB) {
+              if (auto CS = Elt.getAs<CFGStmt>()) {
+                if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
+                  if (const FunctionDecl *Callee = CE->getDirectCallee()) {
+                    if (Callee->getName() == "rcu_read_unlock") {
+                      UnlockBlocks.push_back(BB);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          if (!UnlockBlocks.empty()) {
+            CFGPostDomTree PDT; PDT.buildDominatorTree(Cfg.get());
+            const CFGBlock *Entry = &Cfg->getEntry();
+            const CFGBlock *Start = nullptr;
+            for (auto SI = Entry->succ_begin(); SI != Entry->succ_end(); ++SI) {
+              const CFGBlock *NB = SI->getReachableBlock();
+              if (NB) { Start = NB; break; }
+            }
+            if (Start) {
+              for (const CFGBlock *UB : UnlockBlocks) {
+                if (PDT.dominates(const_cast<CFGBlock *>(UB), const_cast<CFGBlock *>(Start))) {
+                  Must = true; break;
+                }
+              }
+            }
+          }
+        }
+      }
+      MustUnlock[FD] = Must;
+    }
+
+    // Lift must-unlock transitively through calls where the call-site post-dominates the function entry.
+    bool MUChanged = true;
+    while (MUChanged) {
+      MUChanged = false;
+      for (const FunctionDecl *FD : AllFuncs) {
+        if (MustUnlock[FD]) continue;
+        // Build CFG once per FD in this pass
+        if (!FD->doesThisDeclarationHaveABody()) continue;
+        CFG::BuildOptions Opts; Opts.PruneTriviallyFalseEdges = true; Opts.setAllAlwaysAdd();
+        std::unique_ptr<CFG> Cfg = CFG::buildCFG(FD, FD->getBody(), &Context, Opts);
+        if (!Cfg) continue;
+        CFGPostDomTree PDT; PDT.buildDominatorTree(Cfg.get());
+        const CFGBlock *Entry = &Cfg->getEntry();
+        const CFGBlock *Start = nullptr;
+        for (auto SI = Entry->succ_begin(); SI != Entry->succ_end(); ++SI) {
+          const CFGBlock *NB = SI->getReachableBlock(); if (NB) { Start = NB; break; }
+        }
+        if (!Start) continue;
+        auto ItCalls = CallsFrom.find(FD);
+        if (ItCalls == CallsFrom.end()) continue;
+        bool LocChange = false;
+        for (const auto &CS : ItCalls->second) {
+          if (!MustUnlock.lookup(CS.Callee)) continue;
+          // Find the CFG block containing this call expr.
+          const CFGBlock *CallBB = nullptr;
+          for (const CFGBlock *BB : *Cfg) {
+            if (!BB) continue;
+            for (const auto &Elt : *BB) {
+              if (auto CS2 = Elt.getAs<CFGStmt>()) {
+                if (CS2->getStmt() == CS.CE) { CallBB = BB; break; }
+              }
+            }
+            if (CallBB) break;
+          }
+          if (!CallBB) continue;
+          // If the call site post-dominates function entry, then FD must unlock transitively.
+          if (PDT.dominates(const_cast<CFGBlock *>(CallBB), const_cast<CFGBlock *>(Start))) {
+            MustUnlock[FD] = true; LocChange = true; break;
+          }
+        }
+        if (LocChange) MUChanged = true;
+      }
+    }
     auto processFunction = [&](const FunctionDecl *FD) {
       if (!FD->doesThisDeclarationHaveABody()) return;
       if (!SM.isInMainFile(FD->getLocation())) return;
@@ -728,7 +819,8 @@ public:
                       for (const auto &E2 : *LBB) if (auto CS2 = E2.getAs<CFGStmt>())
                         if (const auto *CE2 = dyn_cast<CallExpr>(CS2->getStmt()))
                           if (CE2->getDirectCallee() == Callee) ++CallsToCallee;
-                    if (CallsToCallee == 1) Conf = "definite";
+                    // Refine: callee must definitely unlock on all its paths to claim definiteness
+                    if (CallsToCallee == 1 && MustUnlock.lookup(Callee)) Conf = "definite";
                     // Build provenance and call_chain
                     // Build call_chain frames starting from this call-site, then following UnlockVia until direct unlock.
                     struct Frame { const FunctionDecl *F; SourceLocation Loc; bool IsUnlock; };

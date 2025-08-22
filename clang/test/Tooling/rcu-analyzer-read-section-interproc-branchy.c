@@ -13,7 +13,7 @@ int g(int k) {
   return 0;
 }
 
-// CHECK: {"type":"read_section","kind":"interprocedural","confidence":"definite","function":"g"
+// CHECK: {"type":"read_section","kind":"interprocedural","confidence":"probable","function":"g"
 // CHECK: "begin_line":11
 // CHECK: "end_line":12
 
