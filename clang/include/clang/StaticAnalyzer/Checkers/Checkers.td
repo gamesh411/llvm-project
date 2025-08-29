@@ -549,6 +549,7 @@ def MallocChecker: Checker<"Malloc">,
   Dependencies<[DynamicMemoryModeling]>,
   Documentation<HasDocumentation>;
 
+
 def MallocSizeofChecker : Checker<"MallocSizeof">,
   HelpText<"Check for dubious malloc arguments involving sizeof">,
   Documentation<HasDocumentation>;
@@ -613,6 +614,10 @@ def PthreadLockChecker : Checker<"PthreadLock">,
 def SimpleStreamChecker : Checker<"SimpleStream">,
   HelpText<"Check for misuses of stream APIs">,
   Documentation<HasDocumentation>;
+
+def EmbeddedDSLMonitor : Checker<"EmbeddedDSLMonitor">,
+  HelpText<"Baseline malloc/free monitor checking exactly-once property.">,
+  Documentation<NotDocumented>;
 
 } // end "alpha.unix"
 
