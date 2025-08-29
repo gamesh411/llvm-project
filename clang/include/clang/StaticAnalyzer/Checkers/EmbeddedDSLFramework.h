@@ -10,6 +10,17 @@
 // It provides a reusable framework for implementing temporal logic-based
 // static analysis properties using a monitor automaton approach.
 //
+// The framework supports:
+//   - Generic event handling (preCall, postCall, deadSymbols)
+//   - ASTMatchers integration for pattern matching
+//   - SymbolRef-based GDM for symbol tracking
+//   - Declarative property specification
+//   - Reusable monitor automatons
+//
+// Example LTL formula for malloc/free:
+//   G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )
+//   "Globally, if malloc succeeds, eventually free it, and never free it again"
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_CLANG_STATICANALYZER_CHECKERS_EMBEDDEDDSLFRAMEWORK_H
@@ -263,7 +274,7 @@ private:
 class MallocFreeProperty : public PropertyDefinition {
 public:
   std::string getTemporalLogicFormula() const override {
-    return "G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → X ¬free(x) ) )";
+    return "G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )";
   }
 
   std::string getPropertyName() const override {

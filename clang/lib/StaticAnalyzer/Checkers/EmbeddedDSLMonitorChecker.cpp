@@ -14,7 +14,11 @@
 // 4. Properties can be declaratively specified without checker-specific code
 //
 // Pure Linear Temporal Logic Formula for malloc/free:
-//   G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → X ¬free(x) ) )
+//   G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )
+//
+// English: "It is always true that: if a malloc call succeeds, then that memory
+// must eventually be freed, and once it is freed, it can never be freed again
+// in any subsequent step."
 //
 // The DSL framework supports:
 //   - Generic event handling (preCall, postCall, deadSymbols)
