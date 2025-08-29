@@ -7,9 +7,9 @@ void free(void *);
 void ok_exactly_once() {
   void *p = malloc(16);
   if (!p)
-    return;
+    return; // expected-warning{{allocated memory is not freed (violates exactly-once)}}
   free(p); // no-warning
-} // expected-warning{{allocated memory is not freed (violates exactly-once)}}
+}
 
 void leak_missing_free() {
   void *p = malloc(32);
