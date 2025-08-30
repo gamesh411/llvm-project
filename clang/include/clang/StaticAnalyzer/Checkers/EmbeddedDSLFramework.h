@@ -17,6 +17,7 @@
 //   - Declarative property specification
 //   - Reusable monitor automatons
 //   - LTL formula structure with binding and diagnostic labeling
+//   - LTL parser and Büchi automaton generation
 //
 // Example LTL formula for malloc/free:
 //   G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )
@@ -32,9 +33,13 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/ImmutableMap.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringRef.h"
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -77,6 +82,8 @@ class MonitorAutomaton;
 class EventHandler;
 class PropertyDefinition;
 class MallocFreeEventHandler;
+class LTLAutomaton;
+class LTLState;
 
 // LTL Formula Node Types
 enum class LTLNodeType {
@@ -398,6 +405,335 @@ inline std::shared_ptr<LTLFormulaNode> NotNull(const SymbolBinding &binding) {
 
 } // namespace DSL
 
+//===----------------------------------------------------------------------===//
+// LTL Parser and Büchi Automaton Generation
+//===----------------------------------------------------------------------===//
+
+// LTL State representation for Büchi automaton
+class LTLState {
+public:
+  std::string StateID;
+  std::set<std::string> AtomicPropositions;
+  std::set<std::string> PendingFormulas;
+  bool IsAccepting;
+  std::string DiagnosticLabel;
+
+  LTLState(const std::string &id, bool accepting = false)
+      : StateID(id), IsAccepting(accepting) {}
+
+  // Add atomic proposition to this state
+  void addAtomicProposition(const std::string &prop) {
+    AtomicPropositions.insert(prop);
+  }
+
+  // Add pending formula to this state
+  void addPendingFormula(const std::string &formula) {
+    PendingFormulas.insert(formula);
+  }
+
+  // Check if this state accepts a given set of atomic propositions
+  bool accepts(const std::set<std::string> &propositions) const {
+    for (const auto &required : AtomicPropositions) {
+      if (propositions.find(required) == propositions.end()) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+// Büchi Automaton for LTL monitoring
+class LTLAutomaton {
+private:
+  std::vector<std::shared_ptr<LTLState>> States;
+  std::shared_ptr<LTLState> InitialState;
+  std::map<std::pair<std::shared_ptr<LTLState>, std::set<std::string>>,
+           std::shared_ptr<LTLState>>
+      Transitions;
+  std::map<std::string, std::string> DiagnosticLabels;
+
+public:
+  LTLAutomaton() : InitialState(nullptr) {}
+
+  // Add a state to the automaton
+  void addState(std::shared_ptr<LTLState> state) {
+    States.push_back(state);
+    if (!InitialState) {
+      InitialState = state;
+    }
+  }
+
+  // Add a transition
+  void addTransition(std::shared_ptr<LTLState> from,
+                     const std::set<std::string> &propositions,
+                     std::shared_ptr<LTLState> to) {
+    Transitions[{from, propositions}] = to;
+  }
+
+  // Set diagnostic label for a state
+  void setDiagnosticLabel(const std::string &stateID,
+                          const std::string &label) {
+    DiagnosticLabels[stateID] = label;
+  }
+
+  // Get current state after processing an event
+  std::shared_ptr<LTLState>
+  processEvent(std::shared_ptr<LTLState> currentState,
+               const std::set<std::string> &propositions) {
+    auto key = std::make_pair(currentState, propositions);
+    auto it = Transitions.find(key);
+    if (it != Transitions.end()) {
+      return it->second;
+    }
+    return currentState; // Stay in current state if no transition
+  }
+
+  // Check if current state is accepting
+  bool isAccepting(std::shared_ptr<LTLState> state) const {
+    return state && state->IsAccepting;
+  }
+
+  // Get diagnostic label for a state
+  std::string getDiagnosticLabel(std::shared_ptr<LTLState> state) const {
+    if (!state)
+      return "";
+    auto it = DiagnosticLabels.find(state->StateID);
+    return it != DiagnosticLabels.end() ? it->second : "";
+  }
+
+  // Get initial state
+  std::shared_ptr<LTLState> getInitialState() const { return InitialState; }
+
+  // Get all states
+  const std::vector<std::shared_ptr<LTLState>> &getStates() const {
+    return States;
+  }
+};
+
+// LTL Parser for converting formula structure to Büchi automaton
+class LTLParser {
+private:
+  std::shared_ptr<LTLFormulaNode> RootFormula;
+  std::map<std::string, std::shared_ptr<LTLState>> StateMap;
+  int StateCounter;
+
+public:
+  LTLParser(std::shared_ptr<LTLFormulaNode> formula)
+      : RootFormula(formula), StateCounter(0) {}
+
+  // Generate Büchi automaton from LTL formula
+  std::unique_ptr<LTLAutomaton> generateAutomaton() {
+    auto automaton = std::make_unique<LTLAutomaton>();
+
+    if (!RootFormula) {
+      return automaton;
+    }
+
+    // Create initial state with the root formula
+    auto initialState = createState("q0", false);
+    initialState->addPendingFormula(RootFormula->getStructuralInfo());
+
+    automaton->addState(initialState);
+
+    // Recursively build the automaton
+    buildAutomatonStates(RootFormula, initialState, automaton.get());
+
+    return automaton;
+  }
+
+private:
+  // Create a new state
+  std::shared_ptr<LTLState> createState(const std::string &prefix,
+                                        bool accepting) {
+    std::string stateID = prefix + "_" + std::to_string(StateCounter++);
+    return std::make_shared<LTLState>(stateID, accepting);
+  }
+
+  // Recursively build automaton states from formula
+  void buildAutomatonStates(std::shared_ptr<LTLFormulaNode> formula,
+                            std::shared_ptr<LTLState> currentState,
+                            LTLAutomaton *automaton) {
+    if (!formula)
+      return;
+
+    switch (formula->Type) {
+    case LTLNodeType::Atomic:
+      buildAtomicState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::And:
+      buildAndState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Or:
+      buildOrState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Not:
+      buildNotState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Implies:
+      buildImpliesState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Globally:
+      buildGloballyState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Eventually:
+      buildEventuallyState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Next:
+      buildNextState(formula, currentState, automaton);
+      break;
+    default:
+      // Handle other operators as needed
+      break;
+    }
+  }
+
+  // Build state for atomic proposition
+  void buildAtomicState(std::shared_ptr<LTLFormulaNode> formula,
+                        std::shared_ptr<LTLState> currentState,
+                        LTLAutomaton *automaton) {
+    auto atomicNode = std::static_pointer_cast<AtomicNode>(formula);
+    std::string prop =
+        atomicNode->FunctionName + "(" + atomicNode->Binding.SymbolName + ")";
+
+    currentState->addAtomicProposition(prop);
+
+    // Create accepting state for successful atomic proposition
+    auto acceptingState = createState("accept", true);
+    automaton->addState(acceptingState);
+
+    // Add transition on the atomic proposition
+    std::set<std::string> props = {prop};
+    automaton->addTransition(currentState, props, acceptingState);
+
+    // Set diagnostic label if available
+    if (!formula->DiagnosticLabel.empty()) {
+      automaton->setDiagnosticLabel(acceptingState->StateID,
+                                    formula->DiagnosticLabel);
+    }
+  }
+
+  // Build state for AND operator
+  void buildAndState(std::shared_ptr<LTLFormulaNode> formula,
+                     std::shared_ptr<LTLState> currentState,
+                     LTLAutomaton *automaton) {
+    // For AND, we need both children to be satisfied
+    for (auto &child : formula->Children) {
+      buildAutomatonStates(child, currentState, automaton);
+    }
+  }
+
+  // Build state for OR operator
+  void buildOrState(std::shared_ptr<LTLFormulaNode> formula,
+                    std::shared_ptr<LTLState> currentState,
+                    LTLAutomaton *automaton) {
+    // For OR, we create separate paths for each child
+    for (auto &child : formula->Children) {
+      auto orState = createState("or", false);
+      automaton->addState(orState);
+      buildAutomatonStates(child, orState, automaton);
+
+      // Add transition from current state to OR state
+      std::set<std::string> empty;
+      automaton->addTransition(currentState, empty, orState);
+    }
+  }
+
+  // Build state for NOT operator
+  void buildNotState(std::shared_ptr<LTLFormulaNode> formula,
+                     std::shared_ptr<LTLState> currentState,
+                     LTLAutomaton *automaton) {
+    // For NOT, we create a state that accepts when the child is NOT satisfied
+    if (!formula->Children.empty()) {
+      auto notState = createState("not", false);
+      automaton->addState(notState);
+
+      // Build states for the negated formula
+      buildAutomatonStates(formula->Children[0], notState, automaton);
+
+      // Add transition from current state to NOT state
+      std::set<std::string> empty;
+      automaton->addTransition(currentState, empty, notState);
+    }
+  }
+
+  // Build state for IMPLIES operator
+  void buildImpliesState(std::shared_ptr<LTLFormulaNode> formula,
+                         std::shared_ptr<LTLState> currentState,
+                         LTLAutomaton *automaton) {
+    // A → B is equivalent to ¬A ∨ B
+    if (formula->Children.size() >= 2) {
+      auto notA = std::make_shared<UnaryOpNode>(LTLNodeType::Not);
+      notA->addChild(formula->Children[0]);
+
+      auto orNode = std::make_shared<BinaryOpNode>(LTLNodeType::Or);
+      orNode->addChild(notA);
+      orNode->addChild(formula->Children[1]);
+
+      buildAutomatonStates(orNode, currentState, automaton);
+    }
+  }
+
+  // Build state for GLOBALLY operator
+  void buildGloballyState(std::shared_ptr<LTLFormulaNode> formula,
+                          std::shared_ptr<LTLState> currentState,
+                          LTLAutomaton *automaton) {
+    // G φ means φ must be true in all states
+    if (!formula->Children.empty()) {
+      auto globallyState = createState("globally", false);
+      automaton->addState(globallyState);
+
+      // Build states for the inner formula
+      buildAutomatonStates(formula->Children[0], globallyState, automaton);
+
+      // Add self-loop transition for globally
+      std::set<std::string> empty;
+      automaton->addTransition(globallyState, empty, globallyState);
+
+      // Add transition from current state to globally state
+      automaton->addTransition(currentState, empty, globallyState);
+    }
+  }
+
+  // Build state for EVENTUALLY operator
+  void buildEventuallyState(std::shared_ptr<LTLFormulaNode> formula,
+                            std::shared_ptr<LTLState> currentState,
+                            LTLAutomaton *automaton) {
+    // F φ means φ must be true in some future state
+    if (!formula->Children.empty()) {
+      auto eventuallyState = createState("eventually", false);
+      automaton->addState(eventuallyState);
+
+      // Build states for the inner formula
+      buildAutomatonStates(formula->Children[0], eventuallyState, automaton);
+
+      // Add transition from current state to eventually state
+      std::set<std::string> empty;
+      automaton->addTransition(currentState, empty, eventuallyState);
+
+      // Add self-loop transition for eventually
+      automaton->addTransition(eventuallyState, empty, eventuallyState);
+    }
+  }
+
+  // Build state for NEXT operator
+  void buildNextState(std::shared_ptr<LTLFormulaNode> formula,
+                      std::shared_ptr<LTLState> currentState,
+                      LTLAutomaton *automaton) {
+    // X φ means φ must be true in the next state
+    if (!formula->Children.empty()) {
+      auto nextState = createState("next", false);
+      automaton->addState(nextState);
+
+      // Build states for the inner formula
+      buildAutomatonStates(formula->Children[0], nextState, automaton);
+
+      // Add transition from current state to next state
+      std::set<std::string> empty;
+      automaton->addTransition(currentState, empty, nextState);
+    }
+  }
+};
+
 // LTL Formula Builder
 class LTLFormulaBuilder {
 private:
@@ -438,6 +774,16 @@ public:
     std::vector<std::string> functions;
     collectFunctions(Root, functions);
     return functions;
+  }
+
+  // Generate Büchi automaton from the formula
+  std::unique_ptr<LTLAutomaton> generateAutomaton() const {
+    if (!Root) {
+      return std::make_unique<LTLAutomaton>();
+    }
+
+    LTLParser parser(Root);
+    return parser.generateAutomaton();
   }
 
 private:
@@ -510,20 +856,69 @@ class MonitorAutomaton {
   std::unique_ptr<EventHandler> Handler;
   std::string PropertyName;
   LTLFormulaBuilder FormulaBuilder;
+  std::unique_ptr<LTLAutomaton> Automaton;
+  std::shared_ptr<LTLState> CurrentState;
 
 public:
   MonitorAutomaton(std::unique_ptr<PropertyDefinition> prop,
                    const CheckerBase *Checker)
       : Handler(prop->createEventHandler(Checker)),
         PropertyName(prop->getPropertyName()),
-        FormulaBuilder(prop->getFormulaBuilder()) {}
+        FormulaBuilder(prop->getFormulaBuilder()) {
+
+    // Generate Büchi automaton from the formula
+    Automaton = FormulaBuilder.generateAutomaton();
+    CurrentState = Automaton->getInitialState();
+  }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
+    // Process event through the automaton
+    if (Automaton && CurrentState) {
+      std::set<std::string> propositions = extractPropositions(event);
+      CurrentState = Automaton->processEvent(CurrentState, propositions);
+
+      // Check for violations
+      if (Automaton->isAccepting(CurrentState)) {
+        std::string diagnostic = Automaton->getDiagnosticLabel(CurrentState);
+        if (!diagnostic.empty()) {
+          emitDiagnostic(diagnostic, event, C);
+        }
+      }
+    }
+
+    // Also handle through the traditional event handler
     Handler->handleEvent(event, C);
   }
 
   std::string getPropertyName() const { return PropertyName; }
   LTLFormulaBuilder getFormulaBuilder() const { return FormulaBuilder; }
+
+private:
+  // Extract atomic propositions from an event
+  std::set<std::string> extractPropositions(const GenericEvent &event) {
+    std::set<std::string> propositions;
+
+    switch (event.Type) {
+    case EventType::PostCall:
+      propositions.insert(event.FunctionName + "(" + event.SymbolName + ")");
+      break;
+    case EventType::PreCall:
+      propositions.insert(event.FunctionName + "(" + event.SymbolName + ")");
+      break;
+    case EventType::DeadSymbols:
+      propositions.insert("dead(" + event.SymbolName + ")");
+      break;
+    }
+
+    return propositions;
+  }
+
+  // Emit diagnostic for automaton-based violations
+  void emitDiagnostic(const std::string &diagnostic, const GenericEvent &event,
+                      CheckerContext &C) {
+    // This would integrate with the existing diagnostic system
+    // For now, we'll use the traditional handler's diagnostic system
+  }
 };
 
 // Generic ASTMatchers wrapper
@@ -734,6 +1129,63 @@ public:
 
   std::unique_ptr<EventHandler>
   createEventHandler(const CheckerBase *Checker) override {
+    return std::make_unique<MallocFreeEventHandler>(Checker);
+  }
+};
+
+// Example: Mutex Lock/Unlock Property
+// This demonstrates how the framework can be used for other temporal properties
+class MutexLockUnlockProperty : public PropertyDefinition {
+private:
+  LTLFormulaBuilder FormulaBuilder;
+
+public:
+  MutexLockUnlockProperty() {
+    // Build the LTL formula: G( lock(x) → F unlock(x) ∧ G( unlock(x) → G
+    // ¬lock(x) ) ) "Globally, if a lock is acquired, it must eventually be
+    // released, and once released, it cannot be acquired again until it is
+    // released"
+
+    auto lockCall = DSL::Call("lock", DSL::FirstParamVal("x"));
+    auto unlockCall = DSL::Call("unlock", DSL::FirstParamVal("x"));
+
+    auto eventuallyUnlock = DSL::F(unlockCall);
+    eventuallyUnlock->withDiagnostic("Lock leak: acquired lock not released");
+
+    auto unlockImpliesNoMoreLock =
+        DSL::Implies(unlockCall, DSL::G(DSL::Not(lockCall)));
+    unlockImpliesNoMoreLock->withDiagnostic(
+        "Double lock: lock acquired multiple times");
+
+    auto globallyNoMoreLock = DSL::G(unlockImpliesNoMoreLock);
+
+    auto eventuallyUnlockAndNoMoreLock =
+        DSL::And(eventuallyUnlock, globallyNoMoreLock);
+
+    auto implication = DSL::Implies(lockCall, eventuallyUnlockAndNoMoreLock);
+
+    auto globallyImplication = DSL::G(implication);
+    globallyImplication->withDiagnostic("Mutex lock/unlock property violation");
+
+    FormulaBuilder.setFormula(globallyImplication);
+  }
+
+  std::string getTemporalLogicFormula() const override {
+    return "G( lock(x) → F unlock(x) ∧ G( unlock(x) → G ¬lock(x) ) )";
+  }
+
+  std::string getPropertyName() const override {
+    return "mutex_lock_unlock_exactly_once";
+  }
+
+  LTLFormulaBuilder getFormulaBuilder() const override {
+    return FormulaBuilder;
+  }
+
+  std::unique_ptr<EventHandler>
+  createEventHandler(const CheckerBase *Checker) override {
+    // For now, return the same handler - in a real implementation,
+    // this would be a specialized MutexLockUnlockEventHandler
     return std::make_unique<MallocFreeEventHandler>(Checker);
   }
 };

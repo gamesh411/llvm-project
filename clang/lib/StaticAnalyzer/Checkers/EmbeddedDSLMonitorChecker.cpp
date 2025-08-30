@@ -116,6 +116,36 @@ public:
       llvm::errs() << "  - " << func << "\n";
     }
     llvm::errs() << "=====================================\n";
+
+    // Debug: Print Büchi automaton information
+    llvm::errs() << "=== Büchi Automaton Information ===\n";
+    auto automaton = formulaBuilder.generateAutomaton();
+    llvm::errs() << "Automaton States (" << automaton->getStates().size()
+                 << "):\n";
+    for (const auto &state : automaton->getStates()) {
+      llvm::errs() << "  State: " << state->StateID;
+      if (state->IsAccepting) {
+        llvm::errs() << " (accepting)";
+      }
+      llvm::errs() << "\n";
+
+      if (!state->AtomicPropositions.empty()) {
+        llvm::errs() << "    Atomic Propositions: ";
+        for (const auto &prop : state->AtomicPropositions) {
+          llvm::errs() << prop << " ";
+        }
+        llvm::errs() << "\n";
+      }
+
+      if (!state->PendingFormulas.empty()) {
+        llvm::errs() << "    Pending Formulas: ";
+        for (const auto &formula : state->PendingFormulas) {
+          llvm::errs() << formula << " ";
+        }
+        llvm::errs() << "\n";
+      }
+    }
+    llvm::errs() << "=====================================\n";
   }
 
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
