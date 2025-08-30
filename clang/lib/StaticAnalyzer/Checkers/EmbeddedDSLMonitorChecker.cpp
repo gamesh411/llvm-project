@@ -75,6 +75,47 @@ public:
     auto property = std::make_unique<dsl::MallocFreeProperty>();
     Monitor =
         std::make_unique<dsl::MonitorAutomaton>(std::move(property), this);
+
+    // Debug: Print the DSL formula structure
+    auto formulaBuilder = Monitor->getFormulaBuilder();
+    llvm::errs() << "=== Embedded DSL Formula Structure ===\n";
+    llvm::errs() << "Formula: " << formulaBuilder.getFormulaString() << "\n";
+    llvm::errs() << "Structural Info: " << formulaBuilder.getStructuralInfo()
+                 << "\n";
+
+    auto labels = formulaBuilder.getDiagnosticLabels();
+    llvm::errs() << "Diagnostic Labels (" << labels.size() << "):\n";
+    for (const auto &label : labels) {
+      llvm::errs() << "  - " << label << "\n";
+    }
+
+    auto bindings = formulaBuilder.getSymbolBindings();
+    llvm::errs() << "Symbol Bindings (" << bindings.size() << "):\n";
+    for (const auto &binding : bindings) {
+      std::string typeStr;
+      switch (binding.Type) {
+      case dsl::BindingType::ReturnValue:
+        typeStr = "ReturnValue";
+        break;
+      case dsl::BindingType::FirstParameter:
+        typeStr = "FirstParameter";
+        break;
+      case dsl::BindingType::NthParameter:
+        typeStr = "NthParameter";
+        break;
+      case dsl::BindingType::Variable:
+        typeStr = "Variable";
+        break;
+      }
+      llvm::errs() << "  - " << binding.SymbolName << " (" << typeStr << ")\n";
+    }
+
+    auto functions = formulaBuilder.getFunctionNames();
+    llvm::errs() << "Function Names (" << functions.size() << "):\n";
+    for (const auto &func : functions) {
+      llvm::errs() << "  - " << func << "\n";
+    }
+    llvm::errs() << "=====================================\n";
   }
 
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
