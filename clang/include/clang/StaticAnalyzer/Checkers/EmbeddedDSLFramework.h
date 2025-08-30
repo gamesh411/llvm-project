@@ -47,6 +47,7 @@
 // Generic symbol-based GDM for symbol tracking
 REGISTER_MAP_WITH_PROGRAMSTATE(GenericSymbolMap, clang::ento::SymbolRef,
                                std::string)
+REGISTER_MAP_WITH_PROGRAMSTATE(LeakedSymbols, clang::ento::SymbolRef, bool)
 
 namespace clang {
 namespace ento {
@@ -1048,23 +1049,44 @@ private:
   }
 
   void emitDoubleFreeDiagnostic(const GenericEvent &event, CheckerContext &C) {
+    if (!event.Symbol) {
+      return;
+    }
+
+    // Generate error node
+    ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
+    if (!ErrorNode) {
+      return;
+    }
+
     auto R = std::make_unique<PathSensitiveBugReport>(
         getDoubleFreeBugType(), "memory freed twice (violates exactly-once)",
-        C.generateErrorNode(C.getState()));
-    if (event.Symbol) {
-      R->markInteresting(event.Symbol);
-    }
+        ErrorNode);
+    R->markInteresting(event.Symbol);
     C.emitReport(std::move(R));
   }
 
   void emitLeakDiagnostic(const GenericEvent &event, CheckerContext &C) {
+    // Use the same pattern as MallocChecker - collect errors and emit at the
+    // end
+    if (!event.Symbol) {
+      return;
+    }
+
+    // Mark the symbol as leaked in the state
+    ProgramStateRef State = C.getState();
+    State = State->set<LeakedSymbols>(event.Symbol, true);
+
+    // Generate error node with the updated state
+    ExplodedNode *ErrorNode = C.generateErrorNode(State);
+    if (!ErrorNode) {
+      return;
+    }
+
     auto R = std::make_unique<PathSensitiveBugReport>(
         getLeakBugType(),
-        "allocated memory is not freed (violates exactly-once)",
-        C.generateErrorNode(C.getState()));
-    if (event.Symbol) {
-      R->markInteresting(event.Symbol);
-    }
+        "allocated memory is not freed (violates exactly-once)", ErrorNode);
+    R->markInteresting(event.Symbol);
     C.emitReport(std::move(R));
   }
 
