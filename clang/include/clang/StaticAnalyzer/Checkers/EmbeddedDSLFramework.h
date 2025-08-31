@@ -34,8 +34,7 @@ REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
                                clang::ento::SymbolRef)
 
 namespace llvm {
-template <>
-struct FoldingSetTrait<std::string> {
+template <> struct FoldingSetTrait<std::string> {
   static void Profile(const std::string &X, FoldingSetNodeID &ID) {
     ID.AddString(X);
   }
@@ -164,7 +163,7 @@ public:
     } else {
       result = Binding.SymbolName;
     }
-    
+
     if (!DiagnosticLabel.empty()) {
       result += " [" + DiagnosticLabel + "]";
     }
@@ -207,8 +206,9 @@ public:
     default:
       op = " ? ";
     }
-    std::string result = "(" + Children[0]->toString() + op + Children[1]->toString() + ")";
-    
+    std::string result =
+        "(" + Children[0]->toString() + op + Children[1]->toString() + ")";
+
     if (!DiagnosticLabel.empty()) {
       result += " [" + DiagnosticLabel + "]";
     }
@@ -268,7 +268,7 @@ public:
       op = "?";
     }
     std::string result = op + "(" + Children[0]->toString() + ")";
-    
+
     if (!DiagnosticLabel.empty()) {
       result += " [" + DiagnosticLabel + "]";
     }
@@ -399,9 +399,8 @@ struct SymbolicBindingInfo {
   SymbolRef StoredSymbolicValue; // The actual symbolic value stored in GDM
 
   SymbolicBindingInfo()
-      : SymbolName(""), NeedsGDMStorage(false), StoredSymbolicValue(nullptr) {
-  }
-  
+      : SymbolName(""), NeedsGDMStorage(false), StoredSymbolicValue(nullptr) {}
+
   SymbolicBindingInfo(const std::string &name)
       : SymbolName(name), NeedsGDMStorage(false), StoredSymbolicValue(nullptr) {
   }
@@ -748,35 +747,36 @@ private:
   void buildAutomatonStates(std::shared_ptr<LTLFormulaNode> formula,
                             std::shared_ptr<LTLState> currentState,
                             LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton) return;
-    
+    if (!formula || !currentState || !automaton)
+      return;
+
     switch (formula->Type) {
-      case LTLNodeType::Atomic:
-        buildAtomicState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::And:
-        buildAndState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::Or:
-        buildOrState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::Implies:
-        buildImpliesState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::Not:
-        buildNotState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::Globally:
-        buildGloballyState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::Eventually:
-        buildEventuallyState(formula, currentState, automaton);
-        break;
-      case LTLNodeType::Next:
-        buildNextState(formula, currentState, automaton);
-        break;
-      default:
-        break;
+    case LTLNodeType::Atomic:
+      buildAtomicState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::And:
+      buildAndState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Or:
+      buildOrState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Implies:
+      buildImpliesState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Not:
+      buildNotState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Globally:
+      buildGloballyState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Eventually:
+      buildEventuallyState(formula, currentState, automaton);
+      break;
+    case LTLNodeType::Next:
+      buildNextState(formula, currentState, automaton);
+      break;
+    default:
+      break;
     }
   }
 
@@ -784,17 +784,18 @@ private:
   void buildAtomicState(std::shared_ptr<LTLFormulaNode> formula,
                         std::shared_ptr<LTLState> currentState,
                         LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton) return;
-    
+    if (!formula || !currentState || !automaton)
+      return;
+
     // Add atomic proposition to current state
     std::string prop = formula->toString();
     currentState->AtomicPropositions.insert(prop);
-    
+
     // Add diagnostic label if present
     if (!formula->DiagnosticLabel.empty()) {
       currentState->DiagnosticLabel = formula->DiagnosticLabel;
     }
-    
+
     // Add state to automaton
     automaton->addState(currentState);
   }
@@ -803,8 +804,9 @@ private:
   void buildAndState(std::shared_ptr<LTLFormulaNode> formula,
                      std::shared_ptr<LTLState> currentState,
                      LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.size() < 2) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.size() < 2)
+      return;
+
     // Process both children
     buildAutomatonStates(formula->Children[0], currentState, automaton);
     buildAutomatonStates(formula->Children[1], currentState, automaton);
@@ -813,15 +815,16 @@ private:
   void buildOrState(std::shared_ptr<LTLFormulaNode> formula,
                     std::shared_ptr<LTLState> currentState,
                     LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.size() < 2) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.size() < 2)
+      return;
+
     // Create separate states for each child
     auto leftState = createState("or_left", false);
     auto rightState = createState("or_right", false);
-    
+
     buildAutomatonStates(formula->Children[0], leftState, automaton);
     buildAutomatonStates(formula->Children[1], rightState, automaton);
-    
+
     // Add transitions from current state to both children
     automaton->addTransition(currentState, std::set<std::string>(), leftState);
     automaton->addTransition(currentState, std::set<std::string>(), rightState);
@@ -830,12 +833,15 @@ private:
   void buildImpliesState(std::shared_ptr<LTLFormulaNode> formula,
                          std::shared_ptr<LTLState> currentState,
                          LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.size() < 2) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.size() < 2)
+      return;
+
     // A → B is equivalent to ¬A ∨ B
-    auto notA = std::make_shared<UnaryOpNode>(LTLNodeType::Not, formula->Children[0]);
-    auto orNode = std::make_shared<BinaryOpNode>(LTLNodeType::Or, notA, formula->Children[1]);
-    
+    auto notA =
+        std::make_shared<UnaryOpNode>(LTLNodeType::Not, formula->Children[0]);
+    auto orNode = std::make_shared<BinaryOpNode>(LTLNodeType::Or, notA,
+                                                 formula->Children[1]);
+
     buildOrState(orNode, currentState, automaton);
   }
 
@@ -843,8 +849,9 @@ private:
   void buildNotState(std::shared_ptr<LTLFormulaNode> formula,
                      std::shared_ptr<LTLState> currentState,
                      LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.empty())
+      return;
+
     // For now, just process the child
     buildAutomatonStates(formula->Children[0], currentState, automaton);
   }
@@ -852,13 +859,14 @@ private:
   void buildGloballyState(std::shared_ptr<LTLFormulaNode> formula,
                           std::shared_ptr<LTLState> currentState,
                           LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.empty())
+      return;
+
     // G φ means φ must be true in all future states
     // Create a loop state that always requires φ
     auto loopState = createState("globally", true);
     buildAutomatonStates(formula->Children[0], loopState, automaton);
-    
+
     // Add transition from current state to loop state
     automaton->addTransition(currentState, std::set<std::string>(), loopState);
     // Add self-loop to maintain the globally property
@@ -868,30 +876,93 @@ private:
   void buildEventuallyState(std::shared_ptr<LTLFormulaNode> formula,
                             std::shared_ptr<LTLState> currentState,
                             LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.empty())
+      return;
+
     // F φ means φ must eventually be true
     // Create a state that can accept φ at any time
     auto eventuallyState = createState("eventually", false);
     buildAutomatonStates(formula->Children[0], eventuallyState, automaton);
-    
+
     // Add transition from current state to eventually state
-    automaton->addTransition(currentState, std::set<std::string>(), eventuallyState);
+    automaton->addTransition(currentState, std::set<std::string>(),
+                             eventuallyState);
     // Add self-loop to allow waiting for φ
-    automaton->addTransition(currentState, std::set<std::string>(), currentState);
+    automaton->addTransition(currentState, std::set<std::string>(),
+                             currentState);
   }
 
   void buildNextState(std::shared_ptr<LTLFormulaNode> formula,
                       std::shared_ptr<LTLState> currentState,
                       LTLAutomaton *automaton) {
-    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
-    
+    if (!formula || !currentState || !automaton || formula->Children.empty())
+      return;
+
     // X φ means φ must be true in the next state
     auto nextState = createState("next", false);
     buildAutomatonStates(formula->Children[0], nextState, automaton);
-    
+
     // Add transition from current state to next state
     automaton->addTransition(currentState, std::set<std::string>(), nextState);
+  }
+};
+
+// Forward declaration
+class LTLFormulaBuilder;
+
+// Binding-driven event creation system
+class BindingDrivenEventCreator {
+private:
+  std::map<std::string, std::map<std::string, BindingType>> FunctionBindings;
+
+public:
+  // Register function binding information from DSL formula
+  void registerFunctionBinding(const std::string &functionName,
+                               const std::string &symbolName,
+                               BindingType bindingType) {
+    FunctionBindings[functionName][symbolName] = bindingType;
+  }
+
+  // Get binding type for a function and symbol
+  BindingType getBindingType(const std::string &functionName,
+                             const std::string &symbolName) const {
+    auto funcIt = FunctionBindings.find(functionName);
+    if (funcIt != FunctionBindings.end()) {
+      auto symbolIt = funcIt->second.find(symbolName);
+      if (symbolIt != funcIt->second.end()) {
+        return symbolIt->second;
+      }
+    }
+    return BindingType::Variable; // Default fallback
+  }
+
+  // Extract symbol from call event based on binding type
+  SymbolRef extractSymbolFromCall(const CallEvent &Call,
+                                  const std::string &functionName,
+                                  const std::string &symbolName) const {
+    BindingType bindingType = getBindingType(functionName, symbolName);
+
+    switch (bindingType) {
+    case BindingType::ReturnValue:
+      return Call.getReturnValue().getAsSymbol();
+
+    case BindingType::FirstParameter:
+      return Call.getArgSVal(0).getAsSymbol();
+
+    case BindingType::NthParameter:
+      // For now, assume first parameter - could be enhanced to track parameter
+      // index
+      return Call.getArgSVal(0).getAsSymbol();
+
+    case BindingType::Variable:
+    default:
+      return nullptr;
+    }
+  }
+
+  // Check if we have binding information for a function
+  bool hasBindingInfo(const std::string &functionName) const {
+    return FunctionBindings.find(functionName) != FunctionBindings.end();
   }
 };
 
@@ -991,6 +1062,16 @@ public:
     return parser.generateAutomaton();
   }
 
+  // Extract binding information for event creation
+  void
+  populateBindingDrivenEventCreator(BindingDrivenEventCreator &creator) const {
+    if (!RootFormula) {
+      return;
+    }
+
+    extractFunctionBindings(RootFormula, creator);
+  }
+
 private:
   void extractDiagnosticLabels(const std::shared_ptr<LTLFormulaNode> &node) {
     if (!node)
@@ -1028,6 +1109,23 @@ private:
 
     for (const auto &child : node->Children) {
       extractFunctionNames(child);
+    }
+  }
+
+  void extractFunctionBindings(const std::shared_ptr<LTLFormulaNode> &node,
+                               BindingDrivenEventCreator &creator) const {
+    if (!node)
+      return;
+
+    // If this is an atomic node with a function name and binding, register it
+    if (!node->FunctionName.empty() && !node->Binding.SymbolName.empty()) {
+      creator.registerFunctionBinding(
+          node->FunctionName, node->Binding.SymbolName, node->Binding.Type);
+    }
+
+    // Recursively process children
+    for (const auto &child : node->Children) {
+      extractFunctionBindings(child, creator);
     }
   }
 };
@@ -1080,18 +1178,21 @@ class MonitorAutomaton {
   std::unique_ptr<LTLAutomaton> Automaton;
   std::shared_ptr<LTLState> CurrentState;
   const CheckerBase *Checker;
+  BindingDrivenEventCreator EventCreator;
 
 public:
   MonitorAutomaton(std::unique_ptr<PropertyDefinition> prop,
                    const CheckerBase *C)
       : Handler(prop->createEventHandler(C)),
         PropertyName(prop->getPropertyName()),
-        FormulaBuilder(prop->getFormulaBuilder()),
-        Checker(C) {
+        FormulaBuilder(prop->getFormulaBuilder()), Checker(C) {
 
     // Generate Büchi automaton from the formula
     Automaton = FormulaBuilder.generateAutomaton();
     CurrentState = Automaton->getInitialState();
+
+    // Populate binding-driven event creator with formula information
+    FormulaBuilder.populateBindingDrivenEventCreator(EventCreator);
   }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
@@ -1105,77 +1206,106 @@ public:
     }
 
     // Also handle through the traditional event handler
-    // Handler->handleEvent(event, C); // Temporarily disabled to test automaton-based detection
+    // Handler->handleEvent(event, C); // Temporarily disabled to test
+    // automaton-based detection
   }
 
   void checkForViolations(const GenericEvent &event, CheckerContext &C) {
     ProgramStateRef State = C.getState();
-    
-    // Debug output
-    llvm::errs() << "DEBUG: checkForViolations - Processing event: " << event.FunctionName 
-                 << " (" << (event.Symbol ? "has symbol" : "no symbol") << ")\n";
-    llvm::errs() << "DEBUG: Event type: ";
-    switch (event.Type) {
-      case EventType::PostCall: llvm::errs() << "PostCall"; break;
-      case EventType::PreCall: llvm::errs() << "PreCall"; break;
-      case EventType::DeadSymbols: llvm::errs() << "DeadSymbols"; break;
-      default: llvm::errs() << "Unknown"; break;
-    }
-    llvm::errs() << "\n";
-    
+
     switch (event.Type) {
     case EventType::PostCall:
-      llvm::errs() << "DEBUG: Entering PostCall case\n";
       if (event.FunctionName == "malloc") {
-        llvm::errs() << "DEBUG: Processing malloc event\n";
         // Track allocated symbol
         if (event.Symbol) {
           State = State->set<LeakedSymbols>(event.Symbol, true);
           C.addTransition(State);
-          llvm::errs() << "DEBUG: Tracked malloc symbol\n";
         }
       } else if (event.FunctionName == "free") {
-        llvm::errs() << "DEBUG: Processing free event\n";
         // Check for double free
         if (event.Symbol) {
-          llvm::errs() << "DEBUG: Processing free for symbol: " << event.Symbol->getSymbolID() << "\n";
           bool wasTracked = State->get<LeakedSymbols>(event.Symbol);
-          llvm::errs() << "DEBUG: Symbol was tracked: " << (wasTracked ? "yes" : "no") << "\n";
           if (wasTracked) {
             // Normal free - remove from leaked symbols
             State = State->remove<LeakedSymbols>(event.Symbol);
             C.addTransition(State);
-            llvm::errs() << "DEBUG: Normal free - removed from tracking\n";
           } else {
             // Double free - emit diagnostic
-            llvm::errs() << "DEBUG: Double free detected - emitting diagnostic\n";
-            emitDiagnostic("memory freed twice (violates exactly-once)", event, C);
+            emitDiagnostic("memory freed twice (violates exactly-once)", event,
+                           C);
           }
-        } else {
-          llvm::errs() << "DEBUG: Free event has no symbol\n";
         }
-      } else {
-        llvm::errs() << "DEBUG: PostCall event for function: " << event.FunctionName << "\n";
       }
       break;
-      
+
     case EventType::DeadSymbols:
-      llvm::errs() << "DEBUG: Entering DeadSymbols case\n";
       // Check for memory leak
       if (event.Symbol && State->get<LeakedSymbols>(event.Symbol)) {
-        llvm::errs() << "DEBUG: Memory leak detected - emitting diagnostic\n";
-        emitDiagnostic("allocated memory is not freed (violates exactly-once)", event, C);
+        emitDiagnostic("allocated memory is not freed (violates exactly-once)",
+                       event, C);
       }
       break;
-      
+
     default:
-      llvm::errs() << "DEBUG: Entering default case\n";
       break;
     }
   }
 
   std::string getPropertyName() const { return PropertyName; }
   LTLFormulaBuilder getFormulaBuilder() const { return FormulaBuilder; }
+
+  // Create event using binding-driven approach
+  dsl::GenericEvent createBindingDrivenEvent(const CallEvent &Call,
+                                             EventType eventType,
+                                             CheckerContext &C) const {
+    std::string funcName = Call.getCalleeIdentifier()
+                               ? Call.getCalleeIdentifier()->getName().str()
+                               : "unknown";
+
+    // If we have binding information for this function, use it
+    if (EventCreator.hasBindingInfo(funcName)) {
+      // For now, we'll use the first symbol we find for this function
+      // In a more sophisticated implementation, we could match symbols more
+      // precisely
+      SymbolRef Sym = nullptr;
+      std::string symbolName = "unknown";
+
+      // Try to find a symbol using the binding information
+      // This is a simplified approach - in practice, we'd need more
+      // sophisticated matching
+      for (const auto &binding : FormulaBuilder.getSymbolBindings()) {
+        if (EventCreator.getBindingType(funcName, binding.SymbolName) !=
+            BindingType::Variable) {
+          Sym = EventCreator.extractSymbolFromCall(Call, funcName,
+                                                   binding.SymbolName);
+          if (Sym) {
+            symbolName = binding.SymbolName;
+            break;
+          }
+        }
+      }
+
+      return dsl::GenericEvent(eventType, funcName, symbolName, Sym,
+                               Call.getSourceRange().getBegin());
+    } else {
+      // Fallback to traditional approach
+      SymbolRef Sym = nullptr;
+      std::string symbolName = "unknown";
+
+      if (eventType == EventType::PostCall) {
+        Sym = Call.getReturnValue().getAsSymbol();
+        symbolName =
+            Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+      } else {
+        Sym = Call.getArgSVal(0).getAsSymbol();
+        symbolName =
+            Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+      }
+
+      return dsl::GenericEvent(eventType, funcName, symbolName, Sym,
+                               Call.getSourceRange().getBegin());
+    }
+  }
 
 private:
   // Extract atomic propositions from an event
@@ -1200,40 +1330,37 @@ private:
   // Emit diagnostic for automaton-based violations
   void emitDiagnostic(const std::string &diagnostic, const GenericEvent &event,
                       CheckerContext &C) {
-    llvm::errs() << "DEBUG: emitDiagnostic called with: " << diagnostic << "\n";
-    
     if (!event.Symbol) {
-      llvm::errs() << "DEBUG: No symbol in event, returning\n";
       return;
     }
 
     // Generate error node
     ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
     if (!ErrorNode) {
-      llvm::errs() << "DEBUG: Could not generate error node\n";
       return;
     }
 
     // Create appropriate bug type based on diagnostic message
     const BugType *BT = nullptr;
-    if (diagnostic.find("leak") != std::string::npos || 
+    if (diagnostic.find("leak") != std::string::npos ||
         diagnostic.find("not freed") != std::string::npos) {
       static const BugType LeakBT{Checker, "leak", "EmbeddedDSLMonitor"};
       BT = &LeakBT;
-    } else if (diagnostic.find("double") != std::string::npos || 
+    } else if (diagnostic.find("double") != std::string::npos ||
                diagnostic.find("twice") != std::string::npos) {
-      static const BugType DoubleFreeBT{Checker, "double free", "EmbeddedDSLMonitor"};
+      static const BugType DoubleFreeBT{Checker, "double free",
+                                        "EmbeddedDSLMonitor"};
       BT = &DoubleFreeBT;
     } else {
-      static const BugType GenericBT{Checker, "violation", "EmbeddedDSLMonitor"};
+      static const BugType GenericBT{Checker, "violation",
+                                     "EmbeddedDSLMonitor"};
       BT = &GenericBT;
     }
 
-    llvm::errs() << "DEBUG: Creating bug report\n";
-    auto R = std::make_unique<PathSensitiveBugReport>(*BT, diagnostic, ErrorNode);
+    auto R =
+        std::make_unique<PathSensitiveBugReport>(*BT, diagnostic, ErrorNode);
     R->markInteresting(event.Symbol);
     C.emitReport(std::move(R));
-    llvm::errs() << "DEBUG: Bug report emitted\n";
   }
 };
 
