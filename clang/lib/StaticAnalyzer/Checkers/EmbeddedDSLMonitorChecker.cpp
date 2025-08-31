@@ -63,11 +63,12 @@ class EmbeddedDSLMonitorChecker
   std::unique_ptr<dsl::MonitorAutomaton> Monitor;
 
   // Generic event generation
-  GenericEvent createPostCallEvent(const CallEvent &Call,
-                                   CheckerContext &C) const;
-  GenericEvent createPreCallEvent(const CallEvent &Call,
-                                  CheckerContext &C) const;
-  GenericEvent createDeadSymbolsEvent(SymbolRef Sym, CheckerContext &C) const;
+  dsl::GenericEvent createPostCallEvent(const CallEvent &Call,
+                                        CheckerContext &C) const;
+  dsl::GenericEvent createPreCallEvent(const CallEvent &Call,
+                                       CheckerContext &C) const;
+  dsl::GenericEvent createDeadSymbolsEvent(SymbolRef Sym,
+                                           CheckerContext &C) const;
 
 public:
   EmbeddedDSLMonitorChecker() {
@@ -157,7 +158,7 @@ public:
 // Generic Event Generation
 //===----------------------------------------------------------------------===//
 
-GenericEvent
+dsl::GenericEvent
 EmbeddedDSLMonitorChecker::createPostCallEvent(const CallEvent &Call,
                                                CheckerContext &C) const {
   std::string funcName = Call.getCalleeIdentifier()
@@ -168,10 +169,11 @@ EmbeddedDSLMonitorChecker::createPostCallEvent(const CallEvent &Call,
   std::string symbolName =
       Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
 
-  return GenericEvent(EventType::PostCall, funcName, symbolName, Sym, &Call);
+  return dsl::GenericEvent(dsl::EventType::PostCall, funcName, symbolName, Sym,
+                           Call.getSourceRange().getBegin());
 }
 
-GenericEvent
+dsl::GenericEvent
 EmbeddedDSLMonitorChecker::createPreCallEvent(const CallEvent &Call,
                                               CheckerContext &C) const {
   std::string funcName = Call.getCalleeIdentifier()
@@ -182,16 +184,18 @@ EmbeddedDSLMonitorChecker::createPreCallEvent(const CallEvent &Call,
   std::string symbolName =
       Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
 
-  return GenericEvent(EventType::PreCall, funcName, symbolName, Sym, &Call);
+  return dsl::GenericEvent(dsl::EventType::PreCall, funcName, symbolName, Sym,
+                           Call.getSourceRange().getBegin());
 }
 
-GenericEvent
+dsl::GenericEvent
 EmbeddedDSLMonitorChecker::createDeadSymbolsEvent(SymbolRef Sym,
                                                   CheckerContext &C) const {
   std::string symbolName =
       Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
 
-  return GenericEvent(EventType::DeadSymbols, "", symbolName, Sym, nullptr);
+  return dsl::GenericEvent(dsl::EventType::DeadSymbols, "", symbolName, Sym,
+                           SourceLocation());
 }
 
 //===----------------------------------------------------------------------===//
@@ -217,7 +221,7 @@ void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
   // Generate events for all dead symbols
   ProgramStateRef State = C.getState();
 
-  for (auto [Sym, Value] : State->get<GenericSymbolMap>()) {
+  for (auto [Sym, Value] : State->get<::GenericSymbolMap>()) {
     if (SR.isDead(Sym)) {
       // This symbol is dead and was tracked - report leak
       auto event = createDeadSymbolsEvent(Sym, C);

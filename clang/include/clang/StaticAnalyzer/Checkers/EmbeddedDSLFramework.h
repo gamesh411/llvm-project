@@ -1,98 +1,65 @@
-//===--- EmbeddedDSLFramework.h - Embedded DSL Framework for CSA ----------===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
-//
-// This file defines the embedded DSL framework for the Clang Static Analyzer.
-// It provides a reusable framework for implementing temporal logic-based
-// static analysis properties using a monitor automaton approach.
-//
-// The framework supports:
-//   - Generic event handling (preCall, postCall, deadSymbols)
-//   - ASTMatchers integration for pattern matching
-//   - SymbolRef-based GDM for symbol tracking
-//   - Declarative property specification
-//   - Reusable monitor automatons
-//   - LTL formula structure with binding and diagnostic labeling
-//   - LTL parser and Büchi automaton generation
-//
-// Example LTL formula for malloc/free:
-//   G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )
-//   "Globally, if malloc succeeds, eventually free it, and never free it again"
-//
-//===----------------------------------------------------------------------===//
+// Embedded DSL Framework for Temporal Logic-Based Static Analysis
+// This framework provides a domain-specific language for defining temporal
+// logic properties and automatically generating monitor automatons for
+// violation detection.
 
 #ifndef LLVM_CLANG_STATICANALYZER_CHECKERS_EMBEDDEDDSLFRAMEWORK_H
 #define LLVM_CLANG_STATICANALYZER_CHECKERS_EMBEDDEDDSLFRAMEWORK_H
 
-#include "clang/ASTMatchers/ASTMatchers.h"
+#include "clang/AST/Decl.h"
+#include "clang/AST/DeclBase.h"
+#include "clang/AST/Expr.h"
+#include "clang/AST/Type.h"
+#include "clang/Basic/SourceLocation.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/ImmutableMap.h"
-#include "llvm/ADT/SmallVector.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/raw_ostream.h"
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-// Generic symbol-based GDM for symbol tracking
+// State trait registrations
 REGISTER_MAP_WITH_PROGRAMSTATE(GenericSymbolMap, clang::ento::SymbolRef,
                                std::string)
 REGISTER_MAP_WITH_PROGRAMSTATE(LeakedSymbols, clang::ento::SymbolRef, bool)
+REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
+                               clang::ento::SymbolRef)
+
+namespace llvm {
+template <>
+struct FoldingSetTrait<std::string> {
+  static void Profile(const std::string &X, FoldingSetNodeID &ID) {
+    ID.AddString(X);
+  }
+};
+} // namespace llvm
 
 namespace clang {
 namespace ento {
-
-// Generic events that checkers can emit
-enum class EventType {
-  PreCall,    // Function call about to happen
-  PostCall,   // Function call just completed
-  DeadSymbols // Symbols are becoming dead
-};
-
-// Generic event structure
-struct GenericEvent {
-  EventType Type;
-  std::string FunctionName;
-  std::string SymbolName;
-  SymbolRef Symbol;
-  const CallEvent *Call;
-
-  GenericEvent(EventType t, const std::string &fn, const std::string &sn,
-               SymbolRef sym = nullptr, const CallEvent *call = nullptr)
-      : Type(t), FunctionName(fn), SymbolName(sn), Symbol(sym), Call(call) {}
-};
-
-//===----------------------------------------------------------------------===//
-// Embedded DSL Framework
-//===----------------------------------------------------------------------===//
-
 namespace dsl {
 
 // Forward declarations
-class MonitorAutomaton;
-class EventHandler;
-class PropertyDefinition;
-class MallocFreeEventHandler;
-class LTLAutomaton;
+class LTLFormulaNode;
 class LTLState;
+class LTLAutomaton;
+class LTLParser;
+class AutomaticSymbolTracker;
 
-// LTL Formula Node Types
+// LTL formula node types
 enum class LTLNodeType {
-  Atomic,     // Atomic proposition (malloc(x), free(x), etc.)
-  And,        // Logical AND (∧)
-  Or,         // Logical OR (∨)
-  Not,        // Logical NOT (¬)
-  Implies,    // Implication (→)
+  Atomic,     // Atomic proposition (function call, variable)
+  And,        // Logical AND
+  Or,         // Logical OR
+  Not,        // Logical NOT
+  Implies,    // Logical implication
   Globally,   // Always (G)
   Eventually, // Eventually (F)
   Next,       // Next (X)
@@ -100,12 +67,12 @@ enum class LTLNodeType {
   Release     // Release (R)
 };
 
-// Symbol binding types
+// Symbol binding types for DSL
 enum class BindingType {
   ReturnValue,    // Function return value
   FirstParameter, // First function parameter
   NthParameter,   // Nth function parameter
-  Variable        // Direct variable reference
+  Variable        // General variable
 };
 
 // Symbol binding information
@@ -114,17 +81,50 @@ struct SymbolBinding {
   std::string SymbolName;
   int ParameterIndex; // For NthParameter
 
-  SymbolBinding(BindingType t, const std::string &name, int paramIdx = 0)
-      : Type(t), SymbolName(name), ParameterIndex(paramIdx) {}
+  SymbolBinding(BindingType t, const std::string &name, int index = 0)
+      : Type(t), SymbolName(name), ParameterIndex(index) {}
 };
 
-// LTL Formula Node
+// Automatic symbol state management
+enum class SymbolState {
+  Uninitialized, // Symbol not yet allocated
+  Allocated,     // Symbol allocated but not freed
+  Freed,         // Symbol freed
+  Leaked,        // Symbol leaked (symbol dead)
+  DoubleFreed,   // Symbol freed multiple times
+  Invalid        // Invalid state (e.g., double allocation)
+};
+
+// Symbol usage context in temporal formulas
+enum class SymbolContext {
+  Allocation,   // Symbol is allocated (malloc return, lock acquisition)
+  Deallocation, // Symbol is deallocated (free parameter, unlock parameter)
+  Validation,   // Symbol is validated (null check, condition check)
+  Temporal,     // Symbol appears in temporal operators (F, G, U, etc.)
+  CrossContext  // Symbol appears in multiple contexts
+};
+
+// Symbol tracking information derived from formula analysis
+struct SymbolTrackingInfo {
+  std::string SymbolName;
+  std::set<SymbolContext> Contexts;
+  std::set<std::string> Functions; // Functions that operate on this symbol
+  bool IsTemporallyTracked;        // Appears in temporal operators
+  bool IsCrossContext;             // Appears in multiple contexts
+  std::string
+      PrimaryFunction; // Main function for this symbol (e.g., "malloc" for "x")
+
+  SymbolTrackingInfo(const std::string &name)
+      : SymbolName(name), IsTemporallyTracked(false), IsCrossContext(false) {}
+};
+
+// Base class for LTL formula nodes
 class LTLFormulaNode {
 public:
   LTLNodeType Type;
   std::string DiagnosticLabel;
   std::vector<std::shared_ptr<LTLFormulaNode>> Children;
-  SymbolBinding Binding;
+  SymbolBinding Binding;    // Member that needed explicit initialization
   std::string FunctionName; // For atomic propositions
   std::string Value;        // For atomic propositions
 
@@ -133,34 +133,38 @@ public:
 
   virtual ~LTLFormulaNode() = default;
 
-  // Add child nodes
-  void addChild(std::shared_ptr<LTLFormulaNode> child) {
-    Children.push_back(child);
-  }
-
-  // Set diagnostic label
-  LTLFormulaNode &withDiagnostic(const std::string &label) {
-    DiagnosticLabel = label;
-    return *this;
-  }
-
-  // Get formula as string
+  // Convert node to string representation
   virtual std::string toString() const = 0;
 
   // Get structural information for automaton generation
   virtual std::string getStructuralInfo() const = 0;
+
+  // Add diagnostic label to this node
+  LTLFormulaNode *withDiagnostic(const std::string &label) {
+    DiagnosticLabel = label;
+    return this;
+  }
 };
 
-// Atomic Proposition Node
+// Atomic proposition node (function calls, variables)
 class AtomicNode : public LTLFormulaNode {
 public:
   AtomicNode(const std::string &funcName, const SymbolBinding &binding,
-             const std::string &label = "")
-      : LTLFormulaNode(LTLNodeType::Atomic, label), Binding(binding),
-        FunctionName(funcName) {}
+             const std::string &value = "")
+      : LTLFormulaNode(LTLNodeType::Atomic) {
+    FunctionName = funcName;
+    Binding = binding;
+    Value = value;
+  }
 
   std::string toString() const override {
-    std::string result = FunctionName + "(" + Binding.SymbolName + ")";
+    std::string result;
+    if (!FunctionName.empty()) {
+      result = FunctionName + "(" + Binding.SymbolName + ")";
+    } else {
+      result = Binding.SymbolName;
+    }
+    
     if (!DiagnosticLabel.empty()) {
       result += " [" + DiagnosticLabel + "]";
     }
@@ -168,19 +172,19 @@ public:
   }
 
   std::string getStructuralInfo() const override {
-    return "ATOMIC:" + FunctionName + ":" + Binding.SymbolName + ":" +
-           std::to_string(static_cast<int>(Binding.Type));
+    return "Atomic[" + FunctionName + "(" + Binding.SymbolName + ")]";
   }
-
-  SymbolBinding Binding;
-  std::string FunctionName;
 };
 
-// Binary Operator Node
+// Binary operator node (And, Or, Implies, Until, Release)
 class BinaryOpNode : public LTLFormulaNode {
 public:
-  BinaryOpNode(LTLNodeType type, const std::string &label = "")
-      : LTLFormulaNode(type, label) {}
+  BinaryOpNode(LTLNodeType type, std::shared_ptr<LTLFormulaNode> left,
+               std::shared_ptr<LTLFormulaNode> right)
+      : LTLFormulaNode(type) {
+    Children.push_back(left);
+    Children.push_back(right);
+  }
 
   std::string toString() const override {
     std::string op;
@@ -202,17 +206,9 @@ public:
       break;
     default:
       op = " ? ";
-      break;
     }
-
-    std::string result = "(";
-    for (size_t i = 0; i < Children.size(); ++i) {
-      if (i > 0)
-        result += op;
-      result += Children[i]->toString();
-    }
-    result += ")";
-
+    std::string result = "(" + Children[0]->toString() + op + Children[1]->toString() + ")";
+    
     if (!DiagnosticLabel.empty()) {
       result += " [" + DiagnosticLabel + "]";
     }
@@ -223,41 +219,35 @@ public:
     std::string op;
     switch (Type) {
     case LTLNodeType::And:
-      op = "AND";
+      op = "And";
       break;
     case LTLNodeType::Or:
-      op = "OR";
+      op = "Or";
       break;
     case LTLNodeType::Implies:
-      op = "IMPLIES";
+      op = "Implies";
       break;
     case LTLNodeType::Until:
-      op = "UNTIL";
+      op = "Until";
       break;
     case LTLNodeType::Release:
-      op = "RELEASE";
+      op = "Release";
       break;
     default:
-      op = "UNKNOWN";
-      break;
+      op = "BinaryOp";
     }
-
-    std::string result = op + "(";
-    for (size_t i = 0; i < Children.size(); ++i) {
-      if (i > 0)
-        result += ",";
-      result += Children[i]->getStructuralInfo();
-    }
-    result += ")";
-    return result;
+    return op + "(" + Children[0]->getStructuralInfo() + ", " +
+           Children[1]->getStructuralInfo() + ")";
   }
 };
 
-// Unary Operator Node
+// Unary operator node (Not, Globally, Eventually, Next)
 class UnaryOpNode : public LTLFormulaNode {
 public:
-  UnaryOpNode(LTLNodeType type, const std::string &label = "")
-      : LTLFormulaNode(type, label) {}
+  UnaryOpNode(LTLNodeType type, std::shared_ptr<LTLFormulaNode> child)
+      : LTLFormulaNode(type) {
+    Children.push_back(child);
+  }
 
   std::string toString() const override {
     std::string op;
@@ -276,10 +266,9 @@ public:
       break;
     default:
       op = "?";
-      break;
     }
-
     std::string result = op + "(" + Children[0]->toString() + ")";
+    
     if (!DiagnosticLabel.empty()) {
       result += " [" + DiagnosticLabel + "]";
     }
@@ -290,173 +279,388 @@ public:
     std::string op;
     switch (Type) {
     case LTLNodeType::Not:
-      op = "NOT";
+      op = "Not";
       break;
     case LTLNodeType::Globally:
-      op = "GLOBALLY";
+      op = "Globally";
       break;
     case LTLNodeType::Eventually:
-      op = "EVENTUALLY";
+      op = "Eventually";
       break;
     case LTLNodeType::Next:
-      op = "NEXT";
+      op = "Next";
       break;
     default:
-      op = "UNKNOWN";
-      break;
+      op = "UnaryOp";
     }
-
     return op + "(" + Children[0]->getStructuralInfo() + ")";
   }
 };
 
-// DSL Builder Functions
+// DSL builder functions for constructing LTL formulas
 namespace DSL {
-
-// Create atomic proposition for function call
 inline std::shared_ptr<LTLFormulaNode> Call(const std::string &funcName,
                                             const SymbolBinding &binding) {
   return std::make_shared<AtomicNode>(funcName, binding);
 }
 
-// Create return value binding
-inline SymbolBinding ReturnVal(const std::string &symbolName) {
-  return SymbolBinding(BindingType::ReturnValue, symbolName);
+inline std::shared_ptr<LTLFormulaNode>
+ReturnVal(const std::string &symbolName) {
+  return std::make_shared<AtomicNode>(
+      "", SymbolBinding(BindingType::ReturnValue, symbolName));
 }
 
-// Create first parameter binding
-inline SymbolBinding FirstParamVal(const std::string &symbolName) {
-  return SymbolBinding(BindingType::FirstParameter, symbolName);
+inline std::shared_ptr<LTLFormulaNode>
+FirstParamVal(const std::string &symbolName) {
+  return std::make_shared<AtomicNode>(
+      "", SymbolBinding(BindingType::FirstParameter, symbolName));
 }
 
-// Create nth parameter binding
-inline SymbolBinding NthParamVal(const std::string &symbolName, int index) {
-  return SymbolBinding(BindingType::NthParameter, symbolName, index);
+inline std::shared_ptr<LTLFormulaNode>
+NthParamVal(const std::string &symbolName, int index) {
+  return std::make_shared<AtomicNode>(
+      "", SymbolBinding(BindingType::NthParameter, symbolName, index));
 }
 
-// Create variable binding
-inline SymbolBinding Var(const std::string &symbolName) {
-  return SymbolBinding(BindingType::Variable, symbolName);
+inline std::shared_ptr<LTLFormulaNode> Var(const std::string &symbolName) {
+  return std::make_shared<AtomicNode>(
+      "", SymbolBinding(BindingType::Variable, symbolName));
 }
 
-// Logical operators
 inline std::shared_ptr<LTLFormulaNode>
 And(std::shared_ptr<LTLFormulaNode> left,
     std::shared_ptr<LTLFormulaNode> right) {
-  auto node = std::make_shared<BinaryOpNode>(LTLNodeType::And);
-  node->addChild(left);
-  node->addChild(right);
-  return node;
+  return std::make_shared<BinaryOpNode>(LTLNodeType::And, left, right);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
 Or(std::shared_ptr<LTLFormulaNode> left,
    std::shared_ptr<LTLFormulaNode> right) {
-  auto node = std::make_shared<BinaryOpNode>(LTLNodeType::Or);
-  node->addChild(left);
-  node->addChild(right);
-  return node;
+  return std::make_shared<BinaryOpNode>(LTLNodeType::Or, left, right);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
 Implies(std::shared_ptr<LTLFormulaNode> left,
         std::shared_ptr<LTLFormulaNode> right) {
-  auto node = std::make_shared<BinaryOpNode>(LTLNodeType::Implies);
-  node->addChild(left);
-  node->addChild(right);
-  return node;
+  return std::make_shared<BinaryOpNode>(LTLNodeType::Implies, left, right);
 }
 
-// Temporal operators
 inline std::shared_ptr<LTLFormulaNode>
 G(std::shared_ptr<LTLFormulaNode> child) {
-  auto node = std::make_shared<UnaryOpNode>(LTLNodeType::Globally);
-  node->addChild(child);
-  return node;
+  return std::make_shared<UnaryOpNode>(LTLNodeType::Globally, child);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
 F(std::shared_ptr<LTLFormulaNode> child) {
-  auto node = std::make_shared<UnaryOpNode>(LTLNodeType::Eventually);
-  node->addChild(child);
-  return node;
+  return std::make_shared<UnaryOpNode>(LTLNodeType::Eventually, child);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
 X(std::shared_ptr<LTLFormulaNode> child) {
-  auto node = std::make_shared<UnaryOpNode>(LTLNodeType::Next);
-  node->addChild(child);
-  return node;
+  return std::make_shared<UnaryOpNode>(LTLNodeType::Next, child);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
 Not(std::shared_ptr<LTLFormulaNode> child) {
-  auto node = std::make_shared<UnaryOpNode>(LTLNodeType::Not);
-  node->addChild(child);
-  return node;
+  return std::make_shared<UnaryOpNode>(LTLNodeType::Not, child);
 }
 
-// Utility functions
-inline std::shared_ptr<LTLFormulaNode> NotNull(const SymbolBinding &binding) {
-  // Create a special atomic node for null checks
-  auto node = std::make_shared<AtomicNode>("not_null", binding);
-  node->Value = "not_null";
-  return node;
+inline std::shared_ptr<LTLFormulaNode>
+NotNull(std::shared_ptr<LTLFormulaNode> var) {
+  return Not(Var(var->Binding.SymbolName));
 }
-
 } // namespace DSL
 
-//===----------------------------------------------------------------------===//
-// LTL Parser and Büchi Automaton Generation
-//===----------------------------------------------------------------------===//
+// General Symbolic Value Persistence System
+// This system ensures that symbolic values are consistently shared across
+// different contexts and program points, using GDM for cross-context symbol
+// storage.
 
-// LTL State representation for Büchi automaton
+// Symbol usage patterns in formulas
+enum class SymbolUsagePattern {
+  SingleOccurrence,     // Symbol appears only once
+  MultipleOccurrences,  // Symbol appears multiple times in same context
+  CrossTemporalContext, // Symbol appears in different temporal contexts (G, F,
+                        // etc.)
+  CrossSubformula,  // Symbol appears in different subformulas of same context
+  CrossProgramPoint // Symbol appears at different program points (exploded
+                    // nodes)
+};
+
+// Symbolic value binding information
+struct SymbolicBindingInfo {
+  std::string SymbolName;
+  std::set<std::string>
+      TemporalContexts;              // Which temporal contexts use this symbol
+  std::set<std::string> Subformulas; // Which subformulas use this symbol
+  std::set<SourceLocation>
+      ProgramPoints;             // Program points where symbol is referenced
+  bool NeedsGDMStorage;          // Whether symbol needs GDM storage
+  SymbolRef StoredSymbolicValue; // The actual symbolic value stored in GDM
+
+  SymbolicBindingInfo()
+      : SymbolName(""), NeedsGDMStorage(false), StoredSymbolicValue(nullptr) {
+  }
+  
+  SymbolicBindingInfo(const std::string &name)
+      : SymbolName(name), NeedsGDMStorage(false), StoredSymbolicValue(nullptr) {
+  }
+};
+
+// General symbolic value persistence manager
+class SymbolicValuePersistenceManager {
+private:
+  std::map<std::string, SymbolicBindingInfo> SymbolInfo;
+  std::set<std::string> SymbolsNeedingGDM;
+
+public:
+  // Analyze LTL formula for symbolic value persistence requirements
+  void
+  analyzeFormulaForPersistence(const std::shared_ptr<LTLFormulaNode> &formula) {
+    SymbolInfo.clear();
+    SymbolsNeedingGDM.clear();
+
+    // Recursively analyze the formula tree
+    analyzeNodeForPersistence(formula, "root", SourceLocation());
+
+    // Determine which symbols need GDM storage
+    determineGDMRequirements();
+
+    // Setup cross-context symbol sharing
+    setupCrossContextSharing();
+  }
+
+  // Get all symbols that need GDM storage
+  const std::set<std::string> &getSymbolsNeedingGDM() const {
+    return SymbolsNeedingGDM;
+  }
+
+  // Get binding info for a specific symbol
+  const SymbolicBindingInfo *
+  getSymbolInfo(const std::string &symbolName) const {
+    auto it = SymbolInfo.find(symbolName);
+    return it != SymbolInfo.end() ? &it->second : nullptr;
+  }
+
+  // Check if a symbol needs GDM storage
+  bool needsGDMStorage(const std::string &symbolName) const {
+    return SymbolsNeedingGDM.find(symbolName) != SymbolsNeedingGDM.end();
+  }
+
+  // Get all temporal contexts that use a symbol
+  std::set<std::string>
+  getTemporalContextsForSymbol(const std::string &symbolName) const {
+    const auto *info = getSymbolInfo(symbolName);
+    return info ? info->TemporalContexts : std::set<std::string>();
+  }
+
+  // Get all subformulas that use a symbol
+  std::set<std::string>
+  getSubformulasForSymbol(const std::string &symbolName) const {
+    const auto *info = getSymbolInfo(symbolName);
+    return info ? info->Subformulas : std::set<std::string>();
+  }
+
+  // Generate persistence analysis report
+  std::string generatePersistenceReport() const {
+    std::string report = "Symbolic Value Persistence Analysis:\n";
+    report += "Symbols requiring GDM storage: " +
+              std::to_string(SymbolsNeedingGDM.size()) + "\n\n";
+
+    for (const auto &symbol : SymbolsNeedingGDM) {
+      const auto *info = getSymbolInfo(symbol);
+      if (info) {
+        report += "Symbol: " + symbol + "\n";
+        report += "  Temporal Contexts: " +
+                  std::to_string(info->TemporalContexts.size()) + "\n";
+        report +=
+            "  Subformulas: " + std::to_string(info->Subformulas.size()) + "\n";
+        report +=
+            "  Program Points: " + std::to_string(info->ProgramPoints.size()) +
+            "\n";
+        report +=
+            "  GDM Storage: " +
+            std::string(info->NeedsGDMStorage ? "Required" : "Not Required") +
+            "\n\n";
+      }
+    }
+
+    return report;
+  }
+
+private:
+  // Recursively analyze LTL formula nodes for persistence requirements
+  void analyzeNodeForPersistence(const std::shared_ptr<LTLFormulaNode> &node,
+                                 const std::string &context,
+                                 SourceLocation location) {
+    if (!node)
+      return;
+
+    // Analyze based on node type
+    switch (node->Type) {
+    case LTLNodeType::Atomic:
+      analyzeAtomicNodeForPersistence(node, context, location);
+      break;
+    case LTLNodeType::And:
+    case LTLNodeType::Or:
+    case LTLNodeType::Implies:
+      analyzeBinaryOpNodeForPersistence(node, context, location);
+      break;
+    case LTLNodeType::Not:
+    case LTLNodeType::Globally:
+    case LTLNodeType::Eventually:
+    case LTLNodeType::Next:
+      analyzeUnaryOpNodeForPersistence(node, context, location);
+      break;
+    case LTLNodeType::Until:
+    case LTLNodeType::Release:
+      analyzeBinaryOpNodeForPersistence(node, context, location);
+      break;
+    }
+  }
+
+  // Analyze atomic propositions for persistence requirements
+  void
+  analyzeAtomicNodeForPersistence(const std::shared_ptr<LTLFormulaNode> &node,
+                                  const std::string &context,
+                                  SourceLocation location) {
+    if (node->Binding.SymbolName.empty()) {
+      return; // No symbol binding
+    }
+
+    std::string symbolName = node->Binding.SymbolName;
+
+    // Get or create symbol info
+    auto &info = SymbolInfo[symbolName];
+    info.SymbolName = symbolName;
+
+    // Record temporal context
+    info.TemporalContexts.insert(context);
+
+    // Record subformula (using function name as subformula identifier)
+    if (!node->FunctionName.empty()) {
+      info.Subformulas.insert(node->FunctionName);
+    }
+
+    // Record program point (if available)
+    if (location.isValid()) {
+      info.ProgramPoints.insert(location);
+    }
+  }
+
+  // Analyze binary operators for persistence requirements
+  void
+  analyzeBinaryOpNodeForPersistence(const std::shared_ptr<LTLFormulaNode> &node,
+                                    const std::string &context,
+                                    SourceLocation location) {
+    for (const auto &child : node->Children) {
+      analyzeNodeForPersistence(child, context, location);
+    }
+  }
+
+  // Analyze unary operators for persistence requirements
+  void
+  analyzeUnaryOpNodeForPersistence(const std::shared_ptr<LTLFormulaNode> &node,
+                                   const std::string &context,
+                                   SourceLocation location) {
+    // Create new temporal context for temporal operators
+    std::string newContext = context;
+    switch (node->Type) {
+    case LTLNodeType::Globally:
+      newContext += ".G";
+      break;
+    case LTLNodeType::Eventually:
+      newContext += ".F";
+      break;
+    case LTLNodeType::Next:
+      newContext += ".X";
+      break;
+    default:
+      break;
+    }
+
+    // Analyze children in the new context
+    for (const auto &child : node->Children) {
+      analyzeNodeForPersistence(child, newContext, location);
+    }
+  }
+
+  // Determine which symbols need GDM storage based on usage patterns
+  void determineGDMRequirements() {
+    for (auto &pair : SymbolInfo) {
+      auto &info = pair.second;
+
+      // Check usage patterns to determine if GDM storage is needed
+      bool needsGDM = false;
+
+      // Pattern 1: Multiple temporal contexts
+      if (info.TemporalContexts.size() > 1) {
+        needsGDM = true;
+      }
+
+      // Pattern 2: Multiple subformulas (even in same context)
+      if (info.Subformulas.size() > 1) {
+        needsGDM = true;
+      }
+
+      // Pattern 3: Multiple program points
+      if (info.ProgramPoints.size() > 1) {
+        needsGDM = true;
+      }
+
+      // Pattern 4: Multiple occurrences in general
+      if (info.TemporalContexts.size() + info.Subformulas.size() > 2) {
+        needsGDM = true;
+      }
+
+      info.NeedsGDMStorage = needsGDM;
+      if (needsGDM) {
+        SymbolsNeedingGDM.insert(info.SymbolName);
+      }
+    }
+  }
+
+  // Setup cross-context symbol sharing mechanisms
+  void setupCrossContextSharing() {
+    // This will be called by the framework to set up the cross-context sharing
+    // The actual sharing logic is implemented in the event handlers
+  }
+};
+
+// LTL State for Büchi automaton
 class LTLState {
 public:
   std::string StateID;
   std::set<std::string> AtomicPropositions;
-  std::set<std::string> PendingFormulas;
+  std::vector<std::string> PendingFormulas;
   bool IsAccepting;
   std::string DiagnosticLabel;
 
   LTLState(const std::string &id, bool accepting = false)
       : StateID(id), IsAccepting(accepting) {}
 
-  // Add atomic proposition to this state
   void addAtomicProposition(const std::string &prop) {
     AtomicPropositions.insert(prop);
   }
 
-  // Add pending formula to this state
   void addPendingFormula(const std::string &formula) {
-    PendingFormulas.insert(formula);
-  }
-
-  // Check if this state accepts a given set of atomic propositions
-  bool accepts(const std::set<std::string> &propositions) const {
-    for (const auto &required : AtomicPropositions) {
-      if (propositions.find(required) == propositions.end()) {
-        return false;
-      }
-    }
-    return true;
+    PendingFormulas.push_back(formula);
   }
 };
 
-// Büchi Automaton for LTL monitoring
+// Büchi automaton for LTL monitoring
 class LTLAutomaton {
 private:
   std::vector<std::shared_ptr<LTLState>> States;
-  std::shared_ptr<LTLState> InitialState;
-  std::map<std::pair<std::shared_ptr<LTLState>, std::set<std::string>>,
+  std::map<std::pair<std::string, std::set<std::string>>,
            std::shared_ptr<LTLState>>
       Transitions;
   std::map<std::string, std::string> DiagnosticLabels;
+  std::shared_ptr<LTLState> InitialState;
 
 public:
-  LTLAutomaton() : InitialState(nullptr) {}
+  LTLAutomaton() = default;
 
-  // Add a state to the automaton
   void addState(std::shared_ptr<LTLState> state) {
     States.push_back(state);
     if (!InitialState) {
@@ -464,37 +668,29 @@ public:
     }
   }
 
-  // Add a transition
   void addTransition(std::shared_ptr<LTLState> from,
-                     const std::set<std::string> &propositions,
+                     const std::set<std::string> &props,
                      std::shared_ptr<LTLState> to) {
-    Transitions[{from, propositions}] = to;
+    Transitions[{from->StateID, props}] = to;
   }
 
-  // Set diagnostic label for a state
   void setDiagnosticLabel(const std::string &stateID,
                           const std::string &label) {
     DiagnosticLabels[stateID] = label;
   }
 
-  // Get current state after processing an event
   std::shared_ptr<LTLState>
   processEvent(std::shared_ptr<LTLState> currentState,
                const std::set<std::string> &propositions) {
-    auto key = std::make_pair(currentState, propositions);
+    auto key = std::make_pair(currentState->StateID, propositions);
     auto it = Transitions.find(key);
-    if (it != Transitions.end()) {
-      return it->second;
-    }
-    return currentState; // Stay in current state if no transition
+    return it != Transitions.end() ? it->second : currentState;
   }
 
-  // Check if current state is accepting
   bool isAccepting(std::shared_ptr<LTLState> state) const {
     return state && state->IsAccepting;
   }
 
-  // Get diagnostic label for a state
   std::string getDiagnosticLabel(std::shared_ptr<LTLState> state) const {
     if (!state)
       return "";
@@ -502,10 +698,8 @@ public:
     return it != DiagnosticLabels.end() ? it->second : "";
   }
 
-  // Get initial state
   std::shared_ptr<LTLState> getInitialState() const { return InitialState; }
 
-  // Get all states
   const std::vector<std::shared_ptr<LTLState>> &getStates() const {
     return States;
   }
@@ -554,37 +748,35 @@ private:
   void buildAutomatonStates(std::shared_ptr<LTLFormulaNode> formula,
                             std::shared_ptr<LTLState> currentState,
                             LTLAutomaton *automaton) {
-    if (!formula)
-      return;
-
+    if (!formula || !currentState || !automaton) return;
+    
     switch (formula->Type) {
-    case LTLNodeType::Atomic:
-      buildAtomicState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::And:
-      buildAndState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::Or:
-      buildOrState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::Not:
-      buildNotState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::Implies:
-      buildImpliesState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::Globally:
-      buildGloballyState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::Eventually:
-      buildEventuallyState(formula, currentState, automaton);
-      break;
-    case LTLNodeType::Next:
-      buildNextState(formula, currentState, automaton);
-      break;
-    default:
-      // Handle other operators as needed
-      break;
+      case LTLNodeType::Atomic:
+        buildAtomicState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::And:
+        buildAndState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::Or:
+        buildOrState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::Implies:
+        buildImpliesState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::Not:
+        buildNotState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::Globally:
+        buildGloballyState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::Eventually:
+        buildEventuallyState(formula, currentState, automaton);
+        break;
+      case LTLNodeType::Next:
+        buildNextState(formula, currentState, automaton);
+        break;
+      default:
+        break;
     }
   }
 
@@ -592,244 +784,272 @@ private:
   void buildAtomicState(std::shared_ptr<LTLFormulaNode> formula,
                         std::shared_ptr<LTLState> currentState,
                         LTLAutomaton *automaton) {
-    auto atomicNode = std::static_pointer_cast<AtomicNode>(formula);
-    std::string prop =
-        atomicNode->FunctionName + "(" + atomicNode->Binding.SymbolName + ")";
-
-    currentState->addAtomicProposition(prop);
-
-    // Create accepting state for successful atomic proposition
-    auto acceptingState = createState("accept", true);
-    automaton->addState(acceptingState);
-
-    // Add transition on the atomic proposition
-    std::set<std::string> props = {prop};
-    automaton->addTransition(currentState, props, acceptingState);
-
-    // Set diagnostic label if available
+    if (!formula || !currentState || !automaton) return;
+    
+    // Add atomic proposition to current state
+    std::string prop = formula->toString();
+    currentState->AtomicPropositions.insert(prop);
+    
+    // Add diagnostic label if present
     if (!formula->DiagnosticLabel.empty()) {
-      automaton->setDiagnosticLabel(acceptingState->StateID,
-                                    formula->DiagnosticLabel);
+      currentState->DiagnosticLabel = formula->DiagnosticLabel;
     }
+    
+    // Add state to automaton
+    automaton->addState(currentState);
   }
 
-  // Build state for AND operator
+  // Build state for binary operators
   void buildAndState(std::shared_ptr<LTLFormulaNode> formula,
                      std::shared_ptr<LTLState> currentState,
                      LTLAutomaton *automaton) {
-    // For AND, we need both children to be satisfied
-    for (auto &child : formula->Children) {
-      buildAutomatonStates(child, currentState, automaton);
-    }
+    if (!formula || !currentState || !automaton || formula->Children.size() < 2) return;
+    
+    // Process both children
+    buildAutomatonStates(formula->Children[0], currentState, automaton);
+    buildAutomatonStates(formula->Children[1], currentState, automaton);
   }
 
-  // Build state for OR operator
   void buildOrState(std::shared_ptr<LTLFormulaNode> formula,
                     std::shared_ptr<LTLState> currentState,
                     LTLAutomaton *automaton) {
-    // For OR, we create separate paths for each child
-    for (auto &child : formula->Children) {
-      auto orState = createState("or", false);
-      automaton->addState(orState);
-      buildAutomatonStates(child, orState, automaton);
-
-      // Add transition from current state to OR state
-      std::set<std::string> empty;
-      automaton->addTransition(currentState, empty, orState);
-    }
+    if (!formula || !currentState || !automaton || formula->Children.size() < 2) return;
+    
+    // Create separate states for each child
+    auto leftState = createState("or_left", false);
+    auto rightState = createState("or_right", false);
+    
+    buildAutomatonStates(formula->Children[0], leftState, automaton);
+    buildAutomatonStates(formula->Children[1], rightState, automaton);
+    
+    // Add transitions from current state to both children
+    automaton->addTransition(currentState, std::set<std::string>(), leftState);
+    automaton->addTransition(currentState, std::set<std::string>(), rightState);
   }
 
-  // Build state for NOT operator
-  void buildNotState(std::shared_ptr<LTLFormulaNode> formula,
-                     std::shared_ptr<LTLState> currentState,
-                     LTLAutomaton *automaton) {
-    // For NOT, we create a state that accepts when the child is NOT satisfied
-    if (!formula->Children.empty()) {
-      auto notState = createState("not", false);
-      automaton->addState(notState);
-
-      // Build states for the negated formula
-      buildAutomatonStates(formula->Children[0], notState, automaton);
-
-      // Add transition from current state to NOT state
-      std::set<std::string> empty;
-      automaton->addTransition(currentState, empty, notState);
-    }
-  }
-
-  // Build state for IMPLIES operator
   void buildImpliesState(std::shared_ptr<LTLFormulaNode> formula,
                          std::shared_ptr<LTLState> currentState,
                          LTLAutomaton *automaton) {
+    if (!formula || !currentState || !automaton || formula->Children.size() < 2) return;
+    
     // A → B is equivalent to ¬A ∨ B
-    if (formula->Children.size() >= 2) {
-      auto notA = std::make_shared<UnaryOpNode>(LTLNodeType::Not);
-      notA->addChild(formula->Children[0]);
-
-      auto orNode = std::make_shared<BinaryOpNode>(LTLNodeType::Or);
-      orNode->addChild(notA);
-      orNode->addChild(formula->Children[1]);
-
-      buildAutomatonStates(orNode, currentState, automaton);
-    }
+    auto notA = std::make_shared<UnaryOpNode>(LTLNodeType::Not, formula->Children[0]);
+    auto orNode = std::make_shared<BinaryOpNode>(LTLNodeType::Or, notA, formula->Children[1]);
+    
+    buildOrState(orNode, currentState, automaton);
   }
 
-  // Build state for GLOBALLY operator
+  // Build state for unary operators
+  void buildNotState(std::shared_ptr<LTLFormulaNode> formula,
+                     std::shared_ptr<LTLState> currentState,
+                     LTLAutomaton *automaton) {
+    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
+    
+    // For now, just process the child
+    buildAutomatonStates(formula->Children[0], currentState, automaton);
+  }
+
   void buildGloballyState(std::shared_ptr<LTLFormulaNode> formula,
                           std::shared_ptr<LTLState> currentState,
                           LTLAutomaton *automaton) {
-    // G φ means φ must be true in all states
-    if (!formula->Children.empty()) {
-      auto globallyState = createState("globally", false);
-      automaton->addState(globallyState);
-
-      // Build states for the inner formula
-      buildAutomatonStates(formula->Children[0], globallyState, automaton);
-
-      // Add self-loop transition for globally
-      std::set<std::string> empty;
-      automaton->addTransition(globallyState, empty, globallyState);
-
-      // Add transition from current state to globally state
-      automaton->addTransition(currentState, empty, globallyState);
-    }
+    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
+    
+    // G φ means φ must be true in all future states
+    // Create a loop state that always requires φ
+    auto loopState = createState("globally", true);
+    buildAutomatonStates(formula->Children[0], loopState, automaton);
+    
+    // Add transition from current state to loop state
+    automaton->addTransition(currentState, std::set<std::string>(), loopState);
+    // Add self-loop to maintain the globally property
+    automaton->addTransition(loopState, std::set<std::string>(), loopState);
   }
 
-  // Build state for EVENTUALLY operator
   void buildEventuallyState(std::shared_ptr<LTLFormulaNode> formula,
                             std::shared_ptr<LTLState> currentState,
                             LTLAutomaton *automaton) {
-    // F φ means φ must be true in some future state
-    if (!formula->Children.empty()) {
-      auto eventuallyState = createState("eventually", false);
-      automaton->addState(eventuallyState);
-
-      // Build states for the inner formula
-      buildAutomatonStates(formula->Children[0], eventuallyState, automaton);
-
-      // Add transition from current state to eventually state
-      std::set<std::string> empty;
-      automaton->addTransition(currentState, empty, eventuallyState);
-
-      // Add self-loop transition for eventually
-      automaton->addTransition(eventuallyState, empty, eventuallyState);
-    }
+    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
+    
+    // F φ means φ must eventually be true
+    // Create a state that can accept φ at any time
+    auto eventuallyState = createState("eventually", false);
+    buildAutomatonStates(formula->Children[0], eventuallyState, automaton);
+    
+    // Add transition from current state to eventually state
+    automaton->addTransition(currentState, std::set<std::string>(), eventuallyState);
+    // Add self-loop to allow waiting for φ
+    automaton->addTransition(currentState, std::set<std::string>(), currentState);
   }
 
-  // Build state for NEXT operator
   void buildNextState(std::shared_ptr<LTLFormulaNode> formula,
                       std::shared_ptr<LTLState> currentState,
                       LTLAutomaton *automaton) {
+    if (!formula || !currentState || !automaton || formula->Children.empty()) return;
+    
     // X φ means φ must be true in the next state
-    if (!formula->Children.empty()) {
-      auto nextState = createState("next", false);
-      automaton->addState(nextState);
-
-      // Build states for the inner formula
-      buildAutomatonStates(formula->Children[0], nextState, automaton);
-
-      // Add transition from current state to next state
-      std::set<std::string> empty;
-      automaton->addTransition(currentState, empty, nextState);
-    }
+    auto nextState = createState("next", false);
+    buildAutomatonStates(formula->Children[0], nextState, automaton);
+    
+    // Add transition from current state to next state
+    automaton->addTransition(currentState, std::set<std::string>(), nextState);
   }
 };
 
-// LTL Formula Builder
+// Enhanced LTL Formula Builder with general symbolic value persistence
 class LTLFormulaBuilder {
 private:
-  std::shared_ptr<LTLFormulaNode> Root;
+  std::shared_ptr<LTLFormulaNode> RootFormula;
+  SymbolicValuePersistenceManager PersistenceManager;
+  std::vector<std::string> DiagnosticLabels;
+  std::vector<SymbolBinding> SymbolBindings;
+  std::set<std::string> FunctionNames;
 
 public:
-  LTLFormulaBuilder() : Root(nullptr) {}
+  LTLFormulaBuilder() = default;
 
-  // Set the root formula
-  void setFormula(std::shared_ptr<LTLFormulaNode> formula) { Root = formula; }
+  void setFormula(std::shared_ptr<LTLFormulaNode> formula) {
+    RootFormula = formula;
 
-  // Get the complete formula as string
+    // Analyze formula for symbolic value persistence requirements
+    PersistenceManager.analyzeFormulaForPersistence(formula);
+
+    // Extract diagnostic labels
+    extractDiagnosticLabels(formula);
+
+    // Extract symbol bindings
+    extractSymbolBindings(formula);
+
+    // Extract function names
+    extractFunctionNames(formula);
+  }
+
   std::string getFormulaString() const {
-    return Root ? Root->toString() : "empty";
+    return RootFormula ? RootFormula->toString() : "";
   }
 
-  // Get structural information for automaton generation
   std::string getStructuralInfo() const {
-    return Root ? Root->getStructuralInfo() : "EMPTY";
-  }
+    if (!RootFormula)
+      return "";
 
-  // Get all diagnostic labels
-  std::vector<std::string> getDiagnosticLabels() const {
-    std::vector<std::string> labels;
-    collectLabels(Root, labels);
-    return labels;
-  }
+    std::string info = "Formula Structure:\n";
+    info += "  Root: " + RootFormula->getStructuralInfo() + "\n";
+    info += "  Symbols requiring GDM: " +
+            std::to_string(PersistenceManager.getSymbolsNeedingGDM().size()) +
+            "\n";
 
-  // Get all symbol bindings
-  std::vector<SymbolBinding> getSymbolBindings() const {
-    std::vector<SymbolBinding> bindings;
-    collectBindings(Root, bindings);
-    return bindings;
-  }
-
-  // Get all function names used in atomic propositions
-  std::vector<std::string> getFunctionNames() const {
-    std::vector<std::string> functions;
-    collectFunctions(Root, functions);
-    return functions;
-  }
-
-  // Generate Büchi automaton from the formula
-  std::unique_ptr<LTLAutomaton> generateAutomaton() const {
-    if (!Root) {
-      return std::make_unique<LTLAutomaton>();
+    for (const auto &symbol : PersistenceManager.getSymbolsNeedingGDM()) {
+      const auto *info_ptr = PersistenceManager.getSymbolInfo(symbol);
+      if (info_ptr) {
+        info += "    - " + symbol + " (";
+        info +=
+            "contexts: " + std::to_string(info_ptr->TemporalContexts.size()) +
+            ", ";
+        info += "subformulas: " + std::to_string(info_ptr->Subformulas.size()) +
+                ", ";
+        info +=
+            "program points: " + std::to_string(info_ptr->ProgramPoints.size());
+        info += ")\n";
+      }
     }
 
-    LTLParser parser(Root);
+    return info;
+  }
+
+  std::vector<std::string> getDiagnosticLabels() const {
+    return DiagnosticLabels;
+  }
+
+  std::vector<SymbolBinding> getSymbolBindings() const {
+    return SymbolBindings;
+  }
+
+  std::set<std::string> getFunctionNames() const { return FunctionNames; }
+
+  // New methods for general symbolic value persistence
+  const SymbolicValuePersistenceManager &getPersistenceManager() const {
+    return PersistenceManager;
+  }
+
+  std::set<std::string> getSymbolsNeedingGDM() const {
+    return PersistenceManager.getSymbolsNeedingGDM();
+  }
+
+  bool needsGDMStorage(const std::string &symbolName) const {
+    return PersistenceManager.needsGDMStorage(symbolName);
+  }
+
+  std::string getPersistenceReport() const {
+    return PersistenceManager.generatePersistenceReport();
+  }
+
+  std::unique_ptr<LTLAutomaton> generateAutomaton() const {
+    if (!RootFormula) {
+      return nullptr;
+    }
+
+    LTLParser parser(RootFormula);
     return parser.generateAutomaton();
   }
 
 private:
-  void collectLabels(std::shared_ptr<LTLFormulaNode> node,
-                     std::vector<std::string> &labels) const {
+  void extractDiagnosticLabels(const std::shared_ptr<LTLFormulaNode> &node) {
     if (!node)
       return;
 
     if (!node->DiagnosticLabel.empty()) {
-      labels.push_back(node->DiagnosticLabel);
+      DiagnosticLabels.push_back(node->DiagnosticLabel);
     }
 
-    for (auto &child : node->Children) {
-      collectLabels(child, labels);
-    }
-  }
-
-  void collectBindings(std::shared_ptr<LTLFormulaNode> node,
-                       std::vector<SymbolBinding> &bindings) const {
-    if (!node)
-      return;
-
-    if (node->Type == LTLNodeType::Atomic) {
-      auto atomicNode = std::static_pointer_cast<AtomicNode>(node);
-      bindings.push_back(atomicNode->Binding);
-    }
-
-    for (auto &child : node->Children) {
-      collectBindings(child, bindings);
+    for (const auto &child : node->Children) {
+      extractDiagnosticLabels(child);
     }
   }
 
-  void collectFunctions(std::shared_ptr<LTLFormulaNode> node,
-                        std::vector<std::string> &functions) const {
+  void extractSymbolBindings(const std::shared_ptr<LTLFormulaNode> &node) {
     if (!node)
       return;
 
-    if (node->Type == LTLNodeType::Atomic) {
-      auto atomicNode = std::static_pointer_cast<AtomicNode>(node);
-      functions.push_back(atomicNode->FunctionName);
+    if (!node->Binding.SymbolName.empty()) {
+      SymbolBindings.push_back(node->Binding);
     }
 
-    for (auto &child : node->Children) {
-      collectFunctions(child, functions);
+    for (const auto &child : node->Children) {
+      extractSymbolBindings(child);
     }
+  }
+
+  void extractFunctionNames(const std::shared_ptr<LTLFormulaNode> &node) {
+    if (!node)
+      return;
+
+    if (!node->FunctionName.empty()) {
+      FunctionNames.insert(node->FunctionName);
+    }
+
+    for (const auto &child : node->Children) {
+      extractFunctionNames(child);
+    }
+  }
+};
+
+// Generic event types for the framework
+enum class EventType {
+  PostCall,   // Function call completed
+  PreCall,    // Function call about to start
+  DeadSymbols // Symbols are no longer reachable
+};
+
+// Generic event structure
+struct GenericEvent {
+  EventType Type;
+  std::string FunctionName;
+  std::string SymbolName;
+  SymbolRef Symbol;
+  SourceLocation Location;
+
+  GenericEvent(EventType t, const std::string &func, const std::string &sym,
+               SymbolRef s, SourceLocation loc)
+      : Type(t), FunctionName(func), SymbolName(sym), Symbol(s), Location(loc) {
   }
 };
 
@@ -947,11 +1167,11 @@ class SymbolTracker {
 public:
   static void trackSymbol(ProgramStateRef State, SymbolRef sym,
                           const std::string &value, CheckerContext &C) {
-    C.addTransition(State->set<GenericSymbolMap>(sym, value));
+    C.addTransition(State->set<::GenericSymbolMap>(sym, value));
   }
 
   static std::string getSymbolValue(ProgramStateRef State, SymbolRef sym) {
-    if (const std::string *value = State->get<GenericSymbolMap>(sym)) {
+    if (const std::string *value = State->get<::GenericSymbolMap>(sym)) {
       return *value;
     }
     return "";
@@ -959,11 +1179,11 @@ public:
 
   static void removeSymbol(ProgramStateRef State, SymbolRef sym,
                            CheckerContext &C) {
-    C.addTransition(State->remove<GenericSymbolMap>(sym));
+    C.addTransition(State->remove<::GenericSymbolMap>(sym));
   }
 
   static bool hasSymbol(ProgramStateRef State, SymbolRef sym) {
-    return State->get<GenericSymbolMap>(sym) != nullptr;
+    return State->get<::GenericSymbolMap>(sym) != nullptr;
   }
 };
 
@@ -980,71 +1200,120 @@ public:
   }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) override {
-    ProgramStateRef State = C.getState();
-
     switch (event.Type) {
     case EventType::PostCall:
-      if (PatternMatcher::matchesMallocCall(*event.Call)) {
+      if (event.FunctionName == "malloc") {
         handleMallocPostCall(event, C);
+      } else if (event.FunctionName == "free") {
+        handleFreePostCall(event, C);
       }
       break;
-
-    case EventType::PreCall:
-      if (PatternMatcher::matchesFreeCall(*event.Call)) {
-        handleFreePreCall(event, C);
-      }
-      break;
-
     case EventType::DeadSymbols:
       handleDeadSymbols(event, C);
+      break;
+    default:
       break;
     }
   }
 
 private:
   void handleMallocPostCall(const GenericEvent &event, CheckerContext &C) {
-    ProgramStateRef State = C.getState();
-    SymbolRef Sym = event.Symbol;
-
-    if (!Sym || !PatternMatcher::isNotNull(Sym, C))
+    if (!event.Symbol) {
       return;
+    }
 
-    // Track the allocation
-    SymbolTracker::trackSymbol(State, Sym, "acquired", C);
+    // Check if this symbol needs cross-context storage
+    ProgramStateRef State = C.getState();
+
+    // Store symbolic value in GDM if needed for cross-context sharing
+    if (needsCrossContextStorage(event.SymbolName)) {
+      State = State->set<CrossContextSymbolMap>(event.SymbolName, event.Symbol);
+    }
+
+    // Track the allocated symbol using traditional state tracking
+    State = State->set<LeakedSymbols>(event.Symbol, true);
+    C.addTransition(State);
   }
 
-  void handleFreePreCall(const GenericEvent &event, CheckerContext &C) {
-    ProgramStateRef State = C.getState();
-    SymbolRef Sym = event.Symbol;
-
-    if (!Sym)
+  void handleFreePostCall(const GenericEvent &event, CheckerContext &C) {
+    if (!event.Symbol) {
       return;
+    }
 
-    if (SymbolTracker::hasSymbol(State, Sym)) {
-      std::string status = SymbolTracker::getSymbolValue(State, Sym);
+    ProgramStateRef State = C.getState();
 
-      if (status == "acquired") {
-        // First free - mark as released
-        SymbolTracker::trackSymbol(State, Sym, "released", C);
-      } else if (status == "released") {
-        // Double free - emit diagnostic
-        emitDoubleFreeDiagnostic(event, C);
+    // Check if this symbol needs cross-context storage
+    if (needsCrossContextStorage(event.SymbolName)) {
+      // Retrieve the stored symbolic value from GDM
+      if (const SymbolRef *storedSymbol =
+              State->get<CrossContextSymbolMap>(event.SymbolName)) {
+        // Use the stored symbolic value for consistency
+        if (*storedSymbol == event.Symbol) {
+          // This is the same symbolic value - proceed with free
+          handleFreeWithCrossContextStorage(event, C, *storedSymbol);
+        } else {
+          // Different symbolic value - this might be a different allocation
+          handleFreeWithCrossContextStorage(event, C, event.Symbol);
+        }
+      } else {
+        // No stored value - use current symbol
+        handleFreeWithCrossContextStorage(event, C, event.Symbol);
       }
+    } else {
+      // No cross-context storage needed - use traditional tracking
+      handleFreeWithTraditionalTracking(event, C);
+    }
+  }
+
+private:
+  // Check if a symbol needs cross-context storage
+  bool needsCrossContextStorage(const std::string &symbolName) {
+    // This would be determined by the persistence manager
+    // For now, assume all symbols need cross-context storage
+    return true;
+  }
+
+  // Handle free with cross-context storage
+  void handleFreeWithCrossContextStorage(const GenericEvent &event,
+                                         CheckerContext &C, SymbolRef symbol) {
+    ProgramStateRef State = C.getState();
+
+    // Check if symbol was allocated
+    if (State->get<LeakedSymbols>(symbol)) {
+      // Normal free - remove from leaked symbols
+      State = State->remove<LeakedSymbols>(symbol);
+      C.addTransition(State);
+    } else {
+      // Double free - emit diagnostic
+      emitDoubleFreeDiagnostic(event, C);
+    }
+  }
+
+  // Handle free with traditional tracking
+  void handleFreeWithTraditionalTracking(const GenericEvent &event,
+                                         CheckerContext &C) {
+    ProgramStateRef State = C.getState();
+
+    if (State->get<LeakedSymbols>(event.Symbol)) {
+      // Normal free - remove from leaked symbols
+      State = State->remove<LeakedSymbols>(event.Symbol);
+      C.addTransition(State);
+    } else {
+      // Double free - emit diagnostic
+      emitDoubleFreeDiagnostic(event, C);
     }
   }
 
   void handleDeadSymbols(const GenericEvent &event, CheckerContext &C) {
+    if (!event.Symbol) {
+      return;
+    }
+
     ProgramStateRef State = C.getState();
-    SymbolRef Sym = event.Symbol;
 
-    if (Sym && SymbolTracker::hasSymbol(State, Sym)) {
-      std::string status = SymbolTracker::getSymbolValue(State, Sym);
-
-      if (status == "acquired") {
-        // Memory leak - emit diagnostic
-        emitLeakDiagnostic(event, C);
-        SymbolTracker::removeSymbol(State, Sym, C);
-      }
+    // Check if symbol was allocated but not freed
+    if (State->get<LeakedSymbols>(event.Symbol)) {
+      emitLeakDiagnostic(event, C);
     }
   }
 
@@ -1110,11 +1379,13 @@ public:
   MallocFreeProperty() {
     // Build the LTL formula: G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) →
     // G ¬free(x) ) )
-    auto mallocCall = DSL::Call("malloc", DSL::ReturnVal("x"));
+    auto mallocCall =
+        DSL::Call("malloc", SymbolBinding(BindingType::ReturnValue, "x"));
     auto notNull = DSL::NotNull(DSL::Var("x"));
     auto mallocAndNotNull = DSL::And(mallocCall, notNull);
 
-    auto freeCall = DSL::Call("free", DSL::FirstParamVal("x"));
+    auto freeCall =
+        DSL::Call("free", SymbolBinding(BindingType::FirstParameter, "x"));
     auto eventuallyFree = DSL::F(freeCall);
     eventuallyFree->withDiagnostic("Memory leak: allocated memory not freed");
 
@@ -1168,8 +1439,10 @@ public:
     // released, and once released, it cannot be acquired again until it is
     // released"
 
-    auto lockCall = DSL::Call("lock", DSL::FirstParamVal("x"));
-    auto unlockCall = DSL::Call("unlock", DSL::FirstParamVal("x"));
+    auto lockCall =
+        DSL::Call("lock", SymbolBinding(BindingType::FirstParameter, "x"));
+    auto unlockCall =
+        DSL::Call("unlock", SymbolBinding(BindingType::FirstParameter, "x"));
 
     auto eventuallyUnlock = DSL::F(unlockCall);
     eventuallyUnlock->withDiagnostic("Lock leak: acquired lock not released");
@@ -1206,22 +1479,12 @@ public:
 
   std::unique_ptr<EventHandler>
   createEventHandler(const CheckerBase *Checker) override {
-    // For now, return the same handler - in a real implementation,
-    // this would be a specialized MutexLockUnlockEventHandler
     return std::make_unique<MallocFreeEventHandler>(Checker);
   }
 };
 
 } // namespace dsl
-
 } // namespace ento
 } // namespace clang
-
-// LLVM traits for std::string values
-template <> struct llvm::FoldingSetTrait<std::string> {
-  static inline void Profile(const std::string &X, llvm::FoldingSetNodeID &ID) {
-    ID.AddString(X);
-  }
-};
 
 #endif // LLVM_CLANG_STATICANALYZER_CHECKERS_EMBEDDEDDSLFRAMEWORK_H
