@@ -73,7 +73,34 @@ class EmbeddedDSLMonitorChecker
 public:
   EmbeddedDSLMonitorChecker() {
     // Create the property definition and monitor automaton
-    auto property = std::make_unique<dsl::MallocFreeProperty>();
+    // Create a generic property with the malloc/free formula
+    auto mallocCall = dsl::DSL::Call(
+        "malloc", dsl::SymbolBinding(dsl::BindingType::ReturnValue, "x"));
+    auto notNull = dsl::DSL::Not(dsl::DSL::Var("x"));
+    auto mallocAndNotNull = dsl::DSL::And(mallocCall, notNull);
+
+    auto freeCall = dsl::DSL::Call(
+        "free", dsl::SymbolBinding(dsl::BindingType::FirstParameter, "x"));
+    auto eventuallyFree = dsl::DSL::F(freeCall);
+    eventuallyFree->withDiagnostic("Memory leak: allocated memory not freed");
+
+    auto freeImpliesNoMoreFree =
+        dsl::DSL::Implies(freeCall, dsl::DSL::G(dsl::DSL::Not(freeCall)));
+    freeImpliesNoMoreFree->withDiagnostic(
+        "Double free: memory freed multiple times");
+
+    auto globallyNoMoreFree = dsl::DSL::G(freeImpliesNoMoreFree);
+    auto eventuallyFreeAndNoMoreFree =
+        dsl::DSL::And(eventuallyFree, globallyNoMoreFree);
+    auto implication =
+        dsl::DSL::Implies(mallocAndNotNull, eventuallyFreeAndNoMoreFree);
+    auto globallyImplication = dsl::DSL::G(implication);
+    globallyImplication->withDiagnostic("Memory management property violation");
+
+    auto property = std::make_unique<dsl::GenericProperty>(
+        "malloc_free_exactly_once",
+        "G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )",
+        globallyImplication);
     Monitor =
         std::make_unique<dsl::MonitorAutomaton>(std::move(property), this);
 
@@ -213,9 +240,9 @@ void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
     }
   }
 
-  // Also check LeakedSymbols map for dead symbols
-  for (auto [Sym, IsLeaked] : State->get<LeakedSymbols>()) {
-    if (IsLeaked && SR.isDead(Sym)) {
+  // Also check SymbolStates map for dead symbols
+  for (auto [Sym, State] : State->get<::SymbolStates>()) {
+    if (State == ::SymbolState::Active && SR.isDead(Sym)) {
       auto event = createDeadSymbolsEvent(Sym, C);
       Monitor->handleEvent(event, C);
     }

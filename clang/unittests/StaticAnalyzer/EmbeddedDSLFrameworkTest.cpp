@@ -255,13 +255,20 @@ TEST_F(EmbeddedDSLFrameworkTest, AutomatonWithComplexFormula) {
 //===----------------------------------------------------------------------===//
 
 TEST_F(EmbeddedDSLFrameworkTest, MallocFreeProperty) {
-  MallocFreeProperty property;
+  // Create a generic property for testing
+  auto mallocCall = dsl::DSL::Call(
+      "malloc", dsl::SymbolBinding(dsl::BindingType::ReturnValue, "x"));
+  auto freeCall = dsl::DSL::Call(
+      "free", dsl::SymbolBinding(dsl::BindingType::FirstParameter, "x"));
+  auto formula =
+      dsl::DSL::G(dsl::DSL::Implies(mallocCall, dsl::DSL::F(freeCall)));
+
+  dsl::GenericProperty property("test_property", "G(malloc(x) → F(free(x)))",
+                                formula);
 
   // Test property metadata
-  EXPECT_EQ(property.getPropertyName(), "malloc_free_exactly_once");
-  EXPECT_EQ(
-      property.getTemporalLogicFormula(),
-      "G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )");
+  EXPECT_EQ(property.getPropertyName(), "test_property");
+  EXPECT_EQ(property.getTemporalLogicFormula(), "G(malloc(x) → F(free(x)))");
 
   // Test formula builder
   auto formulaBuilder = property.getFormulaBuilder();
@@ -270,15 +277,11 @@ TEST_F(EmbeddedDSLFrameworkTest, MallocFreeProperty) {
 
   // Test diagnostic labels
   auto labels = formulaBuilder.getDiagnosticLabels();
-  EXPECT_EQ(labels.size(), 3);
-  auto labelsVec = std::vector<std::string>(labels.begin(), labels.end());
-  EXPECT_EQ(labelsVec[0], "Memory management property violation");
-  EXPECT_EQ(labelsVec[1], "Memory leak: allocated memory not freed");
-  EXPECT_EQ(labelsVec[2], "Double free: memory freed multiple times");
+  EXPECT_EQ(labels.size(), 0); // No diagnostic labels in simple formula
 
   // Test symbol bindings
   auto bindings = formulaBuilder.getSymbolBindings();
-  EXPECT_EQ(bindings.size(), 5);
+  EXPECT_EQ(bindings.size(), 2); // Simple formula has 2 bindings
 
   // Test function names
   auto functions = formulaBuilder.getFunctionNames();
@@ -330,13 +333,22 @@ TEST_F(EmbeddedDSLFrameworkTest, MutexLockUnlockProperty) {
 
 TEST_F(EmbeddedDSLFrameworkTest, MonitorAutomatonCreation) {
   // Create a property
-  auto property = std::make_unique<MallocFreeProperty>();
+  // Create a generic property for testing
+  auto mallocCall = dsl::DSL::Call(
+      "malloc", dsl::SymbolBinding(dsl::BindingType::ReturnValue, "x"));
+  auto freeCall = dsl::DSL::Call(
+      "free", dsl::SymbolBinding(dsl::BindingType::FirstParameter, "x"));
+  auto formula =
+      dsl::DSL::G(dsl::DSL::Implies(mallocCall, dsl::DSL::F(freeCall)));
+
+  auto property = std::make_unique<dsl::GenericProperty>(
+      "test_property", "G(malloc(x) → F(free(x)))", formula);
 
   // Create monitor automaton (without checker context for unit test)
   MonitorAutomaton monitor(std::move(property), nullptr);
 
   // Test monitor properties
-  EXPECT_EQ(monitor.getPropertyName(), "malloc_free_exactly_once");
+  EXPECT_EQ(monitor.getPropertyName(), "test_property");
 
   // Test formula builder access
   auto formulaBuilder = monitor.getFormulaBuilder();
@@ -457,7 +469,16 @@ TEST_F(EmbeddedDSLFrameworkTest, EndToEndFormulaBuilding) {
 
 TEST_F(EmbeddedDSLFrameworkTest, PropertyComparison) {
   // Test that different properties generate different formulas
-  MallocFreeProperty mallocProperty;
+  // Create a generic property for testing
+  auto mallocCall = dsl::DSL::Call(
+      "malloc", dsl::SymbolBinding(dsl::BindingType::ReturnValue, "x"));
+  auto freeCall = dsl::DSL::Call(
+      "free", dsl::SymbolBinding(dsl::BindingType::FirstParameter, "x"));
+  auto formula =
+      dsl::DSL::G(dsl::DSL::Implies(mallocCall, dsl::DSL::F(freeCall)));
+
+  dsl::GenericProperty mallocProperty("test_property",
+                                      "G(malloc(x) → F(free(x)))", formula);
   MutexLockUnlockProperty mutexProperty;
 
   auto mallocFormula = mallocProperty.getFormulaBuilder().getFormulaString();

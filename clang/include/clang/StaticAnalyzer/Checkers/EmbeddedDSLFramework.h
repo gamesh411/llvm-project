@@ -26,10 +26,29 @@
 #include <string>
 #include <vector>
 
+// Generic symbol state for any temporal property
+enum class SymbolState {
+  Uninitialized, // Symbol not yet processed
+  Active,        // Symbol is in active state
+  Inactive,      // Symbol is in inactive state
+  Violated,      // Symbol violates the property
+  Invalid        // Invalid state
+};
+
+// Generic symbol usage context in temporal formulas
+enum class SymbolContext {
+  Creation,    // Symbol is created (return value, acquisition)
+  Destruction, // Symbol is destroyed (parameter, release)
+  Validation,  // Symbol is validated (condition check)
+  Temporal,    // Symbol appears in temporal operators (F, G, U, etc.)
+  CrossContext // Symbol appears in multiple contexts
+};
+
 // State trait registrations
 REGISTER_MAP_WITH_PROGRAMSTATE(GenericSymbolMap, clang::ento::SymbolRef,
                                std::string)
-REGISTER_MAP_WITH_PROGRAMSTATE(LeakedSymbols, clang::ento::SymbolRef, bool)
+REGISTER_MAP_WITH_PROGRAMSTATE(SymbolStates, clang::ento::SymbolRef,
+                               SymbolState)
 REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
                                clang::ento::SymbolRef)
 
@@ -82,25 +101,6 @@ struct SymbolBinding {
 
   SymbolBinding(BindingType t, const std::string &name, int index = 0)
       : Type(t), SymbolName(name), ParameterIndex(index) {}
-};
-
-// Automatic symbol state management
-enum class SymbolState {
-  Uninitialized, // Symbol not yet allocated
-  Allocated,     // Symbol allocated but not freed
-  Freed,         // Symbol freed
-  Leaked,        // Symbol leaked (symbol dead)
-  DoubleFreed,   // Symbol freed multiple times
-  Invalid        // Invalid state (e.g., double allocation)
-};
-
-// Symbol usage context in temporal formulas
-enum class SymbolContext {
-  Allocation,   // Symbol is allocated (malloc return, lock acquisition)
-  Deallocation, // Symbol is deallocated (free parameter, unlock parameter)
-  Validation,   // Symbol is validated (null check, condition check)
-  Temporal,     // Symbol appears in temporal operators (F, G, U, etc.)
-  CrossContext  // Symbol appears in multiple contexts
 };
 
 // Symbol tracking information derived from formula analysis
@@ -1213,36 +1213,57 @@ public:
   void checkForViolations(const GenericEvent &event, CheckerContext &C) {
     ProgramStateRef State = C.getState();
 
+    // Generic violation detection based on formula structure
+    // For now, implement a simple pattern-based detection
+    // This will be replaced with proper automaton-based detection
+
     switch (event.Type) {
     case EventType::PostCall:
-      if (event.FunctionName == "malloc") {
-        // Track allocated symbol
-        if (event.Symbol) {
-          State = State->set<LeakedSymbols>(event.Symbol, true);
-          C.addTransition(State);
-        }
-      } else if (event.FunctionName == "free") {
-        // Check for double free
-        if (event.Symbol) {
-          bool wasTracked = State->get<LeakedSymbols>(event.Symbol);
-          if (wasTracked) {
-            // Normal free - remove from leaked symbols
-            State = State->remove<LeakedSymbols>(event.Symbol);
+      // Check for function-specific patterns based on binding information
+      if (EventCreator.hasBindingInfo(event.FunctionName)) {
+        // Get binding type for this function and symbol
+        BindingType bindingType =
+            EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+
+        if (bindingType == BindingType::ReturnValue) {
+          // This is a creation event (like malloc)
+          if (event.Symbol) {
+            State = State->set<SymbolStates>(event.Symbol, SymbolState::Active);
             C.addTransition(State);
-          } else {
-            // Double free - emit diagnostic
-            emitDiagnostic("memory freed twice (violates exactly-once)", event,
-                           C);
+          }
+        } else if (bindingType == BindingType::FirstParameter) {
+          // This is a destruction event (like free)
+          if (event.Symbol) {
+            const SymbolState *currentStatePtr =
+                State->get<SymbolStates>(event.Symbol);
+            SymbolState currentState =
+                currentStatePtr ? *currentStatePtr : SymbolState::Uninitialized;
+            if (currentState == SymbolState::Active) {
+              // Normal destruction - mark as inactive
+              State =
+                  State->set<SymbolStates>(event.Symbol, SymbolState::Inactive);
+              C.addTransition(State);
+            } else {
+              // Double destruction - emit diagnostic
+              emitDiagnostic("resource destroyed twice (violates exactly-once)",
+                             event, C);
+            }
           }
         }
       }
       break;
 
     case EventType::DeadSymbols:
-      // Check for memory leak
-      if (event.Symbol && State->get<LeakedSymbols>(event.Symbol)) {
-        emitDiagnostic("allocated memory is not freed (violates exactly-once)",
-                       event, C);
+      // Check for resource leaks
+      if (event.Symbol) {
+        const SymbolState *currentStatePtr =
+            State->get<SymbolStates>(event.Symbol);
+        SymbolState currentState =
+            currentStatePtr ? *currentStatePtr : SymbolState::Uninitialized;
+        if (currentState == SymbolState::Active) {
+          emitDiagnostic("resource not destroyed (violates exactly-once)",
+                         event, C);
+        }
       }
       break;
 
@@ -1253,6 +1274,23 @@ public:
 
   std::string getPropertyName() const { return PropertyName; }
   LTLFormulaBuilder getFormulaBuilder() const { return FormulaBuilder; }
+
+  // Extract atomic propositions from an event
+  std::set<std::string> extractPropositions(const GenericEvent &event) const {
+    std::set<std::string> propositions;
+
+    // Add function call proposition
+    if (!event.FunctionName.empty()) {
+      propositions.insert(event.FunctionName + "(" + event.SymbolName + ")");
+    }
+
+    // Add symbol proposition if available
+    if (!event.SymbolName.empty() && event.SymbolName != "unknown") {
+      propositions.insert(event.SymbolName);
+    }
+
+    return propositions;
+  }
 
   // Create event using binding-driven approach
   dsl::GenericEvent createBindingDrivenEvent(const CallEvent &Call,
@@ -1340,22 +1378,10 @@ private:
       return;
     }
 
-    // Create appropriate bug type based on diagnostic message
-    const BugType *BT = nullptr;
-    if (diagnostic.find("leak") != std::string::npos ||
-        diagnostic.find("not freed") != std::string::npos) {
-      static const BugType LeakBT{Checker, "leak", "EmbeddedDSLMonitor"};
-      BT = &LeakBT;
-    } else if (diagnostic.find("double") != std::string::npos ||
-               diagnostic.find("twice") != std::string::npos) {
-      static const BugType DoubleFreeBT{Checker, "double free",
-                                        "EmbeddedDSLMonitor"};
-      BT = &DoubleFreeBT;
-    } else {
-      static const BugType GenericBT{Checker, "violation",
-                                     "EmbeddedDSLMonitor"};
-      BT = &GenericBT;
-    }
+    // Create generic bug type for any temporal property violation
+    static const BugType GenericBT{Checker, "temporal_violation",
+                                   "EmbeddedDSLMonitor"};
+    const BugType *BT = &GenericBT;
 
     auto R =
         std::make_unique<PathSensitiveBugReport>(*BT, diagnostic, ErrorNode);
@@ -1367,16 +1393,6 @@ private:
 // Generic ASTMatchers wrapper
 class PatternMatcher {
 public:
-  static bool matchesMallocCall(const CallEvent &Call) {
-    return Call.getCalleeIdentifier() &&
-           Call.getCalleeIdentifier()->getName() == "malloc";
-  }
-
-  static bool matchesFreeCall(const CallEvent &Call) {
-    return Call.getCalleeIdentifier() &&
-           Call.getCalleeIdentifier()->getName() == "free";
-  }
-
   static bool isNotNull(SymbolRef Sym, CheckerContext &C) {
     ProgramStateRef State = C.getState();
     ConditionTruthVal IsNull = C.getConstraintManager().isNull(State, Sym);
@@ -1409,234 +1425,43 @@ public:
   }
 };
 
-// Malloc/Free Event Handler
-class MallocFreeEventHandler : public EventHandler {
+// Generic Event Handler for any temporal property
+class GenericEventHandler : public EventHandler {
 private:
   const CheckerBase *Checker;
 
 public:
-  MallocFreeEventHandler(const CheckerBase *C) : Checker(C) {}
+  GenericEventHandler(const CheckerBase *C) : Checker(C) {}
 
   std::string getDescription() const override {
-    return "Monitors malloc/free exactly-once property";
+    return "Generic temporal property monitor";
   }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) override {
-    switch (event.Type) {
-    case EventType::PostCall:
-      if (event.FunctionName == "malloc") {
-        handleMallocPostCall(event, C);
-      } else if (event.FunctionName == "free") {
-        handleFreePostCall(event, C);
-      }
-      break;
-    case EventType::DeadSymbols:
-      handleDeadSymbols(event, C);
-      break;
-    default:
-      break;
-    }
-  }
-
-private:
-  void handleMallocPostCall(const GenericEvent &event, CheckerContext &C) {
-    if (!event.Symbol) {
-      return;
-    }
-
-    // Check if this symbol needs cross-context storage
-    ProgramStateRef State = C.getState();
-
-    // Store symbolic value in GDM if needed for cross-context sharing
-    if (needsCrossContextStorage(event.SymbolName)) {
-      State = State->set<CrossContextSymbolMap>(event.SymbolName, event.Symbol);
-    }
-
-    // Track the allocated symbol using traditional state tracking
-    State = State->set<LeakedSymbols>(event.Symbol, true);
-    C.addTransition(State);
-  }
-
-  void handleFreePostCall(const GenericEvent &event, CheckerContext &C) {
-    if (!event.Symbol) {
-      return;
-    }
-
-    ProgramStateRef State = C.getState();
-
-    // Check if this symbol needs cross-context storage
-    if (needsCrossContextStorage(event.SymbolName)) {
-      // Retrieve the stored symbolic value from GDM
-      if (const SymbolRef *storedSymbol =
-              State->get<CrossContextSymbolMap>(event.SymbolName)) {
-        // Use the stored symbolic value for consistency
-        if (*storedSymbol == event.Symbol) {
-          // This is the same symbolic value - proceed with free
-          handleFreeWithCrossContextStorage(event, C, *storedSymbol);
-        } else {
-          // Different symbolic value - this might be a different allocation
-          handleFreeWithCrossContextStorage(event, C, event.Symbol);
-        }
-      } else {
-        // No stored value - use current symbol
-        handleFreeWithCrossContextStorage(event, C, event.Symbol);
-      }
-    } else {
-      // No cross-context storage needed - use traditional tracking
-      handleFreeWithTraditionalTracking(event, C);
-    }
-  }
-
-private:
-  // Check if a symbol needs cross-context storage
-  bool needsCrossContextStorage(const std::string &symbolName) {
-    // This would be determined by the persistence manager
-    // For now, assume all symbols need cross-context storage
-    return true;
-  }
-
-  // Handle free with cross-context storage
-  void handleFreeWithCrossContextStorage(const GenericEvent &event,
-                                         CheckerContext &C, SymbolRef symbol) {
-    ProgramStateRef State = C.getState();
-
-    // Check if symbol was allocated
-    if (State->get<LeakedSymbols>(symbol)) {
-      // Normal free - remove from leaked symbols
-      State = State->remove<LeakedSymbols>(symbol);
-      C.addTransition(State);
-    } else {
-      // Double free - emit diagnostic
-      emitDoubleFreeDiagnostic(event, C);
-    }
-  }
-
-  // Handle free with traditional tracking
-  void handleFreeWithTraditionalTracking(const GenericEvent &event,
-                                         CheckerContext &C) {
-    ProgramStateRef State = C.getState();
-
-    if (State->get<LeakedSymbols>(event.Symbol)) {
-      // Normal free - remove from leaked symbols
-      State = State->remove<LeakedSymbols>(event.Symbol);
-      C.addTransition(State);
-    } else {
-      // Double free - emit diagnostic
-      emitDoubleFreeDiagnostic(event, C);
-    }
-  }
-
-  void handleDeadSymbols(const GenericEvent &event, CheckerContext &C) {
-    if (!event.Symbol) {
-      return;
-    }
-
-    ProgramStateRef State = C.getState();
-
-    // Check if symbol was allocated but not freed
-    if (State->get<LeakedSymbols>(event.Symbol)) {
-      emitLeakDiagnostic(event, C);
-    }
-  }
-
-  void emitDoubleFreeDiagnostic(const GenericEvent &event, CheckerContext &C) {
-    if (!event.Symbol) {
-      return;
-    }
-
-    // Generate error node
-    ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
-    if (!ErrorNode) {
-      return;
-    }
-
-    auto R = std::make_unique<PathSensitiveBugReport>(
-        getDoubleFreeBugType(), "memory freed twice (violates exactly-once)",
-        ErrorNode);
-    R->markInteresting(event.Symbol);
-    C.emitReport(std::move(R));
-  }
-
-  void emitLeakDiagnostic(const GenericEvent &event, CheckerContext &C) {
-    // Use the same pattern as MallocChecker - collect errors and emit at the
-    // end
-    if (!event.Symbol) {
-      return;
-    }
-
-    // Mark the symbol as leaked in the state
-    ProgramStateRef State = C.getState();
-    State = State->set<LeakedSymbols>(event.Symbol, true);
-
-    // Generate error node with the updated state
-    ExplodedNode *ErrorNode = C.generateErrorNode(State);
-    if (!ErrorNode) {
-      return;
-    }
-
-    auto R = std::make_unique<PathSensitiveBugReport>(
-        getLeakBugType(),
-        "allocated memory is not freed (violates exactly-once)", ErrorNode);
-    R->markInteresting(event.Symbol);
-    C.emitReport(std::move(R));
-  }
-
-  const BugType &getDoubleFreeBugType() const {
-    static const BugType BT{Checker, "double free", "EmbeddedDSLMonitor"};
-    return BT;
-  }
-
-  const BugType &getLeakBugType() const {
-    static const BugType BT{Checker, "leak", "EmbeddedDSLMonitor"};
-    return BT;
+    // Generic event handling - all logic is now in the automaton
+    // This handler can be extended for custom event processing if needed
+    (void)event;
+    (void)C;
   }
 };
 
-// Malloc/Free Property Implementation
-class MallocFreeProperty : public PropertyDefinition {
+// Generic Property Implementation
+class GenericProperty : public PropertyDefinition {
 private:
   LTLFormulaBuilder FormulaBuilder;
+  std::string PropertyName;
+  std::string FormulaString;
 
 public:
-  MallocFreeProperty() {
-    // Build the LTL formula: G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) →
-    // G ¬free(x) ) )
-    auto mallocCall =
-        DSL::Call("malloc", SymbolBinding(BindingType::ReturnValue, "x"));
-    auto notNull = DSL::NotNull(DSL::Var("x"));
-    auto mallocAndNotNull = DSL::And(mallocCall, notNull);
-
-    auto freeCall =
-        DSL::Call("free", SymbolBinding(BindingType::FirstParameter, "x"));
-    auto eventuallyFree = DSL::F(freeCall);
-    eventuallyFree->withDiagnostic("Memory leak: allocated memory not freed");
-
-    auto freeImpliesNoMoreFree =
-        DSL::Implies(freeCall, DSL::G(DSL::Not(freeCall)));
-    freeImpliesNoMoreFree->withDiagnostic(
-        "Double free: memory freed multiple times");
-
-    auto globallyNoMoreFree = DSL::G(freeImpliesNoMoreFree);
-
-    auto eventuallyFreeAndNoMoreFree =
-        DSL::And(eventuallyFree, globallyNoMoreFree);
-
-    auto implication =
-        DSL::Implies(mallocAndNotNull, eventuallyFreeAndNoMoreFree);
-
-    auto globallyImplication = DSL::G(implication);
-    globallyImplication->withDiagnostic("Memory management property violation");
-
-    FormulaBuilder.setFormula(globallyImplication);
+  GenericProperty(const std::string &name, const std::string &formulaStr,
+                  std::shared_ptr<LTLFormulaNode> formula)
+      : PropertyName(name), FormulaString(formulaStr) {
+    FormulaBuilder.setFormula(formula);
   }
 
-  std::string getTemporalLogicFormula() const override {
-    return "G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )";
-  }
+  std::string getTemporalLogicFormula() const override { return FormulaString; }
 
-  std::string getPropertyName() const override {
-    return "malloc_free_exactly_once";
-  }
+  std::string getPropertyName() const override { return PropertyName; }
 
   LTLFormulaBuilder getFormulaBuilder() const override {
     return FormulaBuilder;
@@ -1644,7 +1469,7 @@ public:
 
   std::unique_ptr<EventHandler>
   createEventHandler(const CheckerBase *Checker) override {
-    return std::make_unique<MallocFreeEventHandler>(Checker);
+    return std::make_unique<GenericEventHandler>(Checker);
   }
 };
 
@@ -1701,7 +1526,7 @@ public:
 
   std::unique_ptr<EventHandler>
   createEventHandler(const CheckerBase *Checker) override {
-    return std::make_unique<MallocFreeEventHandler>(Checker);
+    return std::make_unique<GenericEventHandler>(Checker);
   }
 };
 
