@@ -1079,13 +1079,15 @@ class MonitorAutomaton {
   LTLFormulaBuilder FormulaBuilder;
   std::unique_ptr<LTLAutomaton> Automaton;
   std::shared_ptr<LTLState> CurrentState;
+  const CheckerBase *Checker;
 
 public:
   MonitorAutomaton(std::unique_ptr<PropertyDefinition> prop,
-                   const CheckerBase *Checker)
-      : Handler(prop->createEventHandler(Checker)),
+                   const CheckerBase *C)
+      : Handler(prop->createEventHandler(C)),
         PropertyName(prop->getPropertyName()),
-        FormulaBuilder(prop->getFormulaBuilder()) {
+        FormulaBuilder(prop->getFormulaBuilder()),
+        Checker(C) {
 
     // Generate Büchi automaton from the formula
     Automaton = FormulaBuilder.generateAutomaton();
@@ -1098,17 +1100,78 @@ public:
       std::set<std::string> propositions = extractPropositions(event);
       CurrentState = Automaton->processEvent(CurrentState, propositions);
 
-      // Check for violations
-      if (Automaton->isAccepting(CurrentState)) {
-        std::string diagnostic = Automaton->getDiagnosticLabel(CurrentState);
-        if (!diagnostic.empty()) {
-          emitDiagnostic(diagnostic, event, C);
-        }
-      }
+      // Check for violations based on event type and current state
+      checkForViolations(event, C);
     }
 
     // Also handle through the traditional event handler
-    Handler->handleEvent(event, C);
+    // Handler->handleEvent(event, C); // Temporarily disabled to test automaton-based detection
+  }
+
+  void checkForViolations(const GenericEvent &event, CheckerContext &C) {
+    ProgramStateRef State = C.getState();
+    
+    // Debug output
+    llvm::errs() << "DEBUG: checkForViolations - Processing event: " << event.FunctionName 
+                 << " (" << (event.Symbol ? "has symbol" : "no symbol") << ")\n";
+    llvm::errs() << "DEBUG: Event type: ";
+    switch (event.Type) {
+      case EventType::PostCall: llvm::errs() << "PostCall"; break;
+      case EventType::PreCall: llvm::errs() << "PreCall"; break;
+      case EventType::DeadSymbols: llvm::errs() << "DeadSymbols"; break;
+      default: llvm::errs() << "Unknown"; break;
+    }
+    llvm::errs() << "\n";
+    
+    switch (event.Type) {
+    case EventType::PostCall:
+      llvm::errs() << "DEBUG: Entering PostCall case\n";
+      if (event.FunctionName == "malloc") {
+        llvm::errs() << "DEBUG: Processing malloc event\n";
+        // Track allocated symbol
+        if (event.Symbol) {
+          State = State->set<LeakedSymbols>(event.Symbol, true);
+          C.addTransition(State);
+          llvm::errs() << "DEBUG: Tracked malloc symbol\n";
+        }
+      } else if (event.FunctionName == "free") {
+        llvm::errs() << "DEBUG: Processing free event\n";
+        // Check for double free
+        if (event.Symbol) {
+          llvm::errs() << "DEBUG: Processing free for symbol: " << event.Symbol->getSymbolID() << "\n";
+          bool wasTracked = State->get<LeakedSymbols>(event.Symbol);
+          llvm::errs() << "DEBUG: Symbol was tracked: " << (wasTracked ? "yes" : "no") << "\n";
+          if (wasTracked) {
+            // Normal free - remove from leaked symbols
+            State = State->remove<LeakedSymbols>(event.Symbol);
+            C.addTransition(State);
+            llvm::errs() << "DEBUG: Normal free - removed from tracking\n";
+          } else {
+            // Double free - emit diagnostic
+            llvm::errs() << "DEBUG: Double free detected - emitting diagnostic\n";
+            emitDiagnostic("memory freed twice (violates exactly-once)", event, C);
+          }
+        } else {
+          llvm::errs() << "DEBUG: Free event has no symbol\n";
+        }
+      } else {
+        llvm::errs() << "DEBUG: PostCall event for function: " << event.FunctionName << "\n";
+      }
+      break;
+      
+    case EventType::DeadSymbols:
+      llvm::errs() << "DEBUG: Entering DeadSymbols case\n";
+      // Check for memory leak
+      if (event.Symbol && State->get<LeakedSymbols>(event.Symbol)) {
+        llvm::errs() << "DEBUG: Memory leak detected - emitting diagnostic\n";
+        emitDiagnostic("allocated memory is not freed (violates exactly-once)", event, C);
+      }
+      break;
+      
+    default:
+      llvm::errs() << "DEBUG: Entering default case\n";
+      break;
+    }
   }
 
   std::string getPropertyName() const { return PropertyName; }
@@ -1137,8 +1200,40 @@ private:
   // Emit diagnostic for automaton-based violations
   void emitDiagnostic(const std::string &diagnostic, const GenericEvent &event,
                       CheckerContext &C) {
-    // This would integrate with the existing diagnostic system
-    // For now, we'll use the traditional handler's diagnostic system
+    llvm::errs() << "DEBUG: emitDiagnostic called with: " << diagnostic << "\n";
+    
+    if (!event.Symbol) {
+      llvm::errs() << "DEBUG: No symbol in event, returning\n";
+      return;
+    }
+
+    // Generate error node
+    ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
+    if (!ErrorNode) {
+      llvm::errs() << "DEBUG: Could not generate error node\n";
+      return;
+    }
+
+    // Create appropriate bug type based on diagnostic message
+    const BugType *BT = nullptr;
+    if (diagnostic.find("leak") != std::string::npos || 
+        diagnostic.find("not freed") != std::string::npos) {
+      static const BugType LeakBT{Checker, "leak", "EmbeddedDSLMonitor"};
+      BT = &LeakBT;
+    } else if (diagnostic.find("double") != std::string::npos || 
+               diagnostic.find("twice") != std::string::npos) {
+      static const BugType DoubleFreeBT{Checker, "double free", "EmbeddedDSLMonitor"};
+      BT = &DoubleFreeBT;
+    } else {
+      static const BugType GenericBT{Checker, "violation", "EmbeddedDSLMonitor"};
+      BT = &GenericBT;
+    }
+
+    llvm::errs() << "DEBUG: Creating bug report\n";
+    auto R = std::make_unique<PathSensitiveBugReport>(*BT, diagnostic, ErrorNode);
+    R->markInteresting(event.Symbol);
+    C.emitReport(std::move(R));
+    llvm::errs() << "DEBUG: Bug report emitted\n";
   }
 };
 

@@ -165,9 +165,22 @@ EmbeddedDSLMonitorChecker::createPostCallEvent(const CallEvent &Call,
                              ? Call.getCalleeIdentifier()->getName().str()
                              : "unknown";
 
-  SymbolRef Sym = Call.getReturnValue().getAsSymbol();
-  std::string symbolName =
-      Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  SymbolRef Sym = nullptr;
+  std::string symbolName = "unknown";
+
+  if (funcName == "malloc") {
+    // For malloc, use the return value
+    Sym = Call.getReturnValue().getAsSymbol();
+    symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  } else if (funcName == "free") {
+    // For free, use the first argument (the pointer being freed)
+    Sym = Call.getArgSVal(0).getAsSymbol();
+    symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  } else {
+    // For other functions, use return value
+    Sym = Call.getReturnValue().getAsSymbol();
+    symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  }
 
   return dsl::GenericEvent(dsl::EventType::PostCall, funcName, symbolName, Sym,
                            Call.getSourceRange().getBegin());
@@ -180,9 +193,22 @@ EmbeddedDSLMonitorChecker::createPreCallEvent(const CallEvent &Call,
                              ? Call.getCalleeIdentifier()->getName().str()
                              : "unknown";
 
-  SymbolRef Sym = Call.getArgSVal(0).getAsSymbol();
-  std::string symbolName =
-      Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  SymbolRef Sym = nullptr;
+  std::string symbolName = "unknown";
+
+  if (funcName == "malloc") {
+    // For malloc, use the return value (we'll get it in PostCall)
+    Sym = nullptr;
+    symbolName = "unknown";
+  } else if (funcName == "free") {
+    // For free, use the first argument (the pointer being freed)
+    Sym = Call.getArgSVal(0).getAsSymbol();
+    symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  } else {
+    // For other functions, use first argument
+    Sym = Call.getArgSVal(0).getAsSymbol();
+    symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+  }
 
   return dsl::GenericEvent(dsl::EventType::PreCall, funcName, symbolName, Sym,
                            Call.getSourceRange().getBegin());
@@ -218,12 +244,26 @@ void EmbeddedDSLMonitorChecker::checkPreCall(const CallEvent &Call,
 
 void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
                                                  CheckerContext &C) const {
+  llvm::errs() << "DEBUG: checkDeadSymbols called\n";
+
   // Generate events for all dead symbols
   ProgramStateRef State = C.getState();
 
   for (auto [Sym, Value] : State->get<::GenericSymbolMap>()) {
     if (SR.isDead(Sym)) {
+      llvm::errs() << "DEBUG: Dead symbol found: " << Sym->getSymbolID()
+                   << "\n";
       // This symbol is dead and was tracked - report leak
+      auto event = createDeadSymbolsEvent(Sym, C);
+      Monitor->handleEvent(event, C);
+    }
+  }
+
+  // Also check LeakedSymbols map for dead symbols
+  for (auto [Sym, IsLeaked] : State->get<LeakedSymbols>()) {
+    if (IsLeaked && SR.isDead(Sym)) {
+      llvm::errs() << "DEBUG: Leaked symbol is dead: " << Sym->getSymbolID()
+                   << "\n";
       auto event = createDeadSymbolsEvent(Sym, C);
       Monitor->handleEvent(event, C);
     }
