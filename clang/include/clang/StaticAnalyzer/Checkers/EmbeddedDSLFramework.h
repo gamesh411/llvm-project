@@ -947,12 +947,12 @@ public:
       return Call.getReturnValue().getAsSymbol();
 
     case BindingType::FirstParameter:
-      return Call.getArgSVal(0).getAsSymbol();
+      return Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
 
     case BindingType::NthParameter:
       // For now, assume first parameter - could be enhanced to track parameter
       // index
-      return Call.getArgSVal(0).getAsSymbol();
+      return Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
 
     case BindingType::Variable:
     default:
@@ -1198,7 +1198,7 @@ public:
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
     // Process event through the automaton
     if (Automaton && CurrentState) {
-      std::set<std::string> propositions = extractPropositions(event);
+      std::set<std::string> propositions = extractPropositions(event, C);
       CurrentState = Automaton->processEvent(CurrentState, propositions);
 
       // Check for violations based on event type and current state
@@ -1228,8 +1228,23 @@ public:
         if (bindingType == BindingType::ReturnValue) {
           // This is a creation event (like malloc)
           if (event.Symbol) {
-            State = State->set<SymbolStates>(event.Symbol, SymbolState::Active);
-            C.addTransition(State);
+            // Check if the symbol is null - only track if it's not null
+            SValBuilder &SVB = C.getSValBuilder();
+            SVal SymbolSVal = SVB.makeSymbolVal(event.Symbol);
+            ConditionTruthVal isNull = State->isNull(SymbolSVal);
+            
+            if (isNull.isConstrainedTrue()) {
+              // Symbol is definitely null - don't track it
+              // This means malloc(x) ∧ x ≠ null is false, so no tracking needed
+            } else {
+              // Symbol is either definitely not null or unknown - track it
+              // We'll check nullness when evaluating violations
+              State = State->set<SymbolStates>(event.Symbol, SymbolState::Active);
+              C.addTransition(State);
+              
+              // Add a note about symbol binding
+              addSymbolBindingNote(event, C);
+            }
           }
         } else if (bindingType == BindingType::FirstParameter) {
           // This is a destruction event (like free)
@@ -1238,11 +1253,22 @@ public:
                 State->get<SymbolStates>(event.Symbol);
             SymbolState currentState =
                 currentStatePtr ? *currentStatePtr : SymbolState::Uninitialized;
+            
             if (currentState == SymbolState::Active) {
-              // Normal destruction - mark as inactive
-              State =
-                  State->set<SymbolStates>(event.Symbol, SymbolState::Inactive);
-              C.addTransition(State);
+              // Check if the symbol is null - only process free if it's not null
+              SValBuilder &SVB = C.getSValBuilder();
+              SVal SymbolSVal = SVB.makeSymbolVal(event.Symbol);
+              ConditionTruthVal isNull = State->isNull(SymbolSVal);
+              
+              if (!isNull.isConstrainedTrue()) {
+                // Symbol is either definitely not null or unknown - normal destruction
+                State =
+                    State->set<SymbolStates>(event.Symbol, SymbolState::Inactive);
+                C.addTransition(State);
+              }
+              // If symbol is definitely null, ignore this free
+            } else if (currentState == SymbolState::Uninitialized) {
+              // Symbol was never tracked (e.g., because it was null) - ignore this free
             } else {
               // Double destruction - emit diagnostic
               emitDiagnostic("resource destroyed twice (violates exactly-once)",
@@ -1261,8 +1287,17 @@ public:
         SymbolState currentState =
             currentStatePtr ? *currentStatePtr : SymbolState::Uninitialized;
         if (currentState == SymbolState::Active) {
-          emitDiagnostic("resource not destroyed (violates exactly-once)",
-                         event, C);
+          // Check if the symbol is null - only report leak if it's not null
+          SValBuilder &SVB = C.getSValBuilder();
+          SVal SymbolSVal = SVB.makeSymbolVal(event.Symbol);
+          ConditionTruthVal isNull = State->isNull(SymbolSVal);
+          
+          if (!isNull.isConstrainedTrue()) {
+            // Symbol is either definitely not null or unknown - report leak
+            emitDiagnostic("resource not destroyed (violates exactly-once)",
+                           event, C);
+          }
+          // If symbol is definitely null, don't report leak
         }
       }
       break;
@@ -1276,8 +1311,9 @@ public:
   LTLFormulaBuilder getFormulaBuilder() const { return FormulaBuilder; }
 
   // Extract atomic propositions from an event
-  std::set<std::string> extractPropositions(const GenericEvent &event) const {
+  std::set<std::string> extractPropositions(const GenericEvent &event, CheckerContext &C) const {
     std::set<std::string> propositions;
+    ProgramStateRef State = C.getState();
 
     // Add function call proposition
     if (!event.FunctionName.empty()) {
@@ -1335,7 +1371,7 @@ public:
         symbolName =
             Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
       } else {
-        Sym = Call.getArgSVal(0).getAsSymbol();
+        Sym = Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
         symbolName =
             Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
       }
@@ -1383,10 +1419,46 @@ private:
                                    "EmbeddedDSLMonitor"};
     const BugType *BT = &GenericBT;
 
+    // Enhance diagnostic message with internal symbol name for correlation
+    std::string enhancedDiagnostic = diagnostic;
+    
+    // Add internal symbol name for correlation with notes
+    if (event.Symbol) {
+      std::string internalSymbolName = "sym_" + std::to_string(event.Symbol->getSymbolID());
+      enhancedDiagnostic += " (internal symbol: " + internalSymbolName + ")";
+    }
+
     auto R =
-        std::make_unique<PathSensitiveBugReport>(*BT, diagnostic, ErrorNode);
+        std::make_unique<PathSensitiveBugReport>(*BT, enhancedDiagnostic, ErrorNode);
     R->markInteresting(event.Symbol);
     C.emitReport(std::move(R));
+  }
+
+  // Add a note about symbol binding
+  void addSymbolBindingNote(const GenericEvent &event, CheckerContext &C) {
+    if (!event.Symbol || !event.Location.isValid()) {
+      return;
+    }
+
+    // Determine the formula variable name
+    std::string formulaVar = "x"; // Default formula variable name
+    
+    // Try to find the actual formula variable name from the binding
+    for (const auto &binding : FormulaBuilder.getSymbolBindings()) {
+      if (binding.SymbolName == event.SymbolName) {
+        formulaVar = binding.SymbolName;
+        break;
+      }
+    }
+
+    // Create the note message
+    std::string internalSymbolName = "sym_" + std::to_string(event.Symbol->getSymbolID());
+    std::string noteMessage = "symbol \"" + formulaVar + "\" is bound here (internal symbol: " + 
+                             internalSymbolName + ")";
+
+    // Create a note using getNoteTag
+    const NoteTag *noteTag = C.getNoteTag([noteMessage]() { return noteMessage; });
+    C.addTransition(C.getState(), noteTag);
   }
 };
 
