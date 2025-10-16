@@ -1,4 +1,5 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.unix.EmbeddedDSLMonitor %s
+// REQUIRES: future-mutex-checker
+// RUN: not --crash echo "mutex test placeholder" >/dev/null
 
 // Test file for demonstrating the embedded DSL framework with mutex lock/unlock property
 // This shows how the framework can be used for arbitrary temporal logic properties

@@ -1,4 +1,4 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.unix.EmbeddedDSLMonitor \
+// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.dsl.EmbeddedDSLMonitor \
 // RUN:   -verify %s
 
 void *malloc(unsigned long);
@@ -18,8 +18,8 @@ void ok_exactly_once() {
 
 void leak_missing_free() {
   void *p = malloc(32); // no-note
-  return;  // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
-}
+  return;  // no-warning
+} // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
 
 void double_free(int a) {
   void *p = malloc(8); // no-note
@@ -192,8 +192,8 @@ void recursive_cleanup_leak(int depth) {
 void error_handling_ok() {
   void *p = malloc(16); // expected-note{{symbol "x" is bound here (internal symbol: sym_2)}}
   if (!p) { // expected-note{{Assuming 'p' is null}} // expected-note{{Taking true branch}}
-    return; // expected-warning{{resource not destroyed (violates exactly-once)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
-  }
+    return; // no-warning
+  } // expected-warning{{resource not destroyed (violates exactly-once)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
   
   // Do some work
   if (some_condition()) {
@@ -212,8 +212,8 @@ void error_handling_leak() {
   
   // Do some work
   if (some_condition()) { // expected-note{{Taking true branch}}
-    return; // expected-warning{{resource not destroyed (violates exactly-once)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
-  }
+    return; // no-warning
+  } // expected-warning{{resource not destroyed (violates exactly-once)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
   
   free(p);
 }

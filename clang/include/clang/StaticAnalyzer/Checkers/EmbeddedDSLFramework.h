@@ -51,6 +51,8 @@ REGISTER_MAP_WITH_PROGRAMSTATE(SymbolStates, clang::ento::SymbolRef,
                                SymbolState)
 REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
                                clang::ento::SymbolRef)
+// Symbols that should report leak at function end (to place diag at closing brace)
+REGISTER_SET_WITH_PROGRAMSTATE(PendingLeakSet, clang::ento::SymbolRef)
 
 namespace llvm {
 template <> struct FoldingSetTrait<std::string> {
@@ -126,9 +128,15 @@ public:
   SymbolBinding Binding;    // Member that needed explicit initialization
   std::string FunctionName; // For atomic propositions
   std::string Value;        // For atomic propositions
+  // Stable node identity for mapping into external monitors (e.g., SPOT)
+  int NodeID;
+  // Parent pointer to support ancestor-based diagnostic selection
+  LTLFormulaNode *Parent;
 
   LTLFormulaNode(LTLNodeType t, const std::string &label = "")
-      : Type(t), DiagnosticLabel(label), Binding(BindingType::Variable, "") {}
+      : Type(t), DiagnosticLabel(label), Children(),
+        Binding(BindingType::Variable, ""), FunctionName(), Value(),
+        NodeID(nextNodeID()), Parent(nullptr) {}
 
   virtual ~LTLFormulaNode() = default;
 
@@ -142,6 +150,12 @@ public:
   LTLFormulaNode *withDiagnostic(const std::string &label) {
     DiagnosticLabel = label;
     return this;
+  }
+
+  // Utilities
+  static int nextNodeID() {
+    static int Counter = 0;
+    return ++Counter;
   }
 };
 
@@ -183,6 +197,10 @@ public:
       : LTLFormulaNode(type) {
     Children.push_back(left);
     Children.push_back(right);
+    if (left)
+      left->Parent = this;
+    if (right)
+      right->Parent = this;
   }
 
   std::string toString() const override {
@@ -247,6 +265,8 @@ public:
   UnaryOpNode(LTLNodeType type, std::shared_ptr<LTLFormulaNode> child)
       : LTLFormulaNode(type) {
     Children.push_back(child);
+    if (child)
+      child->Parent = this;
   }
 
   std::string toString() const override {
@@ -974,6 +994,8 @@ private:
   std::vector<std::string> DiagnosticLabels;
   std::vector<SymbolBinding> SymbolBindings;
   std::set<std::string> FunctionNames;
+  // Map node IDs to nodes for external mappings (e.g., SPOT APs)
+  std::map<int, LTLFormulaNode *> IdToNode;
 
 public:
   LTLFormulaBuilder() = default;
@@ -992,6 +1014,9 @@ public:
 
     // Extract function names
     extractFunctionNames(formula);
+
+    // Index nodes by NodeID and set parent pointers recursively (safety)
+    indexNodes(formula.get());
   }
 
   std::string getFormulaString() const {
@@ -1051,6 +1076,26 @@ public:
 
   std::string getPersistenceReport() const {
     return PersistenceManager.generatePersistenceReport();
+  }
+
+  // Expose the root for external traversals (e.g., SPOT conversion)
+  const LTLFormulaNode *getRootNode() const { return RootFormula.get(); }
+
+  // Lookup node by ID
+  LTLFormulaNode *getNodeByID(int id) const {
+    auto it = IdToNode.find(id);
+    return it == IdToNode.end() ? nullptr : it->second;
+  }
+
+  // Find nearest ancestor (including self) carrying a diagnostic label
+  const LTLFormulaNode *findNearestDiagnosticAncestor(const LTLFormulaNode *node) const {
+    const LTLFormulaNode *cur = node;
+    while (cur) {
+      if (!cur->DiagnosticLabel.empty())
+        return cur;
+      cur = cur->Parent;
+    }
+    return nullptr;
   }
 
   std::unique_ptr<LTLAutomaton> generateAutomaton() const {
@@ -1128,6 +1173,17 @@ private:
       extractFunctionBindings(child, creator);
     }
   }
+
+  void indexNodes(LTLFormulaNode *node) {
+    if (!node)
+      return;
+    IdToNode[node->NodeID] = node;
+    for (const auto &child : node->Children) {
+      if (child && child->Parent == nullptr)
+        child->Parent = node;
+      indexNodes(child.get());
+    }
+  }
 };
 
 // Generic event types for the framework
@@ -1179,6 +1235,7 @@ class MonitorAutomaton {
   std::shared_ptr<LTLState> CurrentState;
   const CheckerBase *Checker;
   BindingDrivenEventCreator EventCreator;
+  // SPOT-backed monitor is owned in the checker TU to avoid header cycles
 
 public:
   MonitorAutomaton(std::unique_ptr<PropertyDefinition> prop,
@@ -1193,6 +1250,8 @@ public:
 
     // Populate binding-driven event creator with formula information
     FormulaBuilder.populateBindingDrivenEventCreator(EventCreator);
+
+    // SPOT-backed monitor wiring is implemented in the checker TU when enabled
   }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
@@ -1208,103 +1267,14 @@ public:
     // Also handle through the traditional event handler
     // Handler->handleEvent(event, C); // Temporarily disabled to test
     // automaton-based detection
+
+    // SPOT-backed stepping is implemented in the checker TU when enabled
   }
 
   void checkForViolations(const GenericEvent &event, CheckerContext &C) {
-    ProgramStateRef State = C.getState();
-
-    // Generic violation detection based on formula structure
-    // For now, implement a simple pattern-based detection
-    // This will be replaced with proper automaton-based detection
-
-    switch (event.Type) {
-    case EventType::PostCall:
-      // Check for function-specific patterns based on binding information
-      if (EventCreator.hasBindingInfo(event.FunctionName)) {
-        // Get binding type for this function and symbol
-        BindingType bindingType =
-            EventCreator.getBindingType(event.FunctionName, event.SymbolName);
-
-        if (bindingType == BindingType::ReturnValue) {
-          // This is a creation event (like malloc)
-          if (event.Symbol) {
-            // Check if the symbol is null - only track if it's not null
-            SValBuilder &SVB = C.getSValBuilder();
-            SVal SymbolSVal = SVB.makeSymbolVal(event.Symbol);
-            ConditionTruthVal isNull = State->isNull(SymbolSVal);
-            
-            if (isNull.isConstrainedTrue()) {
-              // Symbol is definitely null - don't track it
-              // This means malloc(x) ∧ x ≠ null is false, so no tracking needed
-            } else {
-              // Symbol is either definitely not null or unknown - track it
-              // We'll check nullness when evaluating violations
-              State = State->set<SymbolStates>(event.Symbol, SymbolState::Active);
-              C.addTransition(State);
-              
-              // Add a note about symbol binding
-              addSymbolBindingNote(event, C);
-            }
-          }
-        } else if (bindingType == BindingType::FirstParameter) {
-          // This is a destruction event (like free)
-          if (event.Symbol) {
-            const SymbolState *currentStatePtr =
-                State->get<SymbolStates>(event.Symbol);
-            SymbolState currentState =
-                currentStatePtr ? *currentStatePtr : SymbolState::Uninitialized;
-            
-            if (currentState == SymbolState::Active) {
-              // Check if the symbol is null - only process free if it's not null
-              SValBuilder &SVB = C.getSValBuilder();
-              SVal SymbolSVal = SVB.makeSymbolVal(event.Symbol);
-              ConditionTruthVal isNull = State->isNull(SymbolSVal);
-              
-              if (!isNull.isConstrainedTrue()) {
-                // Symbol is either definitely not null or unknown - normal destruction
-                State =
-                    State->set<SymbolStates>(event.Symbol, SymbolState::Inactive);
-                C.addTransition(State);
-              }
-              // If symbol is definitely null, ignore this free
-            } else if (currentState == SymbolState::Uninitialized) {
-              // Symbol was never tracked (e.g., because it was null) - ignore this free
-            } else {
-              // Double destruction - emit diagnostic
-              emitDiagnostic("resource destroyed twice (violates exactly-once)",
-                             event, C);
-            }
-          }
-        }
-      }
-      break;
-
-    case EventType::DeadSymbols:
-      // Check for resource leaks
-      if (event.Symbol) {
-        const SymbolState *currentStatePtr =
-            State->get<SymbolStates>(event.Symbol);
-        SymbolState currentState =
-            currentStatePtr ? *currentStatePtr : SymbolState::Uninitialized;
-        if (currentState == SymbolState::Active) {
-          // Check if the symbol is null - only report leak if it's not null
-          SValBuilder &SVB = C.getSValBuilder();
-          SVal SymbolSVal = SVB.makeSymbolVal(event.Symbol);
-          ConditionTruthVal isNull = State->isNull(SymbolSVal);
-          
-          if (!isNull.isConstrainedTrue()) {
-            // Symbol is either definitely not null or unknown - report leak
-            emitDiagnostic("resource not destroyed (violates exactly-once)",
-                           event, C);
-          }
-          // If symbol is definitely null, don't report leak
-        }
-      }
-      break;
-
-    default:
-      break;
-    }
+    (void)event;
+    (void)C;
+    // New SPOT-based monitor handles violations; legacy emission disabled.
   }
 
   std::string getPropertyName() const { return PropertyName; }

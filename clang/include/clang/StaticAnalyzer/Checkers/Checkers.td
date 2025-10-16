@@ -83,6 +83,7 @@ def POSAlpha : Package<"pos">, ParentPackage<CERTAlpha>;
 
 def Unix : Package<"unix">;
 def UnixAlpha : Package<"unix">, ParentPackage<Alpha>;
+def DSLAlpha : Package<"dsl">, ParentPackage<Alpha>;
 def CString : Package<"cstring">, ParentPackage<Unix>;
 def CStringAlpha : Package<"cstring">, ParentPackage<UnixAlpha>;
 
@@ -615,11 +616,15 @@ def SimpleStreamChecker : Checker<"SimpleStream">,
   HelpText<"Check for misuses of stream APIs">,
   Documentation<HasDocumentation>;
 
+} // end "alpha.unix"
+
+let ParentPackage = DSLAlpha in {
+
 def EmbeddedDSLMonitor : Checker<"EmbeddedDSLMonitor">,
   HelpText<"Baseline malloc/free monitor checking exactly-once property.">,
   Documentation<NotDocumented>;
 
-} // end "alpha.unix"
+} // end "alpha.dsl"
 
 //===----------------------------------------------------------------------===//
 // C++ checkers.
