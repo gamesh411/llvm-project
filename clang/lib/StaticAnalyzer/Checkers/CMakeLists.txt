@@ -179,12 +179,21 @@ find_library(SPOT_LIB NAMES spot libspot
     /usr/local/lib
     /opt/local/lib
 )
+find_library(BDDX_LIB NAMES bddx libbddx
+  HINTS
+    /opt/homebrew/lib
+    /usr/local/lib
+    /opt/local/lib
+)
 if (NOT SPOT_INCLUDE_DIR OR NOT SPOT_LIB OR NOT SPOT_TRANSLATE_HEADER_DIR)
   message(FATAL_ERROR "SPOT not found or incomplete (need spot/tl/formula.hh and spot/twaalgos/translate.hh). Install SPOT and set SPOT_INCLUDE_DIR/SPOT_LIB.")
 endif()
 
 target_include_directories(clangStaticAnalyzerCheckers PRIVATE ${SPOT_INCLUDE_DIR})
 target_link_libraries(clangStaticAnalyzerCheckers PRIVATE ${SPOT_LIB})
+if (BDDX_LIB)
+  target_link_libraries(clangStaticAnalyzerCheckers PRIVATE ${BDDX_LIB})
+endif()
 
 # SPOT headers use exceptions in inline code; enable exceptions for this TU
 set_source_files_properties(EmbeddedDSLSpot.cpp PROPERTIES COMPILE_FLAGS "-fexceptions")

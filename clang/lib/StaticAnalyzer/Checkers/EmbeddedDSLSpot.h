@@ -77,6 +77,38 @@ struct SpotBuildResult {
 
 SpotBuildResult buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder);
 
+// Unified monitor that encapsulates framework modeling and SPOT stepping
+class DSLMonitor {
+  std::unique_ptr<MonitorAutomaton> Runtime; // framework modeling/runtime
+  std::unique_ptr<SpotMonitor> Spot;         // temporal checking
+  const CheckerBase *Owner;                  // for diagnostics
+
+public:
+  DSLMonitor(std::unique_ptr<MonitorAutomaton> R,
+             std::unique_ptr<SpotMonitor> S,
+             const CheckerBase *O)
+      : Runtime(std::move(R)), Spot(std::move(S)), Owner(O) {}
+
+  static std::unique_ptr<DSLMonitor>
+  create(std::unique_ptr<PropertyDefinition> Property, const CheckerBase *O);
+
+  // Event creation via bindings
+  dsl::GenericEvent createBindingDrivenEvent(const CallEvent &Call,
+                                             EventType eventType,
+                                             CheckerContext &C) const {
+    return Runtime->createBindingDrivenEvent(Call, eventType, C);
+  }
+
+  // Unified handle: do modeling and SPOT step, emit diag on violation
+  void handleEvent(const GenericEvent &event, CheckerContext &C);
+
+  // Safety net reporting at EndAnalysis
+  void checkEndAnalysis(ExplodedGraph &G, BugReporter &BR, ExprEngine &Eng) const;
+
+  // For tests/introspection
+  const LTLFormulaBuilder getFormulaBuilder() const { return Runtime->getFormulaBuilder(); }
+};
+
 } // namespace dsl
 } // namespace ento
 } // namespace clang

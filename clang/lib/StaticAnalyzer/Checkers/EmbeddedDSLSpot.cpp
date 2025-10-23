@@ -6,12 +6,83 @@
 #include <spot/twaalgos/translate.hh>
 #include <spot/twa/twagraph.hh>
 #include <spot/twa/bdddict.hh>
+#include <spot/tl/formula.hh>
 
 using namespace clang;
 using namespace ento;
 using namespace dsl;
 
 namespace {
+// Tiny boolean evaluator for formulas produced from BDDs using only !, &, |, (),
+// and atomic proposition names like "ap_1".
+struct BoolParser {
+  const std::string &S;
+  size_t I = 0;
+  const std::set<std::string> &TrueAPs;
+  BoolParser(const std::string &s, const std::set<std::string> &aps)
+      : S(s), TrueAPs(aps) {}
+
+  void skipWS() {
+    while (I < S.size() && isspace(static_cast<unsigned char>(S[I]))) ++I;
+  }
+
+  bool parseExpr() {
+    bool v = parseTerm();
+    skipWS();
+    while (I < S.size()) {
+      if (S[I] == '|') {
+        ++I;
+        bool rhs = parseTerm();
+        v = v || rhs;
+        skipWS();
+      } else {
+        break;
+      }
+    }
+    return v;
+  }
+
+  bool parseTerm() {
+    bool v = parseFactor();
+    skipWS();
+    while (I < S.size()) {
+      if (S[I] == '&') {
+        ++I;
+        bool rhs = parseFactor();
+        v = v && rhs;
+        skipWS();
+      } else {
+        break;
+      }
+    }
+    return v;
+  }
+
+  bool parseFactor() {
+    skipWS();
+    if (I >= S.size()) return false;
+    if (S[I] == '!') {
+      ++I;
+      return !parseFactor();
+    }
+    if (S[I] == '(') {
+      ++I;
+      bool v = parseExpr();
+      skipWS();
+      if (I < S.size() && S[I] == ')') ++I;
+      return v;
+    }
+    // Parse identifier or constants 1/0
+    if (S[I] == '1') { ++I; return true; }
+    if (S[I] == '0') { ++I; return false; }
+    size_t start = I;
+    while (I < S.size() && (isalnum(static_cast<unsigned char>(S[I])) || S[I] == '_' || S[I] == '.')) ++I;
+    std::string tok = S.substr(start, I - start);
+    if (tok.empty()) return false;
+    return TrueAPs.count(tok) != 0;
+  }
+};
+
 
 static std::string makeAPName(int nodeId) { return "ap_" + std::to_string(nodeId); }
 
@@ -84,6 +155,18 @@ SpotBuildResult dsl::buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder) {
   std::string infix = buildSpotFormulaString(root, R.Registry);
   if (infix.empty()) infix = "G 1";
 
+  // Internally append an End AP evaluator so the monitor can observe function-end.
+  // The End AP is true only on EndFunction events. It is not referenced by the DSL formula yet.
+  {
+    const std::string apEnd = "ap_END";
+    APEvaluator endEval = [](const GenericEvent &E, CheckerContext &C) -> bool {
+      (void)C;
+      return E.Type == EventType::EndFunction;
+    };
+    // Use nodeId -1 for synthetic AP; it won't map to any DSL node.
+    R.Registry.registerAP(-1, apEnd, std::move(endEval));
+  }
+
   spot::parsed_formula pf = spot::parse_infix_psl(infix);
   if (pf.format_errors(std::cerr)) {
     return R;
@@ -96,10 +179,129 @@ SpotBuildResult dsl::buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder) {
 }
 
 std::set<int> SpotMonitor::step(const GenericEvent &E, CheckerContext &C) {
-  // Temporarily disable stepping to isolate checker crashes unrelated to SPOT.
-  (void)E;
-  (void)C;
-  return {};
+  std::set<int> violated;
+  if (!Monitor)
+    return violated;
+
+  // Compute valuation of APs for this event
+  std::set<std::string> trueAPs;
+  for (const auto &kv : Registry.getEvaluators()) {
+    const std::string &ap = kv.first;
+    const auto &eval = kv.second;
+    if (eval(E, C))
+      trueAPs.insert(ap);
+  }
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][SPOT] step: trueAPs={";
+    bool first = true;
+    for (const auto &a : trueAPs) { if (!first) llvm::errs() << ','; first=false; llvm::errs() << a; }
+    llvm::errs() << "}\n";
+  }
+
+  // Build valuation BDD by assigning all known AP variables.
+  bdd valuation = bddtrue;
+  auto dict = Monitor->get_dict();
+  for (const auto &kv : Registry.getEvaluators()) {
+    const std::string &ap = kv.first;
+    int var = dict->register_proposition(spot::formula::ap(ap), nullptr);
+    if (trueAPs.count(ap))
+      valuation = bdd_and(valuation, bdd_ithvar(var));
+    else
+      valuation = bdd_and(valuation, bdd_nithvar(var));
+  }
+
+  // Determine next state by scanning outgoing edges and selecting the
+  // first whose condition evaluates to true under current AP valuation.
+  unsigned ns = Monitor->num_states();
+  if (CurrentState >= (int)ns)
+    CurrentState = 0;
+  int nextState = CurrentState;
+  bool matched = false;
+  for (auto &t : Monitor->out(CurrentState)) {
+    // Check satisfiability of transition under current assignment.
+    bdd sat = bdd_and(valuation, t.cond);
+    if (sat != bddfalse) {
+      nextState = (int)t.dst;
+      matched = true;
+      break;
+    }
+  }
+
+  if (matched) {
+    CurrentState = nextState;
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][SPOT] transition to state " << CurrentState << "\n";
+    }
+    return violated; // ok
+  }
+
+  // No transition satisfied: approximate violation, attribute to true APs
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][SPOT] no transition matched; reporting violation\n";
+  }
+  for (const auto &p : Registry.getMapping()) {
+    int nodeId = p.first;
+    const std::string &ap = p.second;
+    if (trueAPs.count(ap))
+      violated.insert(nodeId);
+  }
+  return violated;
+}
+
+std::unique_ptr<DSLMonitor> DSLMonitor::create(
+    std::unique_ptr<PropertyDefinition> Property, const CheckerBase *O) {
+  auto Runtime = std::make_unique<dsl::MonitorAutomaton>(std::move(Property), O);
+  auto fb = Runtime->getFormulaBuilder();
+  auto res = dsl::buildSpotMonitorFromDSL(fb);
+  std::unique_ptr<dsl::SpotMonitor> S;
+  if (res.Monitor)
+    S = std::make_unique<dsl::SpotMonitor>(std::move(res.Monitor), std::move(res.Registry), fb);
+  return std::make_unique<DSLMonitor>(std::move(Runtime), std::move(S), O);
+}
+
+void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
+  // Framework modeling
+  Runtime->handleEvent(event, C);
+  // SPOT temporal step + report
+  if (Spot) {
+    auto violated = Spot->step(event, C);
+    if (!violated.empty()) {
+      std::string msg = Spot->selectDiagnosticForViolation(violated);
+      if (msg.empty()) msg = "temporal property violated";
+      ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
+      if (ErrorNode) {
+        static const BugType GenericBT{Owner, "temporal_violation", "EmbeddedDSLMonitor"};
+        auto R = std::make_unique<PathSensitiveBugReport>(GenericBT, msg, ErrorNode);
+        if (event.Symbol)
+          R->markInteresting(event.Symbol);
+        C.emitReport(std::move(R));
+      }
+    }
+  }
+}
+
+void DSLMonitor::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR, ExprEngine &Eng) const {
+  (void)Eng;
+  for (auto I = llvm::GraphTraits<ExplodedGraph *>::nodes_begin(&G),
+            E = llvm::GraphTraits<ExplodedGraph *>::nodes_end(&G);
+       I != E; ++I) {
+    const ExplodedNode *N = *I;
+    ProgramStateRef S = N ? N->getState() : nullptr;
+    if (!S)
+      continue;
+    for (auto Sym : S->get<::PendingLeakSet>()) {
+      static const BugType BT{Owner, "temporal_violation_end_analysis", "EmbeddedDSLMonitor"};
+      ExplodedNode *EN = const_cast<ExplodedNode *>(N);
+      std::string internal = "sym_" + std::to_string(Sym->getSymbolID());
+      std::string Msg =
+          "resource not destroyed before analysis end (violates exactly-once)";
+      Msg += " (internal symbol: " + internal + ")";
+      Msg += " [reported at EndAnalysis; not all program paths may have been fully explored]";
+      auto R = std::make_unique<PathSensitiveBugReport>(BT, Msg, EN);
+      R->markInteresting(Sym);
+      BR.emitReport(std::move(R));
+    }
+  }
 }
 
  

@@ -25,6 +25,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 // Generic symbol state for any temporal property
 enum class SymbolState {
@@ -53,6 +54,8 @@ REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
                                clang::ento::SymbolRef)
 // Symbols that should report leak at function end (to place diag at closing brace)
 REGISTER_SET_WITH_PROGRAMSTATE(PendingLeakSet, clang::ento::SymbolRef)
+// Symbols that became dead along a path; finalize at EndFunction for brace location
+REGISTER_SET_WITH_PROGRAMSTATE(FunctionEndLeakSet, clang::ento::SymbolRef)
 
 namespace llvm {
 template <> struct FoldingSetTrait<std::string> {
@@ -65,6 +68,17 @@ template <> struct FoldingSetTrait<std::string> {
 namespace clang {
 namespace ento {
 namespace dsl {
+// Debug helper (opt-in via environment variable EDSL_DEBUG)
+static inline bool edslDebugEnabled() {
+  static int Initialized = 0;
+  static bool Enabled = false;
+  if (!Initialized) {
+    Enabled = std::getenv("EDSL_DEBUG") != nullptr;
+    Initialized = 1;
+  }
+  return Enabled;
+}
+
 
 // Forward declarations
 class LTLFormulaNode;
@@ -1190,7 +1204,9 @@ private:
 enum class EventType {
   PostCall,   // Function call completed
   PreCall,    // Function call about to start
-  DeadSymbols // Symbols are no longer reachable
+  DeadSymbols, // Symbols are no longer reachable
+  EndFunction, // Function is ending; finalize obligations for this frame
+  PointerEscape // Symbol escapes current function/frame ownership
 };
 
 // Generic event structure
@@ -1228,11 +1244,8 @@ public:
 
 // Monitor automaton that handles generic events
 class MonitorAutomaton {
-  std::unique_ptr<EventHandler> Handler;
   std::string PropertyName;
   LTLFormulaBuilder FormulaBuilder;
-  std::unique_ptr<LTLAutomaton> Automaton;
-  std::shared_ptr<LTLState> CurrentState;
   const CheckerBase *Checker;
   BindingDrivenEventCreator EventCreator;
   // SPOT-backed monitor is owned in the checker TU to avoid header cycles
@@ -1240,41 +1253,128 @@ class MonitorAutomaton {
 public:
   MonitorAutomaton(std::unique_ptr<PropertyDefinition> prop,
                    const CheckerBase *C)
-      : Handler(prop->createEventHandler(C)),
-        PropertyName(prop->getPropertyName()),
+      : PropertyName(prop->getPropertyName()),
         FormulaBuilder(prop->getFormulaBuilder()), Checker(C) {
-
-    // Generate Büchi automaton from the formula
-    Automaton = FormulaBuilder.generateAutomaton();
-    CurrentState = Automaton->getInitialState();
-
     // Populate binding-driven event creator with formula information
     FormulaBuilder.populateBindingDrivenEventCreator(EventCreator);
-
-    // SPOT-backed monitor wiring is implemented in the checker TU when enabled
+    // Temporal monitoring is handled by the SPOT-based monitor in the checker TU.
   }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
-    // Process event through the automaton
-    if (Automaton && CurrentState) {
-      std::set<std::string> propositions = extractPropositions(event, C);
-      CurrentState = Automaton->processEvent(CurrentState, propositions);
-
-      // Check for violations based on event type and current state
-      checkForViolations(event, C);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL] handleEvent: type=";
+      switch (event.Type) {
+      case EventType::PostCall: llvm::errs() << "PostCall"; break;
+      case EventType::PreCall: llvm::errs() << "PreCall"; break;
+      case EventType::DeadSymbols: llvm::errs() << "DeadSymbols"; break;
+      case EventType::EndFunction: llvm::errs() << "EndFunction"; break;
+      case EventType::PointerEscape: llvm::errs() << "PointerEscape"; break;
+      }
+      llvm::errs() << ", fn=" << event.FunctionName
+                   << ", sym=" << event.SymbolName << "\n";
     }
+    // Generic, checker-agnostic lifecycle modeling driven by bindings.
+    // This block purposefully contains no malloc/free specific strings.
+    ProgramStateRef State = C.getState();
 
-    // Also handle through the traditional event handler
-    // Handler->handleEvent(event, C); // Temporarily disabled to test
-    // automaton-based detection
-
-    // SPOT-backed stepping is implemented in the checker TU when enabled
-  }
-
-  void checkForViolations(const GenericEvent &event, CheckerContext &C) {
-    (void)event;
-    (void)C;
-    // New SPOT-based monitor handles violations; legacy emission disabled.
+    switch (event.Type) {
+    case EventType::PostCall: {
+      if (event.Symbol && !event.FunctionName.empty() && !event.SymbolName.empty()) {
+        // Treat a PostCall bound to a ReturnValue as a creation event
+        BindingType BT = EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+        if (BT == BindingType::ReturnValue) {
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL] create: " << event.FunctionName << "(" << event.SymbolName << ") -> Active\n";
+          }
+          State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Active);
+          State = State->add<::PendingLeakSet>(event.Symbol);
+          // Add a binding note similar to checker format for traceability
+          std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
+          std::string var = event.SymbolName.empty() ? std::string("x") : event.SymbolName;
+          std::string note = std::string("symbol \"") + var + "\" is bound here (internal symbol: " + internal + ")";
+          const NoteTag *NT = C.getNoteTag([note]() { return note; });
+          C.addTransition(State, NT);
+        }
+      }
+      break;
+    }
+    case EventType::PreCall: {
+      if (event.Symbol && !event.FunctionName.empty() && !event.SymbolName.empty()) {
+        // Treat a PreCall bound to a parameter as a destruction event
+        BindingType BT = EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+        if (BT == BindingType::FirstParameter || BT == BindingType::NthParameter) {
+          const ::SymbolState *CurPtr = State->get<::SymbolStates>(event.Symbol);
+          ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
+          if (Cur == ::SymbolState::Active) {
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL] destroy: " << event.FunctionName << "(" << event.SymbolName << ") -> Inactive\n";
+            }
+            State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Inactive);
+            State = State->remove<::GenericSymbolMap>(event.Symbol);
+            State = State->remove<::PendingLeakSet>(event.Symbol);
+            C.addTransition(State);
+          } else if (Cur == ::SymbolState::Inactive) {
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL] double-destroy detected for sym " << event.SymbolName << "\n";
+            }
+            // Double destruction: emit violation
+            ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
+            if (ErrorNode) {
+              static const BugType BT{Checker, "temporal_violation", "EmbeddedDSLMonitor"};
+              std::string msg = "resource destroyed twice (violates exactly-once)";
+              std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
+              msg += " (internal symbol: " + internal + ")";
+              auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
+              R->markInteresting(event.Symbol);
+              C.emitReport(std::move(R));
+            }
+          }
+        }
+      }
+      break;
+    }
+    case EventType::DeadSymbols: {
+      // Intentionally no-op here; leaks reported at EndFunction for better location
+      break;
+    }
+    case EventType::PointerEscape: {
+      if (event.Symbol) {
+        // Transfer ownership out of this frame: do not report leak here
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL] escape: dropping PendingLeak obligation for "
+                       << event.SymbolName << "\n";
+        }
+        State = State->remove<::PendingLeakSet>(event.Symbol);
+        C.addTransition(State);
+      }
+      break;
+    }
+    case EventType::EndFunction: {
+      // Emit leaks for any symbols still pending at function end.
+      if (edslDebugEnabled()) {
+        unsigned pendingCount = 0;
+        for (auto _ : State->get<::PendingLeakSet>()) (void)_, ++pendingCount;
+        llvm::errs() << "[EDSL] end-function: pending=" << pendingCount << "\n";
+      }
+      for (auto Sym : State->get<::PendingLeakSet>()) {
+        ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
+        if (ErrorNode) {
+          static const BugType BT{Checker, "temporal_violation", "EmbeddedDSLMonitor"};
+          std::string msg = "resource not destroyed (violates exactly-once)";
+          std::string internal = "sym_" + std::to_string(Sym->getSymbolID());
+          msg += " (internal symbol: " + internal + ")";
+          auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
+          R->markInteresting(Sym);
+          C.emitReport(std::move(R));
+        }
+        State = State->remove<::GenericSymbolMap>(Sym);
+        State = State->remove<::SymbolStates>(Sym);
+        State = State->remove<::PendingLeakSet>(Sym);
+      }
+      C.addTransition(State);
+      break;
+    }
+    }
   }
 
   std::string getPropertyName() const { return PropertyName; }
@@ -1329,6 +1429,29 @@ public:
         }
       }
 
+      // If binding-based extraction failed, fall back to default extraction
+      if (!Sym) {
+      if (eventType == EventType::PostCall) {
+        Sym = Call.getReturnValue().getAsSymbol();
+        symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+      } else {
+        // Prefer the underlying stored symbol of the region argument, if any
+        Sym = nullptr;
+        if (Call.getNumArgs() > 0) {
+          SVal Arg = Call.getArgSVal(0);
+          if (const MemRegion *MR = Arg.getAsRegion()) {
+            SVal Stored = C.getState()->getSVal(MR);
+            if (SymbolRef StoredSym = Stored.getAsSymbol()) {
+              Sym = StoredSym;
+            }
+          }
+          if (!Sym)
+            Sym = Arg.getAsSymbol();
+        }
+        symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+      }
+      }
+
       return dsl::GenericEvent(eventType, funcName, symbolName, Sym,
                                Call.getSourceRange().getBegin());
     } else {
@@ -1352,24 +1475,7 @@ public:
   }
 
 private:
-  // Extract atomic propositions from an event
-  std::set<std::string> extractPropositions(const GenericEvent &event) {
-    std::set<std::string> propositions;
-
-    switch (event.Type) {
-    case EventType::PostCall:
-      propositions.insert(event.FunctionName + "(" + event.SymbolName + ")");
-      break;
-    case EventType::PreCall:
-      propositions.insert(event.FunctionName + "(" + event.SymbolName + ")");
-      break;
-    case EventType::DeadSymbols:
-      propositions.insert("dead(" + event.SymbolName + ")");
-      break;
-    }
-
-    return propositions;
-  }
+  // (Legacy propositional extraction removed; SPOT handles temporal logic.)
 
   // Emit diagnostic for automaton-based violations
   void emitDiagnostic(const std::string &diagnostic, const GenericEvent &event,

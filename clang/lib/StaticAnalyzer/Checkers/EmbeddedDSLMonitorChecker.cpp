@@ -1,3 +1,4 @@
+#include "clang/AST/Stmt.h"
 //===-- EmbeddedDSLMonitorChecker.cpp --------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -58,12 +59,10 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 class EmbeddedDSLMonitorChecker
-    : public Checker<check::PostCall, check::PreCall, check::DeadSymbols, check::EndAnalysis> {
+    : public Checker<check::PostCall, check::PreCall, check::DeadSymbols, check::EndFunction, check::EndAnalysis, check::PointerEscape> {
 
-  // Dynamic monitor automaton
-  std::unique_ptr<dsl::MonitorAutomaton> Monitor;
-  // SPOT-backed monitor
-  std::unique_ptr<dsl::SpotMonitor> SpotMon;
+  // Unified DSL monitor (framework modeling + SPOT stepping)
+  std::unique_ptr<dsl::DSLMonitor> Monitor;
   // Restrict state tracking to functions referenced in the property (e.g., malloc/free)
   mutable std::set<std::string> AllowedFns;
 
@@ -106,27 +105,25 @@ public:
         "malloc_free_exactly_once",
         "G( malloc(x) ∧ x ≠ null → F free(x) ∧ G( free(x) → G ¬free(x) ) )",
         globallyImplication);
-    Monitor =
-        std::make_unique<dsl::MonitorAutomaton>(std::move(property), this);
+    Monitor = dsl::DSLMonitor::create(std::move(property), this);
 
     // Concise debug: property activation
     auto formulaBuilder = Monitor->getFormulaBuilder();
     llvm::errs() << "EmbeddedDSLMonitor: activating property 'malloc_free_exactly_once'\n";
 
-    // Build SPOT monitor for this property
-    auto fb = Monitor->getFormulaBuilder();
-    auto res = dsl::buildSpotMonitorFromDSL(fb);
-    if (res.Monitor) {
-      SpotMon = std::make_unique<dsl::SpotMonitor>(std::move(res.Monitor), std::move(res.Registry), fb);
-    }
-    // Always cache allowed function names for state tracking (works without SPOT)
+    // Always cache allowed function names for state tracking
     AllowedFns = Monitor->getFormulaBuilder().getFunctionNames();
   }
 
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
   void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
   void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
+  void checkEndFunction(const ReturnStmt *RS, CheckerContext &C) const;
   void checkEndAnalysis(ExplodedGraph &G, BugReporter &BR, ExprEngine &Eng) const;
+  ProgramStateRef checkPointerEscape(ProgramStateRef State,
+                                     const InvalidatedSymbols &Escaped,
+                                     const CallEvent *Call,
+                                     PointerEscapeKind Kind) const;
 };
 
 //===----------------------------------------------------------------------===//
@@ -175,63 +172,8 @@ void EmbeddedDSLMonitorChecker::checkPostCall(const CallEvent &Call,
   auto event = createPostCallEvent(Call, C);
   if (!event.Symbol)
     return;
-  // Only update internal state when symbol is non-null
+  // Unified monitor handles modeling + temporal step + diagnostics
   Monitor->handleEvent(event, C);
-  if (SpotMon) {
-    auto violated = SpotMon->step(event, C);
-    if (!violated.empty()) {
-      std::string msg = SpotMon->selectDiagnosticForViolation(violated);
-      if (msg.empty()) msg = "temporal property violated";
-      if (event.Symbol) {
-        ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
-        if (ErrorNode) {
-          static const BugType GenericBT{this, "temporal_violation", "EmbeddedDSLMonitor"};
-          auto R = std::make_unique<PathSensitiveBugReport>(GenericBT, msg, ErrorNode);
-          R->markInteresting(event.Symbol);
-          C.emitReport(std::move(R));
-        }
-      }
-    }
-  }
-  // Update generic symbol state based on event to support diagnostics
-  if (event.Symbol && AllowedFns.find(event.FunctionName) != AllowedFns.end()) {
-    ProgramStateRef State = C.getState();
-    if (event.Type == dsl::EventType::PostCall) {
-      // Treat as creation (e.g., malloc result)
-      State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Active);
-      State = State->add<::PendingLeakSet>(event.Symbol);
-      // Add a binding note similar to framework format
-      std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
-      std::string var = event.SymbolName.empty() ? std::string("x") : event.SymbolName;
-      std::string note = std::string("symbol \"") + var + "\" is bound here (internal symbol: " + internal + ")";
-      const NoteTag *NT = C.getNoteTag([note]() { return note; });
-      C.addTransition(State, NT);
-    } else if (event.Type == dsl::EventType::PreCall) {
-      // Treat as destruction (e.g., free parameter)
-      const ::SymbolState *CurPtr = State->get<::SymbolStates>(event.Symbol);
-      ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
-      if (Cur == ::SymbolState::Active) {
-        State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Inactive);
-        // Purge from GenericSymbolMap as well to avoid dangling entries
-        State = State->remove<::GenericSymbolMap>(event.Symbol);
-        State = State->remove<::PendingLeakSet>(event.Symbol);
-        C.addTransition(State);
-      } else if (Cur == ::SymbolState::Inactive) {
-        // Double free
-        ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
-        if (ErrorNode) {
-          static const BugType BT{this, "temporal_violation", "EmbeddedDSLMonitor"};
-          std::string msg = "resource destroyed twice (violates exactly-once)";
-          std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
-          msg += " (internal symbol: " + internal + ")";
-          auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-          R->markInteresting(event.Symbol);
-          C.emitReport(std::move(R));
-        }
-      }
-    }
-  }
-  // Leak reporting happens at DeadSymbols only
 }
 
 void EmbeddedDSLMonitorChecker::checkPreCall(const CallEvent &Call,
@@ -246,73 +188,69 @@ void EmbeddedDSLMonitorChecker::checkPreCall(const CallEvent &Call,
 
   // Generate generic event and let the monitor handle it
   auto event = createPreCallEvent(Call, C);
-  if (!event.Symbol)
-    return;
+  // Unified monitor handles modeling + temporal step
   Monitor->handleEvent(event, C);
-  if (SpotMon) {
-    (void)SpotMon->step(event, C);
-  }
 }
 
 void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
                                                  CheckerContext &C) const {
-  // Generate events for all dead symbols
-  ProgramStateRef State = C.getState();
+  // We no longer rely on symbol liveness for leak location placement.
+  // Leak reporting is finalized in checkEndFunction by inspecting PendingLeakSet.
+  (void)SR;
+  (void)C;
+}
 
-  for (auto [Sym, Value] : State->get<::GenericSymbolMap>()) {
-    if (SR.isDead(Sym)) {
-      // This symbol is dead and was tracked - report leak
-      auto event = createDeadSymbolsEvent(Sym, C);
-      // Emit leak if still Active
-      const ::SymbolState *CurPtr = State->get<::SymbolStates>(Sym);
-      ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
-      if (Cur == ::SymbolState::Active && State->contains<::PendingLeakSet>(Sym)) {
-        ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
-        if (ErrorNode) {
-          static const BugType BT{this, "temporal_violation", "EmbeddedDSLMonitor"};
-          std::string msg = "resource not destroyed (violates exactly-once)";
-          std::string internal = "sym_" + std::to_string(Sym->getSymbolID());
-          msg += " (internal symbol: " + internal + ")";
-          auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-          R->markInteresting(Sym);
-          C.emitReport(std::move(R));
-        }
-      }
-      // Cleanup maps for this dead symbol
-      State = State->remove<::GenericSymbolMap>(Sym);
-      State = State->remove<::SymbolStates>(Sym);
-      State = State->remove<::PendingLeakSet>(Sym);
-      C.addTransition(State);
-    }
-  }
+void EmbeddedDSLMonitorChecker::checkEndFunction(const ReturnStmt *RS,
+                                                 CheckerContext &C) const {
+  (void)RS;
+  // Forward a generic EndFunction event; unified monitor steps and models
+  dsl::GenericEvent endEvt(dsl::EventType::EndFunction, "", "", nullptr, SourceLocation());
+  Monitor->handleEvent(endEvt, C);
+}
 
-  // Also check SymbolStates map for dead symbols
-  for (auto [Sym, SValState] : State->get<::SymbolStates>()) {
-    if (SValState == ::SymbolState::Active && SR.isDead(Sym) && State->contains<::PendingLeakSet>(Sym)) {
-      // Emit leak as above for any leftover active symbol
-      ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
-      if (ErrorNode) {
-        static const BugType BT{this, "temporal_violation", "EmbeddedDSLMonitor"};
-        std::string msg = "resource not destroyed (violates exactly-once)";
-        std::string internal = "sym_" + std::to_string(Sym->getSymbolID());
-        msg += " (internal symbol: " + internal + ")";
-        auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-        R->markInteresting(Sym);
-        C.emitReport(std::move(R));
-      }
-      // Cleanup
-      State = State->remove<::GenericSymbolMap>(Sym);
-      State = State->remove<::SymbolStates>(Sym);
-      State = State->remove<::PendingLeakSet>(Sym);
-      C.addTransition(State);
-    }
+ProgramStateRef EmbeddedDSLMonitorChecker::checkPointerEscape(
+    ProgramStateRef State, const InvalidatedSymbols &Escaped,
+    const CallEvent *Call, PointerEscapeKind Kind) const {
+  (void)Call;
+  (void)Kind;
+  // For every escaped symbol, inform the framework to drop local obligations.
+  for (SymbolRef Sym : Escaped) {
+    if (!Sym)
+      continue;
+    dsl::GenericEvent escEvt(dsl::EventType::PointerEscape, "", "sym_" + std::to_string(Sym->getSymbolID()), Sym, SourceLocation());
+    // Use a dummy CheckerContext-less path? We need a context to transition.
+    // Here, we can't emit transitions; just mark by removing PendingLeakSet directly via State.
+    // However, to keep all modeling in framework, we approximate by clearing here too.
+    // Prefer forwarding via Monitor when context is available; CSA provides only State in this callback.
+    State = State->remove<::PendingLeakSet>(Sym);
   }
+  return State;
 }
 
 void EmbeddedDSLMonitorChecker::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR, ExprEngine &Eng) const {
-  // End-of-analysis hook: in future, iterate remaining states/monitors
-  // and emit eventuality violations. Currently handled via DeadSymbols.
-  (void)G; (void)BR; (void)Eng;
+  // Safety net: if any symbol still has a pending obligation across final states,
+  // emit a conservative leak diagnostic. Location quality may be worse.
+  for (auto I = llvm::GraphTraits<ExplodedGraph *>::nodes_begin(&G),
+            E = llvm::GraphTraits<ExplodedGraph *>::nodes_end(&G);
+       I != E; ++I) {
+    const ExplodedNode *N = *I;
+    ProgramStateRef S = N ? N->getState() : nullptr;
+    if (!S)
+      continue;
+    for (auto Sym : S->get<::PendingLeakSet>()) {
+      // Prefer using the last node for the path; create a report per symbol.
+      static const BugType BT{this, "temporal_violation_end_analysis", "EmbeddedDSLMonitor"};
+      ExplodedNode *EN = const_cast<ExplodedNode *>(N);
+      std::string internal = "sym_" + std::to_string(Sym->getSymbolID());
+      std::string Msg =
+          "resource not destroyed before analysis end (violates exactly-once)";
+      Msg += " (internal symbol: " + internal + ")";
+      Msg += " [reported at EndAnalysis; not all program paths may have been fully explored]";
+      auto R = std::make_unique<PathSensitiveBugReport>(BT, Msg, EN);
+      R->markInteresting(Sym);
+      BR.emitReport(std::move(R));
+    }
+  }
 }
 
 } // namespace
