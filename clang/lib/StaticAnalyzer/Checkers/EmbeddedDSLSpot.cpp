@@ -12,18 +12,7 @@
 using namespace clang;
 using namespace ento;
 using namespace dsl;
-SpotMonitor::SpotMonitor(spot::twa_graph_ptr M, APRegistry R,
-                         const LTLFormulaBuilder &B)
-    : Monitor(std::move(M)), Registry(std::move(R)), Builder(B) {
-  // Let the automaton own AP registrations so the dict tracks associations
-  if (Monitor) {
-    for (const auto &kv : Registry.getEvaluators()) {
-      const std::string &ap = kv.first;
-      int var = Monitor->register_ap(ap);
-      ApVarIds[ap] = var;
-    }
-  }
-}
+// removed SpotMonitor in favor of unified DSLMonitor
 
 
 namespace {
@@ -122,7 +111,8 @@ static std::string buildSpotFormulaString(const LTLFormulaNode *node,
         if (E.Symbol && E.SymbolName == sym) {
           ProgramStateRef S = C.getState();
           ConditionTruthVal IsNull = C.getConstraintManager().isNull(S, E.Symbol);
-          return !IsNull.isConstrainedTrue();
+          // Strict: true only when provably non-null on this path
+          return IsNull.isConstrainedFalse();
         }
         return false;
       }
@@ -200,101 +190,91 @@ SpotBuildResult dsl::buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder) {
   return R;
 }
 
-std::set<int> SpotMonitor::step(const GenericEvent &E, CheckerContext &C) {
-  std::set<int> violated;
-  if (!Monitor)
-    return violated;
-
-  // Compute valuation of APs for this event
-  std::set<std::string> trueAPs;
-  for (const auto &kv : Registry.getEvaluators()) {
-    const std::string &ap = kv.first;
-    const auto &eval = kv.second;
-    if (eval(E, C))
-      trueAPs.insert(ap);
-  }
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][SPOT] step: trueAPs={";
-    bool first = true;
-    for (const auto &a : trueAPs) { if (!first) llvm::errs() << ','; first=false; llvm::errs() << a; }
-    llvm::errs() << "}\n";
-  }
-
-  // Build valuation cube by assigning all known AP variables.
-  bdd valuation = bddtrue;
-  for (const auto &kv : Registry.getEvaluators()) {
-    const std::string &ap = kv.first;
-    auto it = ApVarIds.find(ap);
-    if (it == ApVarIds.end()) continue;
-    int var = it->second;
-    valuation = bdd_and(valuation, trueAPs.count(ap) ? bdd_ithvar(var)
-                                                     : bdd_nithvar(var));
-  }
-
-  // Determine next state by scanning outgoing edges and selecting the
-  // first whose condition evaluates to true under current AP valuation.
-  unsigned ns = Monitor->num_states();
-  if (CurrentState >= (int)ns)
-    CurrentState = 0;
-  int nextState = CurrentState;
-  bool matched = false;
-  for (auto &t : Monitor->out(CurrentState)) {
-    // Check satisfiability of transition condition under current assignment.
-    bdd sat = bdd_restrict(t.cond, valuation);
-    if (sat != bddfalse) {
-      nextState = (int)t.dst;
-      matched = true;
-      break;
-    }
-  }
-
-  if (matched) {
-    CurrentState = nextState;
-    if (edslDebugEnabled()) {
-      llvm::errs() << "[EDSL][SPOT] transition to state " << CurrentState << "\n";
-    }
-    return violated; // ok
-  }
-
-  // No transition satisfied: approximate violation, attribute to true APs
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][SPOT] no transition matched; reporting violation\n";
-  }
-  for (const auto &p : Registry.getMapping()) {
-    int nodeId = p.first;
-    const std::string &ap = p.second;
-    if (trueAPs.count(ap))
-      violated.insert(nodeId);
-  }
-  return violated;
-}
-
 std::unique_ptr<DSLMonitor> DSLMonitor::create(
     std::unique_ptr<PropertyDefinition> Property, const CheckerBase *O) {
   auto Runtime = std::make_unique<dsl::MonitorAutomaton>(std::move(Property), O);
   auto fb = Runtime->getFormulaBuilder();
   auto res = dsl::buildSpotMonitorFromDSL(fb);
-  std::unique_ptr<dsl::SpotMonitor> S;
-  if (res.Monitor)
-    S = std::make_unique<dsl::SpotMonitor>(std::move(res.Monitor), std::move(res.Registry), fb);
-  return std::make_unique<DSLMonitor>(std::move(Runtime), std::move(S), O);
+  return std::make_unique<DSLMonitor>(std::move(Runtime), std::move(res.Monitor), std::move(res.Registry), O);
 }
 
 void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
   // Framework modeling
   Runtime->handleEvent(event, C);
   // SPOT temporal step + report
-  if (Spot) {
-    auto violated = Spot->step(event, C);
-    if (!violated.empty()) {
-      std::string msg = Spot->selectDiagnosticForViolation(violated);
-      if (msg.empty()) msg = "temporal property violated";
+  if (SpotGraph) {
+    // Pre-register APs into the SpotGraph's dict (once)
+    if (ApVarIds.empty()) {
+      for (const auto &kv : Registry.getEvaluators()) {
+        const std::string &ap = kv.first;
+        int var = SpotGraph->register_ap(ap);
+        ApVarIds[ap] = var;
+      }
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][SPOT] APs registered: ";
+        bool first=true; for (auto &kv : ApVarIds) { if (!first) llvm::errs() << ", "; first=false; llvm::errs() << kv.first << "->" << kv.second; }
+        llvm::errs() << "\n";
+      }
+    }
+    // Debug: print event
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][SPOT] event: type=" << (int)event.Type
+                   << ", fn=" << event.FunctionName
+                   << ", sym=" << event.SymbolName << "\n";
+    }
+    // Evaluate APs
+    std::set<std::string> trueAPs;
+    for (const auto &kv : Registry.getEvaluators()) {
+      const std::string &ap = kv.first;
+      const auto &eval = kv.second;
+      if (eval(event, C)) trueAPs.insert(ap);
+    }
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][SPOT] AP valuation: ";
+      for (const auto &kv : Registry.getEvaluators()) {
+        const std::string &ap = kv.first;
+        bool val = trueAPs.count(ap);
+        // Try to map AP back to DSL node and function
+        int nodeId = -1; for (const auto &m : Registry.getMapping()) if (m.second == ap) { nodeId = m.first; break; }
+        const LTLFormulaNode *node = Runtime->getFormulaBuilder().getNodeByID(nodeId);
+        std::string who = node ? (node->FunctionName.empty() ? node->Binding.SymbolName : node->FunctionName + "(" + node->Binding.SymbolName + ")") : std::string("<synthetic>");
+        llvm::errs() << ap << "=" << (val?"T":"F") << "[" << who << "] ";
+      }
+      llvm::errs() << "\n";
+    }
+
+    // Build valuation cube
+    bdd valuation = bddtrue;
+    for (const auto &kv : Registry.getEvaluators()) {
+      const std::string &ap = kv.first;
+      int var = ApVarIds[ap];
+      valuation = bdd_and(valuation, trueAPs.count(ap) ? bdd_ithvar(var)
+                                                       : bdd_nithvar(var));
+    }
+
+    // Step through transitions
+    unsigned ns = SpotGraph->num_states();
+    if (CurrentState >= (int)ns) CurrentState = 0;
+    int nextState = CurrentState; bool matched = false;
+    for (auto &t : SpotGraph->out(CurrentState)) {
+      bdd sat = bdd_restrict(t.cond, valuation);
+      if (sat != bddfalse) { nextState = (int)t.dst; matched = true; break; }
+    }
+    if (matched) {
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][SPOT] state " << CurrentState << " -> " << nextState << "\n";
+      }
+      CurrentState = nextState;
+    } else {
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][SPOT] no transition satisfied from state " << CurrentState << "; temporal violation" << "\n";
+      }
+      // Emit a temporal violation diagnostic
       ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
       if (ErrorNode) {
-        static const BugType GenericBT{Owner, "temporal_violation", "EmbeddedDSLMonitor"};
-        auto R = std::make_unique<PathSensitiveBugReport>(GenericBT, msg, ErrorNode);
-        if (event.Symbol)
-          R->markInteresting(event.Symbol);
+        static const BugType BT{Owner, "temporal_violation", "EmbeddedDSLMonitor"};
+        std::string msg = "temporal property violated (no transition satisfied)";
+        auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
         C.emitReport(std::move(R));
       }
     }

@@ -40,36 +40,6 @@ public:
   }
 };
 
-// Wrapper around SPOT monitor automaton and mapping back to DSL nodes
-class SpotMonitor {
-  spot::twa_graph_ptr Monitor;
-  APRegistry Registry;
-  const LTLFormulaBuilder &Builder;
-  int CurrentState = 0; // index into monitor states (simplified)
-  // Cache of AP name -> BDD var id to avoid per-step registrations
-  std::map<std::string, int> ApVarIds;
-
-public:
-  SpotMonitor(spot::twa_graph_ptr M, APRegistry R,
-              const LTLFormulaBuilder &B);
-
-  // Step monitor with current event; returns empty set if no violation,
-  // otherwise set of DSL NodeIDs deemed responsible (best-effort)
-  std::set<int> step(const GenericEvent &E, CheckerContext &C);
-
-  // Map violated node set to a diagnostic label using nearest labeled ancestor
-  std::string selectDiagnosticForViolation(const std::set<int> &violated) const {
-    if (violated.empty()) return std::string();
-    int id = *violated.begin();
-    if (auto *node = Builder.getNodeByID(id)) {
-      if (auto *diag = Builder.findNearestDiagnosticAncestor(node)) {
-        return diag->DiagnosticLabel;
-      }
-    }
-    return std::string();
-  }
-};
-
 // Build SPOT items: formula, monitor, registry
 struct SpotBuildResult {
   spot::twa_graph_ptr Monitor;
@@ -81,14 +51,20 @@ SpotBuildResult buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder);
 // Unified monitor that encapsulates framework modeling and SPOT stepping
 class DSLMonitor {
   std::unique_ptr<MonitorAutomaton> Runtime; // framework modeling/runtime
-  std::unique_ptr<SpotMonitor> Spot;         // temporal checking
+  // SPOT temporal monitor
+  spot::twa_graph_ptr SpotGraph;
+  APRegistry Registry;
+  // Cache of AP name -> BDD var id to avoid per-step registrations
+  std::map<std::string, int> ApVarIds;
+  int CurrentState = 0;
   const CheckerBase *Owner;                  // for diagnostics
 
 public:
   DSLMonitor(std::unique_ptr<MonitorAutomaton> R,
-             std::unique_ptr<SpotMonitor> S,
+             spot::twa_graph_ptr M,
+             APRegistry Reg,
              const CheckerBase *O)
-      : Runtime(std::move(R)), Spot(std::move(S)), Owner(O) {}
+      : Runtime(std::move(R)), SpotGraph(std::move(M)), Registry(std::move(Reg)), Owner(O) {}
 
   static std::unique_ptr<DSLMonitor>
   create(std::unique_ptr<PropertyDefinition> Property, const CheckerBase *O);

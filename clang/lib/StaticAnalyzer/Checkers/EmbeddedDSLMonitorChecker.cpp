@@ -59,7 +59,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 class EmbeddedDSLMonitorChecker
-    : public Checker<check::PostCall, check::PreCall, check::DeadSymbols, check::EndFunction, check::EndAnalysis, check::PointerEscape> {
+    : public Checker<check::PostCall, check::PreCall, check::DeadSymbols, check::EndFunction, check::EndAnalysis, check::PointerEscape, check::Bind> {
 
   // Unified DSL monitor (framework modeling + SPOT stepping)
   std::unique_ptr<dsl::DSLMonitor> Monitor;
@@ -124,6 +124,8 @@ public:
                                      const InvalidatedSymbols &Escaped,
                                      const CallEvent *Call,
                                      PointerEscapeKind Kind) const;
+  void checkBind(const SVal &location, const SVal &value, const Stmt *StoreE,
+                 bool isInit, CheckerContext &C) const;
 };
 
 //===----------------------------------------------------------------------===//
@@ -225,6 +227,18 @@ ProgramStateRef EmbeddedDSLMonitorChecker::checkPointerEscape(
     State = State->remove<::PendingLeakSet>(Sym);
   }
   return State;
+}
+
+void EmbeddedDSLMonitorChecker::checkBind(const SVal &location, const SVal &value,
+                                          const Stmt *StoreE, bool isInit, CheckerContext &C) const {
+  // If a symbol is bound into a region, remember it for later nullness checks.
+  if (SymbolRef Sym = value.getAsSymbol()) {
+    if (const MemRegion *MR = location.getAsRegion()) {
+      ProgramStateRef State = C.getState();
+      State = State->set<::SymbolToRegionMap>(Sym, MR);
+      C.addTransition(State);
+    }
+  }
 }
 
 void EmbeddedDSLMonitorChecker::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR, ExprEngine &Eng) const {

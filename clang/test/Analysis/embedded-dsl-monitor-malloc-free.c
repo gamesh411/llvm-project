@@ -10,25 +10,24 @@ int some_condition(void) {
 }
 
 void ok_exactly_once() {
-  void *p = malloc(16); // no-note
-  if (!p) // no-note
-    return; // no-warning
-  free(p); // no-warning
+  void *p = malloc(16);
+  if (!p)
+    return;
+  free(p);
 }
 
 void leak_missing_free() {
-  void *p = malloc(32); // no-note
-  return;  // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
+  void *p = malloc(32);
+  return;  // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
 }
 
 void double_free(int a) {
-  void *p = malloc(8); // no-note
-  free(p); // no-warning
-  free(p); // expected-warning{{resource destroyed twice (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource destroyed twice (violates exactly-once) (internal symbol: sym_2)}}
+  void *p = malloc(8);
+  free(p);
+  free(p); // expected-warning{{resource destroyed twice (violates exactly-once) (internal symbol: sym_2)}}
 }
 
 #if 0
-
 //===----------------------------------------------------------------------===//
 // Complex Control Flow Tests
 //===----------------------------------------------------------------------===//
