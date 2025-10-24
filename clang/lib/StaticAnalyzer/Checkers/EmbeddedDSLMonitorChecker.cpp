@@ -81,7 +81,7 @@ public:
     auto mallocCall = dsl::DSL::Call(
         "malloc", dsl::SymbolBinding(dsl::BindingType::ReturnValue, "x"));
     auto notNull = dsl::DSL::Not(dsl::DSL::Var("x"));
-    auto mallocAndNotNull = dsl::DSL::And(mallocCall, notNull);
+    auto mallocAndNotNull = dsl::DSL::And(mallocCall, dsl::DSL::IsNonNull("x"));
 
     auto freeCall = dsl::DSL::Call(
         "free", dsl::SymbolBinding(dsl::BindingType::FirstParameter, "x"));

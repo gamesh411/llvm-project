@@ -403,6 +403,18 @@ inline std::shared_ptr<LTLFormulaNode>
 NotNull(std::shared_ptr<LTLFormulaNode> var) {
   return Not(Var(var->Binding.SymbolName));
 }
+
+// Predicate atom: symbol is provably non-null along the current path
+inline std::shared_ptr<LTLFormulaNode>
+IsNonNull(const std::string &symbolName) {
+  auto node = std::make_shared<AtomicNode>("__isnonnull", SymbolBinding(BindingType::Variable, symbolName));
+  return node;
+}
+
+inline std::shared_ptr<LTLFormulaNode>
+IsNonNull(std::shared_ptr<LTLFormulaNode> var) {
+  return IsNonNull(var->Binding.SymbolName);
+}
 } // namespace DSL
 
 // General Symbolic Value Persistence System
@@ -1283,17 +1295,17 @@ public:
         // Treat a PostCall bound to a ReturnValue as a creation event
         BindingType BT = EventCreator.getBindingType(event.FunctionName, event.SymbolName);
         if (BT == BindingType::ReturnValue) {
-          if (edslDebugEnabled()) {
-            llvm::errs() << "[EDSL] create: " << event.FunctionName << "(" << event.SymbolName << ") -> Active\n";
-          }
-          State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Active);
-          State = State->add<::PendingLeakSet>(event.Symbol);
-          // Add a binding note similar to checker format for traceability
-          std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
-          std::string var = event.SymbolName.empty() ? std::string("x") : event.SymbolName;
-          std::string note = std::string("symbol \"") + var + "\" is bound here (internal symbol: " + internal + ")";
-          const NoteTag *NT = C.getNoteTag([note]() { return note; });
-          C.addTransition(State, NT);
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL] create: " << event.FunctionName << "(" << event.SymbolName << ") -> Active\n";
+            }
+            State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Active);
+            State = State->add<::PendingLeakSet>(event.Symbol);
+            // Add a binding note similar to checker format for traceability
+            std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
+            std::string var = event.SymbolName.empty() ? std::string("x") : event.SymbolName;
+            std::string note = std::string("symbol \"") + var + "\" is bound here (internal symbol: " + internal + ")";
+            const NoteTag *NT = C.getNoteTag([note]() { return note; });
+            C.addTransition(State, NT);
         }
       }
       break;
@@ -1357,6 +1369,14 @@ public:
         llvm::errs() << "[EDSL] end-function: pending=" << pendingCount << "\n";
       }
       for (auto Sym : State->get<::PendingLeakSet>()) {
+        // If the symbol is provably null on this path, drop obligation silently.
+        ConditionTruthVal __IsNull = C.getConstraintManager().isNull(State, Sym);
+        if (__IsNull.isConstrainedTrue()) {
+          State = State->remove<::GenericSymbolMap>(Sym);
+          State = State->remove<::SymbolStates>(Sym);
+          State = State->remove<::PendingLeakSet>(Sym);
+          continue;
+        }
         ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
         if (ErrorNode) {
           static const BugType BT{Checker, "temporal_violation", "EmbeddedDSLMonitor"};
@@ -1365,6 +1385,9 @@ public:
           msg += " (internal symbol: " + internal + ")";
           auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
           R->markInteresting(Sym);
+          // Hint for path location: end-of-function
+          const NoteTag *EndTag = C.getNoteTag([]() { return std::string("function ends here"); });
+          C.addTransition(C.getState(), EndTag);
           C.emitReport(std::move(R));
         }
         State = State->remove<::GenericSymbolMap>(Sym);

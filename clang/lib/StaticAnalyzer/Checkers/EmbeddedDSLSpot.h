@@ -46,11 +46,12 @@ class SpotMonitor {
   APRegistry Registry;
   const LTLFormulaBuilder &Builder;
   int CurrentState = 0; // index into monitor states (simplified)
+  // Cache of AP name -> BDD var id to avoid per-step registrations
+  std::map<std::string, int> ApVarIds;
 
 public:
   SpotMonitor(spot::twa_graph_ptr M, APRegistry R,
-              const LTLFormulaBuilder &B)
-      : Monitor(std::move(M)), Registry(std::move(R)), Builder(B) {}
+              const LTLFormulaBuilder &B);
 
   // Step monitor with current event; returns empty set if no violation,
   // otherwise set of DSL NodeIDs deemed responsible (best-effort)

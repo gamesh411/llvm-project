@@ -11,15 +11,15 @@ int some_condition(void) {
 
 void ok_exactly_once() {
   void *p = malloc(16); // no-note
-  if (!p) // expected-note{{Assuming 'p' is null}} // expected-note{{Taking true branch}}
+  if (!p) // no-note
     return; // no-warning
   free(p); // no-warning
-} // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} 
+}
 
 void leak_missing_free() {
   void *p = malloc(32); // no-note
-  return;  // no-warning
-} // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
+  return;  // expected-warning{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}} // expected-note{{resource not destroyed (violates exactly-once) (internal symbol: sym_2)}}
+}
 
 void double_free(int a) {
   void *p = malloc(8); // no-note

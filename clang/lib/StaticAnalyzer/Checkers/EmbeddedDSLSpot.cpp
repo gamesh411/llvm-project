@@ -6,11 +6,25 @@
 #include <spot/twaalgos/translate.hh>
 #include <spot/twa/twagraph.hh>
 #include <spot/twa/bdddict.hh>
+#include <spot/twa/bddprint.hh>
 #include <spot/tl/formula.hh>
 
 using namespace clang;
 using namespace ento;
 using namespace dsl;
+SpotMonitor::SpotMonitor(spot::twa_graph_ptr M, APRegistry R,
+                         const LTLFormulaBuilder &B)
+    : Monitor(std::move(M)), Registry(std::move(R)), Builder(B) {
+  // Let the automaton own AP registrations so the dict tracks associations
+  if (Monitor) {
+    for (const auto &kv : Registry.getEvaluators()) {
+      const std::string &ap = kv.first;
+      int var = Monitor->register_ap(ap);
+      ApVarIds[ap] = var;
+    }
+  }
+}
+
 
 namespace {
 // Tiny boolean evaluator for formulas produced from BDDs using only !, &, |, (),
@@ -103,7 +117,15 @@ static std::string buildSpotFormulaString(const LTLFormulaNode *node,
     const BindingType bt = node->Binding.Type;
 
     APEvaluator eval = [fn, sym, bt](const GenericEvent &E, CheckerContext &C) -> bool {
-      (void)C;
+      // Predicate: __isnonnull(x)
+      if (fn == "__isnonnull") {
+        if (E.Symbol && E.SymbolName == sym) {
+          ProgramStateRef S = C.getState();
+          ConditionTruthVal IsNull = C.getConstraintManager().isNull(S, E.Symbol);
+          return !IsNull.isConstrainedTrue();
+        }
+        return false;
+      }
       // Variable-only AP: true if the current event references the same symbol
       if (fn.empty()) {
         return (!sym.empty() && E.SymbolName == sym);
@@ -198,16 +220,15 @@ std::set<int> SpotMonitor::step(const GenericEvent &E, CheckerContext &C) {
     llvm::errs() << "}\n";
   }
 
-  // Build valuation BDD by assigning all known AP variables.
+  // Build valuation cube by assigning all known AP variables.
   bdd valuation = bddtrue;
-  auto dict = Monitor->get_dict();
   for (const auto &kv : Registry.getEvaluators()) {
     const std::string &ap = kv.first;
-    int var = dict->register_proposition(spot::formula::ap(ap), nullptr);
-    if (trueAPs.count(ap))
-      valuation = bdd_and(valuation, bdd_ithvar(var));
-    else
-      valuation = bdd_and(valuation, bdd_nithvar(var));
+    auto it = ApVarIds.find(ap);
+    if (it == ApVarIds.end()) continue;
+    int var = it->second;
+    valuation = bdd_and(valuation, trueAPs.count(ap) ? bdd_ithvar(var)
+                                                     : bdd_nithvar(var));
   }
 
   // Determine next state by scanning outgoing edges and selecting the
@@ -218,8 +239,8 @@ std::set<int> SpotMonitor::step(const GenericEvent &E, CheckerContext &C) {
   int nextState = CurrentState;
   bool matched = false;
   for (auto &t : Monitor->out(CurrentState)) {
-    // Check satisfiability of transition under current assignment.
-    bdd sat = bdd_and(valuation, t.cond);
+    // Check satisfiability of transition condition under current assignment.
+    bdd sat = bdd_restrict(t.cond, valuation);
     if (sat != bddfalse) {
       nextState = (int)t.dst;
       matched = true;
