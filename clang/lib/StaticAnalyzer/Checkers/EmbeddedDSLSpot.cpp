@@ -15,6 +15,58 @@ using namespace dsl;
 // removed SpotMonitor in favor of unified DSLMonitor
 
 namespace {
+// Prefer the smallest (deepest) labeled node in a subtree, with optional
+// preference for specific temporal/boolean node types.
+static std::string
+selectLabelFromSubtree(const LTLFormulaNode *root,
+                       std::initializer_list<LTLNodeType> preferredTypes) {
+  if (!root)
+    return std::string();
+  llvm::SmallVector<LTLNodeType, 4> prefer(preferredTypes.begin(),
+                                           preferredTypes.end());
+  struct Cand {
+    const LTLFormulaNode *N;
+    int D;
+  };
+  std::vector<Cand> pref, any;
+  std::function<void(const LTLFormulaNode *, int)> dfs =
+      [&](const LTLFormulaNode *n, int d) {
+        if (!n)
+          return;
+        if (!n->DiagnosticLabel.empty()) {
+          bool isPref =
+              std::find(prefer.begin(), prefer.end(), n->Type) != prefer.end();
+          if (isPref)
+            pref.push_back({n, d});
+          any.push_back({n, d});
+        }
+        for (const auto &ch : n->Children)
+          dfs(ch.get(), d + 1);
+      };
+  dfs(root, 0);
+  auto pickDeepest =
+      [](const std::vector<Cand> &vec) -> const LTLFormulaNode * {
+    const LTLFormulaNode *best = nullptr;
+    int bestD = -1;
+    for (const auto &c : vec) {
+      if (c.D > bestD) {
+        bestD = c.D;
+        best = c.N;
+      }
+    }
+    return best;
+  };
+  if (!pref.empty()) {
+    if (auto *n = pickDeepest(pref))
+      return n->DiagnosticLabel;
+  }
+  if (!any.empty()) {
+    if (auto *n = pickDeepest(any))
+      return n->DiagnosticLabel;
+  }
+  return std::string();
+}
+
 // Tiny boolean evaluator for formulas produced from BDDs using only !, &, |,
 // (), and atomic proposition names like "ap_1".
 struct BoolParser {
@@ -345,7 +397,8 @@ struct SpotStepper {
                    std::map<std::string, int> &ApVarIds, int &CurrentState,
                    const CheckerBase *Owner, const GenericEvent &event,
                    CheckerContext &C, ProgramStateRef UseState,
-                   const LTLFormulaBuilder &FormulaBuilder) {
+                   const LTLFormulaBuilder &FormulaBuilder,
+                   const LTLFormulaNode *RHSRootForLabels = nullptr) {
     if (!Graph)
       return;
     if (ApVarIds.empty()) {
@@ -450,10 +503,13 @@ struct SpotStepper {
           if (ErrorNode) {
             static const BugType BT{Owner, "temporal_violation",
                                     "EmbeddedDSLMonitor"};
-            std::string msg =
-                (event.Type == EventType::DeadSymbols)
-                    ? "resource not destroyed (violates exactly-once)"
-                    : "resource not destroyed (violates exactly-once)";
+            // Prefer label from RHS subtree: deepest labeled Eventually/Until,
+            // else any
+            std::string msg = selectLabelFromSubtree(
+                RHSRootForLabels,
+                {LTLNodeType::Eventually, LTLNodeType::Until});
+            if (msg.empty())
+              msg = "resource not destroyed (violates exactly-once)";
             if (event.Symbol)
               msg += std::string(" (internal symbol: sym_") +
                      std::to_string(event.Symbol->getSymbolID()) + ")";
@@ -590,19 +646,23 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
         const ::SymbolState *CurPtr2 = Base->get<::SymbolStates>(event.Symbol);
         ::SymbolState Cur2 = CurPtr2 ? *CurPtr2 : ::SymbolState::Uninitialized;
         if (Cur2 == ::SymbolState::Inactive) {
-          // Double-free: free called on already inactive resource
+          // Double-free: prefer smallest labeled subformula in RHS: G(!free)
           ExplodedNode *ErrorNode = C.generateErrorNode(Base);
           if (ErrorNode) {
             static const BugType BT{Owner, "temporal_violation",
                                     "EmbeddedDSLMonitor"};
-            std::string msg =
-                "resource destroyed twice (violates exactly-once)";
+            std::string msg = selectLabelFromSubtree(
+                TopLevelConsequent,
+                {LTLNodeType::Globally, LTLNodeType::Implies});
+            if (msg.empty())
+              msg = "resource destroyed twice (violates exactly-once)";
             if (event.Symbol)
               msg += std::string(" (internal symbol: sym_") +
                      std::to_string(event.Symbol->getSymbolID()) + ")";
             auto R =
                 std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-            R->markInteresting(event.Symbol);
+            if (event.Symbol)
+              R->markInteresting(event.Symbol);
             C.emitReport(std::move(R));
           }
         }
@@ -644,7 +704,7 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
   // Step SPOT for each branch prior to committing transitions
   for (auto &br : branches) {
     SpotStepper::step(SpotGraph, Registry, ApVarIds, CurrentState, Owner, event,
-                      C, br.S, FormulaBuilder);
+                      C, br.S, FormulaBuilder, TopLevelConsequent);
     // If RHS-only monitor exists and antecedent holds in this branch, step RHS
     if (SpotGraphRHS && TopLevelAntecedent) {
       // Evaluate antecedent by reusing evaluators mapped from the original

@@ -90,12 +90,13 @@ public:
     auto freeCall = dsl::DSL::Call(
         "free", dsl::SymbolBinding(dsl::BindingType::FirstParameter, "x"));
     auto eventuallyFree = dsl::DSL::F(freeCall);
-    eventuallyFree->withDiagnostic("Memory leak: allocated memory not freed");
+    eventuallyFree->withDiagnostic(
+        "resource not destroyed (violates exactly-once)");
 
     auto freeImpliesNoMoreFree =
         dsl::DSL::Implies(freeCall, dsl::DSL::G(dsl::DSL::Not(freeCall)));
     freeImpliesNoMoreFree->withDiagnostic(
-        "Double free: memory freed multiple times");
+        "resource destroyed twice (violates exactly-once)");
 
     auto globallyNoMoreFree = dsl::DSL::G(freeImpliesNoMoreFree);
     auto eventuallyFreeAndNoMoreFree =
