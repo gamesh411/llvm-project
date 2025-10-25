@@ -6,10 +6,13 @@
 #ifndef LLVM_CLANG_STATICANALYZER_CHECKERS_EMBEDDEDDSLFRAMEWORK_H
 #define LLVM_CLANG_STATICANALYZER_CHECKERS_EMBEDDEDDSLFRAMEWORK_H
 
+#include "clang/AST/ASTTypeTraits.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
+#include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
@@ -46,17 +49,9 @@ enum class SymbolContext {
 };
 
 // State trait registrations
-REGISTER_MAP_WITH_PROGRAMSTATE(GenericSymbolMap, clang::ento::SymbolRef,
-                               std::string)
-REGISTER_MAP_WITH_PROGRAMSTATE(SymbolStates, clang::ento::SymbolRef,
-                               SymbolState)
-REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
-                               clang::ento::SymbolRef)
-// Tracked symbols under the property (for enumeration at analysis end)
-REGISTER_SET_WITH_PROGRAMSTATE(TrackedSymbols, clang::ento::SymbolRef)
-// Map tracked symbols to the last known bound region for nullness checks
-REGISTER_MAP_WITH_PROGRAMSTATE(SymbolToRegionMap, clang::ento::SymbolRef,
-                               const clang::ento::MemRegion *)
+// NOTE: All GDM traits are defined in EmbeddedDSLMonitorChecker.cpp to avoid
+// multiple definition issues across translation units. Use the API functions
+// below to access them from other translation units.
 
 namespace llvm {
 template <> struct FoldingSetTrait<std::string> {
@@ -69,6 +64,53 @@ template <> struct FoldingSetTrait<std::string> {
 namespace clang {
 namespace ento {
 namespace dsl {
+
+// API functions to access GDM traits from other translation units
+// These functions are implemented in EmbeddedDSLMonitorChecker.cpp
+
+// TrackedSymbols API
+ProgramStateRef addTrackedSymbol(ProgramStateRef State, SymbolRef Sym);
+ProgramStateRef removeTrackedSymbol(ProgramStateRef State, SymbolRef Sym);
+bool containsTrackedSymbol(ProgramStateRef State, SymbolRef Sym);
+size_t getTrackedSymbolCount(ProgramStateRef State);
+std::vector<SymbolRef> getTrackedSymbols(ProgramStateRef State);
+
+// GenericSymbolMap API
+ProgramStateRef setGenericSymbolMap(ProgramStateRef State, SymbolRef Sym,
+                                    const std::string &Value);
+ProgramStateRef removeGenericSymbolMap(ProgramStateRef State, SymbolRef Sym);
+const std::string *getGenericSymbolMap(ProgramStateRef State, SymbolRef Sym);
+bool hasGenericSymbolMap(ProgramStateRef State, SymbolRef Sym);
+
+// SymbolStates API
+ProgramStateRef setSymbolState(ProgramStateRef State, SymbolRef Sym,
+                               SymbolState SymbolState);
+const SymbolState *getSymbolState(ProgramStateRef State, SymbolRef Sym);
+bool isSymbolActive(ProgramStateRef State, SymbolRef Sym);
+bool isSymbolInactive(ProgramStateRef State, SymbolRef Sym);
+
+// SymbolToRegionMap API
+ProgramStateRef setSymbolToRegionMap(ProgramStateRef State, SymbolRef Sym,
+                                     const MemRegion *Region);
+const MemRegion *getSymbolToRegionMap(ProgramStateRef State, SymbolRef Sym);
+
+// AutomatonState API declarations
+ProgramStateRef setAutomatonState(ProgramStateRef State, SymbolRef Sym,
+                                  int StateValue);
+const int *getAutomatonState(ProgramStateRef State, SymbolRef Sym);
+ProgramStateRef removeAutomatonState(ProgramStateRef State, SymbolRef Sym);
+
+// Symbol-Formula Variable Mapping API declarations
+// NOTE: Multiple APs can match the same event, creating multiple SymbolRef ->
+// FormulaVar mappings. Reverse lookup (FormulaVar -> SymbolRef) is ambiguous in
+// this case and is not supported. Use SymbolRef -> FormulaVar mapping for
+// forward lookups.
+ProgramStateRef setSymbolFormulaMapping(ProgramStateRef State, SymbolRef Sym,
+                                        const std::string &VarName);
+const std::string *getSymbolFormulaVar(ProgramStateRef State, SymbolRef Sym);
+ProgramStateRef removeSymbolFormulaMapping(ProgramStateRef State,
+                                           SymbolRef Sym);
+
 // Debug helper (opt-in via environment variable EDSL_DEBUG)
 static inline bool edslDebugEnabled() {
   static int Initialized = 0;
@@ -103,20 +145,67 @@ enum class LTLNodeType {
 
 // Symbol binding types for DSL
 enum class BindingType {
-  ReturnValue,    // Function return value
-  FirstParameter, // First function parameter
-  NthParameter,   // Nth function parameter
-  Variable        // General variable
+  ReturnValue,           // Function return value
+  FirstParameter,        // First function parameter
+  NthParameter,          // Nth function parameter
+  ReturnValueNonNull,    // Function return value with non-null constraint
+  FirstParameterNonNull, // First function parameter with non-null constraint
+  NthParameterNonNull    // Nth function parameter with non-null constraint
 };
+
+// Helper functions for BindingType
+inline bool isNonNullBinding(BindingType type) {
+  return type == BindingType::ReturnValueNonNull ||
+         type == BindingType::FirstParameterNonNull ||
+         type == BindingType::NthParameterNonNull;
+}
+
+inline BindingType getBaseBindingType(BindingType type) {
+  switch (type) {
+  case BindingType::ReturnValueNonNull:
+    return BindingType::ReturnValue;
+  case BindingType::FirstParameterNonNull:
+    return BindingType::FirstParameter;
+  case BindingType::NthParameterNonNull:
+    return BindingType::NthParameter;
+  default:
+    return type;
+  }
+}
 
 // Symbol binding information
 struct SymbolBinding {
   BindingType Type;
   std::string SymbolName;
   int ParameterIndex; // For NthParameter
+  // Optional AST matcher used to filter/select call expressions for this
+  // binding. If present, the binding applies only when the matcher matches the
+  // call's origin expression.
+  std::shared_ptr<clang::ast_matchers::internal::DynTypedMatcher> CallMatcher;
+  bool HasMatcher;
 
   SymbolBinding(BindingType t, const std::string &name, int index = 0)
-      : Type(t), SymbolName(name), ParameterIndex(index) {}
+      : Type(t), SymbolName(name), ParameterIndex(index), CallMatcher(nullptr),
+        HasMatcher(false) {}
+
+  SymbolBinding(BindingType t, const std::string &name,
+                const clang::ast_matchers::internal::DynTypedMatcher &M,
+                int index = 0)
+      : Type(t), SymbolName(name), ParameterIndex(index),
+        CallMatcher(
+            std::make_shared<clang::ast_matchers::internal::DynTypedMatcher>(
+                M)),
+        HasMatcher(true) {}
+
+  bool matchesOriginExpr(const clang::Stmt *Origin,
+                         clang::ASTContext &Ctx) const {
+    (void)Ctx;
+    // Placeholder: accept when origin exists; full DynTypedMatcher evaluation
+    // can be enabled in a follow-up once ASTTypeTraits infra is stabilized.
+    if (!HasMatcher)
+      return true;
+    return Origin != nullptr;
+  }
 };
 
 // Symbol tracking information derived from formula analysis
@@ -146,11 +235,25 @@ public:
   int NodeID;
   // Parent pointer to support ancestor-based diagnostic selection
   LTLFormulaNode *Parent;
+  // Optional: call-shape matcher presence (matcher object optional for now)
+  bool HasCallMatcher;
+  // Virtual hook to evaluate an optional matcher carried by atomic nodes
+  virtual bool matchOrigin(const Stmt *Origin, ASTContext &Ctx) const {
+    (void)Origin;
+    (void)Ctx;
+    return true; // default: no matcher
+  }
+
+  // Virtual hook to get the matcher for AP registration
+  virtual std::shared_ptr<clang::ast_matchers::internal::DynTypedMatcher>
+  getMatcher() const {
+    return nullptr; // default: no matcher
+  }
 
   LTLFormulaNode(LTLNodeType t, const std::string &label = "")
       : Type(t), DiagnosticLabel(label), Children(),
-        Binding(BindingType::Variable, ""), FunctionName(), Value(),
-        NodeID(nextNodeID()), Parent(nullptr) {}
+        Binding(BindingType::ReturnValue, ""), FunctionName(), Value(),
+        NodeID(nextNodeID()), Parent(nullptr), HasCallMatcher(false) {}
 
   virtual ~LTLFormulaNode() = default;
 
@@ -176,12 +279,49 @@ public:
 // Atomic proposition node (function calls, variables)
 class AtomicNode : public LTLFormulaNode {
 public:
+  std::shared_ptr<clang::ast_matchers::StatementMatcher> StoredStmtMatcher;
+  bool HasStmtMatcher = false;
+
   AtomicNode(const std::string &funcName, const SymbolBinding &binding,
              const std::string &value = "")
       : LTLFormulaNode(LTLNodeType::Atomic) {
     FunctionName = funcName;
     Binding = binding;
     Value = value;
+  }
+
+  AtomicNode(const clang::ast_matchers::StatementMatcher &SM,
+             const std::string &funcName, const SymbolBinding &binding)
+      : LTLFormulaNode(LTLNodeType::Atomic) {
+    FunctionName = funcName;
+    Binding = binding;
+    HasCallMatcher = true;
+    HasStmtMatcher = true;
+    StoredStmtMatcher =
+        std::make_shared<clang::ast_matchers::StatementMatcher>(SM);
+  }
+
+  bool matchOrigin(const Stmt *Origin, ASTContext &Ctx) const override {
+    if (!HasCallMatcher)
+      return true;
+    if (!Origin)
+      return false;
+    // Prefer the proper MatchFinder-driven API when we have a StatementMatcher
+    if (HasStmtMatcher && StoredStmtMatcher) {
+      auto Results =
+          clang::ast_matchers::match(*StoredStmtMatcher, *Origin, Ctx);
+      return !Results.empty();
+    }
+    return true;
+  }
+
+  std::shared_ptr<clang::ast_matchers::internal::DynTypedMatcher>
+  getMatcher() const override {
+    if (HasCallMatcher && HasStmtMatcher && StoredStmtMatcher) {
+      return std::make_shared<clang::ast_matchers::internal::DynTypedMatcher>(
+          clang::ast_matchers::internal::DynTypedMatcher(*StoredStmtMatcher));
+    }
+    return nullptr;
   }
 
   std::string toString() const override {
@@ -338,27 +478,14 @@ inline std::shared_ptr<LTLFormulaNode> Call(const std::string &funcName,
   return std::make_shared<AtomicNode>(funcName, binding);
 }
 
-inline std::shared_ptr<LTLFormulaNode>
-ReturnVal(const std::string &symbolName) {
-  return std::make_shared<AtomicNode>(
-      "", SymbolBinding(BindingType::ReturnValue, symbolName));
-}
+// Overload: accept a matcher; ignore function name entirely in this case.
+// Removed DynTypedMatcher overloads in favor of StatementMatcher to comply with
+// the LibASTMatchers MatchFinder calling conventions.
 
 inline std::shared_ptr<LTLFormulaNode>
-FirstParamVal(const std::string &symbolName) {
-  return std::make_shared<AtomicNode>(
-      "", SymbolBinding(BindingType::FirstParameter, symbolName));
-}
-
-inline std::shared_ptr<LTLFormulaNode>
-NthParamVal(const std::string &symbolName, int index) {
-  return std::make_shared<AtomicNode>(
-      "", SymbolBinding(BindingType::NthParameter, symbolName, index));
-}
-
-inline std::shared_ptr<LTLFormulaNode> Var(const std::string &symbolName) {
-  return std::make_shared<AtomicNode>(
-      "", SymbolBinding(BindingType::Variable, symbolName));
+Call(const clang::ast_matchers::StatementMatcher &stmtMatcher,
+     const SymbolBinding &binding) {
+  return std::make_shared<AtomicNode>(stmtMatcher, "", binding);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
@@ -399,16 +526,11 @@ Not(std::shared_ptr<LTLFormulaNode> child) {
   return std::make_shared<UnaryOpNode>(LTLNodeType::Not, child);
 }
 
-inline std::shared_ptr<LTLFormulaNode>
-NotNull(std::shared_ptr<LTLFormulaNode> var) {
-  return Not(Var(var->Binding.SymbolName));
-}
-
 // Predicate atom: symbol is provably non-null along the current path
 inline std::shared_ptr<LTLFormulaNode>
 IsNonNull(const std::string &symbolName) {
   auto node = std::make_shared<AtomicNode>(
-      "__isnonnull", SymbolBinding(BindingType::Variable, symbolName));
+      "__isnonnull", SymbolBinding(BindingType::ReturnValue, symbolName));
   return node;
 }
 
@@ -957,39 +1079,59 @@ private:
 // Forward declaration
 class LTLFormulaBuilder;
 
-// Binding-driven event creation system
-class BindingDrivenEventCreator {
+// AP-driven event creation system
+class APDrivenEventCreator {
 private:
-  std::map<std::string, std::map<std::string, BindingType>> FunctionBindings;
+  // AP Node ID -> SymbolName -> BindingType
+  std::map<int, std::map<std::string, BindingType>> APBindings;
+
+  // AP Node ID -> ASTMatcher for event matching
+  std::map<int, std::shared_ptr<clang::ast_matchers::internal::DynTypedMatcher>>
+      APMatchers;
 
 public:
-  // Register function binding information from DSL formula
-  void registerFunctionBinding(const std::string &functionName,
-                               const std::string &symbolName,
-                               BindingType bindingType) {
-    FunctionBindings[functionName][symbolName] = bindingType;
+  // Register AP binding information from DSL formula
+  void registerAPBinding(int apNodeId, const std::string &symbolName,
+                         BindingType bindingType) {
+    APBindings[apNodeId][symbolName] = bindingType;
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][INIT] Registered AP " << apNodeId
+                   << " binding: symbol='" << symbolName
+                   << "' type=" << (int)bindingType << "\n";
+    }
   }
 
-  // Get binding type for a function and symbol
-  BindingType getBindingType(const std::string &functionName,
+  // Register AP matcher for event matching
+  void registerAPMatcher(
+      int apNodeId,
+      std::shared_ptr<clang::ast_matchers::internal::DynTypedMatcher> matcher) {
+    APMatchers[apNodeId] = matcher;
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][INIT] Registered AP " << apNodeId
+                   << " matcher for event matching\n";
+    }
+  }
+
+  // Get binding type for an AP and symbol
+  BindingType getBindingType(int apNodeId,
                              const std::string &symbolName) const {
-    auto funcIt = FunctionBindings.find(functionName);
-    if (funcIt != FunctionBindings.end()) {
-      auto symbolIt = funcIt->second.find(symbolName);
-      if (symbolIt != funcIt->second.end()) {
+    auto apIt = APBindings.find(apNodeId);
+    if (apIt != APBindings.end()) {
+      auto symbolIt = apIt->second.find(symbolName);
+      if (symbolIt != apIt->second.end()) {
         return symbolIt->second;
       }
     }
-    return BindingType::Variable; // Default fallback
+    return BindingType::ReturnValue; // Default to ReturnValue if unknown
   }
 
   // Extract symbol from call event based on binding type
-  SymbolRef extractSymbolFromCall(const CallEvent &Call,
-                                  const std::string &functionName,
+  SymbolRef extractSymbolFromCall(const CallEvent &Call, int apNodeId,
                                   const std::string &symbolName) const {
-    BindingType bindingType = getBindingType(functionName, symbolName);
+    BindingType bindingType = getBindingType(apNodeId, symbolName);
+    BindingType baseType = getBaseBindingType(bindingType);
 
-    switch (bindingType) {
+    switch (baseType) {
     case BindingType::ReturnValue:
       return Call.getReturnValue().getAsSymbol();
 
@@ -1001,15 +1143,161 @@ public:
       // index
       return Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
 
-    case BindingType::Variable:
     default:
       return nullptr;
     }
   }
 
-  // Check if we have binding information for a function
-  bool hasBindingInfo(const std::string &functionName) const {
-    return FunctionBindings.find(functionName) != FunctionBindings.end();
+  // Find all APs that match the given call event
+  std::vector<int> findMatchingAPs(const CallEvent &Call,
+                                   CheckerContext &C) const {
+    std::vector<int> matchingAPs;
+    const Stmt *Origin = Call.getOriginExpr();
+
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][AP_EVAL] Starting AP evaluation for call event\n";
+      llvm::errs() << "[EDSL][AP_EVAL] Function: '"
+                   << (Call.getCalleeIdentifier()
+                           ? Call.getCalleeIdentifier()->getName().str()
+                           : "unknown")
+                   << "'\n";
+      llvm::errs() << "[EDSL][AP_EVAL] Origin: " << (const void *)Origin
+                   << "\n";
+      llvm::errs() << "[EDSL][AP_EVAL] Total APs registered: "
+                   << APMatchers.size() << "\n";
+    }
+
+    if (!Origin) {
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][AP_EVAL] No origin expression, returning empty "
+                        "matches\n";
+      }
+      return matchingAPs;
+    }
+
+    // Use proper ASTMatcher evaluation
+    ASTContext &Ctx = C.getASTContext();
+
+    for (const auto &apMatcher : APMatchers) {
+      int apNodeId = apMatcher.first;
+      const auto &matcher = apMatcher.second;
+
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][AP_EVAL] Evaluating AP " << apNodeId
+                     << " against call event\n";
+        llvm::errs() << "[EDSL][AP_EVAL]   AP " << apNodeId
+                     << " represents a formula node\n";
+      }
+
+      bool matched = false;
+      if (matcher) {
+        // Use proper ASTMatcher evaluation with the match function
+        // Convert DynTypedMatcher to appropriate typed matcher for evaluation
+        if (matcher->canConvertTo<Stmt>()) {
+          auto stmtMatcher = matcher->convertTo<Stmt>();
+          auto results = clang::ast_matchers::match(stmtMatcher, *Origin, Ctx);
+          matched = !results.empty();
+
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][AP_EVAL]   Stmt matcher evaluation: "
+                         << (matched ? "MATCHED" : "NO MATCH")
+                         << " (results: " << results.size() << ")\n";
+          }
+        } else if (matcher->canConvertTo<Decl>()) {
+          // For Decl matchers, we need to check if the origin is a DeclStmt
+          if (const auto *DS = dyn_cast<DeclStmt>(Origin)) {
+            for (const auto *D : DS->decls()) {
+              auto declMatcher = matcher->convertTo<Decl>();
+              auto results = clang::ast_matchers::match(declMatcher, *D, Ctx);
+              if (!results.empty()) {
+                matched = true;
+                break;
+              }
+            }
+          }
+
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][AP_EVAL]   Decl matcher evaluation: "
+                         << (matched ? "MATCHED" : "NO MATCH") << "\n";
+          }
+        } else {
+          // For other types, we need to use the MatchFinder directly
+          // This is a more complex approach but necessary for DynTypedMatcher
+          clang::ast_matchers::MatchFinder finder;
+          clang::ast_matchers::internal::CollectMatchesCallback callback;
+
+          // Use addDynamicMatcher which accepts DynTypedMatcher
+          if (finder.addDynamicMatcher(*matcher, &callback)) {
+            clang::DynTypedNode dynNode = clang::DynTypedNode::create(*Origin);
+            finder.match(dynNode, Ctx);
+            matched = !callback.Nodes.empty();
+
+            if (edslDebugEnabled()) {
+              llvm::errs()
+                  << "[EDSL][AP_EVAL]   DynTypedNode matcher evaluation: "
+                  << (matched ? "MATCHED" : "NO MATCH")
+                  << " (results: " << callback.Nodes.size() << ")\n";
+            }
+          } else {
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][AP_EVAL]   Failed to add DynTypedMatcher "
+                              "to MatchFinder\n";
+            }
+          }
+        }
+      } else {
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][AP_EVAL] ✗ AP " << apNodeId
+                       << " has no matcher\n";
+        }
+      }
+
+      if (matched) {
+        matchingAPs.push_back(apNodeId);
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][AP_EVAL] ✓ AP " << apNodeId
+                       << " MATCHED call event\n";
+        }
+      } else {
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][AP_EVAL] ✗ AP " << apNodeId
+                       << " did not match call event\n";
+        }
+      }
+    }
+
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][AP_EVAL] Total matching APs: "
+                   << matchingAPs.size() << "\n";
+      if (!matchingAPs.empty()) {
+        llvm::errs() << "[EDSL][AP_EVAL] Matching AP IDs: [";
+        for (size_t i = 0; i < matchingAPs.size(); ++i) {
+          if (i > 0)
+            llvm::errs() << ", ";
+          llvm::errs() << matchingAPs[i];
+        }
+        llvm::errs() << "]\n";
+      }
+    }
+
+    return matchingAPs;
+  }
+
+  // Check if we have binding information for an AP
+  bool hasBindingInfo(int apNodeId) const {
+    return APBindings.find(apNodeId) != APBindings.end();
+  }
+
+  // Get all symbol names for an AP
+  std::vector<std::string> getSymbolNamesForAP(int apNodeId) const {
+    std::vector<std::string> symbolNames;
+    auto apIt = APBindings.find(apNodeId);
+    if (apIt != APBindings.end()) {
+      for (const auto &symbolBinding : apIt->second) {
+        symbolNames.push_back(symbolBinding.first);
+      }
+    }
+    return symbolNames;
   }
 };
 
@@ -1136,13 +1424,12 @@ public:
   }
 
   // Extract binding information for event creation
-  void
-  populateBindingDrivenEventCreator(BindingDrivenEventCreator &creator) const {
+  void populateAPDrivenEventCreator(APDrivenEventCreator &creator) const {
     if (!RootFormula) {
       return;
     }
 
-    extractFunctionBindings(RootFormula, creator);
+    extractAPBindings(RootFormula, creator);
   }
 
 private:
@@ -1185,20 +1472,28 @@ private:
     }
   }
 
-  void extractFunctionBindings(const std::shared_ptr<LTLFormulaNode> &node,
-                               BindingDrivenEventCreator &creator) const {
+  void extractAPBindings(const std::shared_ptr<LTLFormulaNode> &node,
+                         APDrivenEventCreator &creator) const {
     if (!node)
       return;
 
-    // If this is an atomic node with a function name and binding, register it
-    if (!node->FunctionName.empty() && !node->Binding.SymbolName.empty()) {
-      creator.registerFunctionBinding(
-          node->FunctionName, node->Binding.SymbolName, node->Binding.Type);
+    // If this is an atomic node with a binding, register it as an AP
+    if (!node->Binding.SymbolName.empty()) {
+      creator.registerAPBinding(node->NodeID, node->Binding.SymbolName,
+                                node->Binding.Type);
+
+      // If it has a matcher, register it for event matching
+      if (node->HasCallMatcher) {
+        auto matcher = node->getMatcher();
+        if (matcher) {
+          creator.registerAPMatcher(node->NodeID, matcher);
+        }
+      }
     }
 
     // Recursively process children
     for (const auto &child : node->Children) {
-      extractFunctionBindings(child, creator);
+      extractAPBindings(child, creator);
     }
   }
 
@@ -1215,29 +1510,78 @@ private:
 };
 
 // Generic event types for the framework
-enum class EventType {
-  PostCall,     // Function call completed
-  PreCall,      // Function call about to start
-  DeadSymbols,  // Symbols are no longer reachable
-  EndFunction,  // Function is ending; legacy event (no longer used for
-                // violations)
-  EndAnalysis,  // Analysis is ending; finalize obligations for still-active
-                // symbols
-  PointerEscape // Symbol escapes current function/frame ownership
+// Specific events per checker callback
+struct PostCallEvent {
+  std::string FunctionName;
+  std::string SymbolName; // DSL variable name
+  SymbolRef Symbol;       // Return value symbol
+  SourceLocation Location;
+  const Stmt *OriginExpr;     // call expr
+  BindingType DerivedBinding; // Expect ReturnValue
 };
 
-// Generic event structure
+struct PreCallEvent {
+  std::string FunctionName;
+  std::string SymbolName; // DSL variable name
+  SymbolRef Symbol;       // Parameter symbol
+  SourceLocation Location;
+  const Stmt *OriginExpr;     // call expr
+  BindingType DerivedBinding; // Expect FirstParameter / NthParameter
+};
+
+struct DeadSymbolsEvent {
+  std::string SymbolName; // DSL variable name if known
+  SymbolRef Symbol;
+};
+
+struct EndFunctionEvent {};
+struct EndAnalysisEvent {};
+
+struct PointerEscapeEvent {
+  std::string SymbolName;
+  SymbolRef Symbol;
+};
+
+struct BindEvent {
+  std::string SymbolName;
+  SymbolRef Symbol;
+  const MemRegion *BoundRegion;
+  const Stmt *StoreExpr;
+};
+
+using EventAny =
+    llvm::PointerUnion<const PostCallEvent *, const PreCallEvent *,
+                       const DeadSymbolsEvent *, const EndFunctionEvent *,
+                       const EndAnalysisEvent *, const PointerEscapeEvent *,
+                       const BindEvent *>;
+
+// Backward-compatible generic event and type (kept for internal use)
+enum class EventType {
+  PostCall,
+  PreCall,
+  DeadSymbols,
+  EndFunction,
+  EndAnalysis,
+  PointerEscape,
+  Bind
+};
+
 struct GenericEvent {
   EventType Type;
   std::string FunctionName;
   std::string SymbolName;
   SymbolRef Symbol;
   SourceLocation Location;
+  const Stmt *OriginExpr;
+  BindingType DerivedBinding;
+  const MemRegion *BoundRegion;
 
   GenericEvent(EventType t, const std::string &func, const std::string &sym,
-               SymbolRef s, SourceLocation loc)
-      : Type(t), FunctionName(func), SymbolName(sym), Symbol(s), Location(loc) {
-  }
+               SymbolRef s, SourceLocation loc, const Stmt *Origin = nullptr,
+               BindingType Derived = BindingType::ReturnValue,
+               const MemRegion *BR = nullptr)
+      : Type(t), FunctionName(func), SymbolName(sym), Symbol(s), Location(loc),
+        OriginExpr(Origin), DerivedBinding(Derived), BoundRegion(BR) {}
 };
 
 // Generic event handler interface
@@ -1264,19 +1608,44 @@ class MonitorAutomaton {
   std::string PropertyName;
   LTLFormulaBuilder FormulaBuilder;
   const CheckerBase *Checker;
-  BindingDrivenEventCreator EventCreator;
+  APDrivenEventCreator EventCreator;
   // SPOT-backed monitor is owned in the checker TU to avoid header cycles
 
 public:
+  struct NonErrorResult {
+    ProgramStateRef State;
+    const NoteTag *NoteTag;
+    NonErrorResult(ProgramStateRef S, const clang::ento::NoteTag *NT = nullptr)
+        : State(S), NoteTag(NT) {}
+  };
+
+  struct DeferredErrorResult {
+    std::string Message;
+    std::string BugTypeName;
+    std::string BugTypeCategory;
+    SymbolRef Symbol;
+    DeferredErrorResult(const std::string &Msg, const std::string &TypeName,
+                        const std::string &TypeCategory,
+                        SymbolRef Sym = nullptr)
+        : Message(Msg), BugTypeName(TypeName), BugTypeCategory(TypeCategory),
+          Symbol(Sym) {}
+  };
+
+  using EventResult = std::variant<NonErrorResult, DeferredErrorResult>;
+
   MonitorAutomaton(std::unique_ptr<PropertyDefinition> prop,
                    const CheckerBase *C)
       : PropertyName(prop->getPropertyName()),
         FormulaBuilder(prop->getFormulaBuilder()), Checker(C) {
-    // Populate binding-driven event creator with formula information
-    FormulaBuilder.populateBindingDrivenEventCreator(EventCreator);
-    // Temporal monitoring is handled by the SPOT-based monitor in the checker
-    // TU.
+    // Populate AP-driven event creator with formula information
+    FormulaBuilder.populateAPDrivenEventCreator(EventCreator);
   }
+
+  // New method that returns results instead of calling addTransition directly
+  llvm::SmallVector<EventResult, 2> handleEvent(const GenericEvent &event,
+                                                ProgramStateRef State,
+                                                SValBuilder &SVB,
+                                                SymbolManager &SymMgr);
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
     if (edslDebugEnabled()) {
@@ -1300,6 +1669,9 @@ public:
       case EventType::PointerEscape:
         llvm::errs() << "PointerEscape";
         break;
+      case EventType::Bind:
+        llvm::errs() << "Bind";
+        break;
       }
       llvm::errs() << ", fn=" << event.FunctionName
                    << ", sym=" << event.SymbolName << "\n";
@@ -1310,11 +1682,9 @@ public:
 
     switch (event.Type) {
     case EventType::PostCall: {
-      if (event.Symbol && !event.FunctionName.empty() &&
-          !event.SymbolName.empty()) {
+      if (event.Symbol && !event.SymbolName.empty()) {
         // Treat a PostCall bound to a ReturnValue as a creation event
-        BindingType BT =
-            EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+        BindingType BT = event.DerivedBinding;
         if (BT == BindingType::ReturnValue) {
           // Perform splitting only if the formula actually uses IsNonNull(x)
           if (isSymbolUsedInIsNonNull(event.SymbolName)) {
@@ -1333,16 +1703,14 @@ public:
               std::tie(STrue, SFalse) =
                   C.getConstraintManager().assumeDual(C.getState(), *D);
               if (STrue) {
-                auto St = STrue->set<::SymbolStates>(event.Symbol,
-                                                     ::SymbolState::Active);
+                auto St = dsl::setSymbolState(STrue, event.Symbol,
+                                              ::SymbolState::Active);
                 // Remember the formula variable name and track symbol
-                St =
-                    St->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
-                St = St->add<::TrackedSymbols>(event.Symbol);
+                St = dsl::setGenericSymbolMap(St, event.Symbol,
+                                              event.SymbolName);
+                St = dsl::addTrackedSymbol(St, event.Symbol);
                 if (edslDebugEnabled()) {
-                  unsigned cnt =
-                      std::distance(St->get<::TrackedSymbols>().begin(),
-                                    St->get<::TrackedSymbols>().end());
+                  unsigned cnt = dsl::getTrackedSymbolCount(St);
                   llvm::errs()
                       << "[EDSL] track: add TrackedSymbols sym_id="
                       << event.Symbol->getSymbolID() << " name='"
@@ -1366,10 +1734,10 @@ public:
                 // callback.
               }
               if (SFalse) {
-                auto Sf = SFalse->set<::SymbolStates>(
-                    event.Symbol, ::SymbolState::Uninitialized);
-                Sf =
-                    Sf->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
+                auto Sf = dsl::setSymbolState(SFalse, event.Symbol,
+                                              ::SymbolState::Uninitialized);
+                Sf = dsl::setGenericSymbolMap(Sf, event.Symbol,
+                                              event.SymbolName);
                 C.addTransition(Sf);
               }
               return; // handled both branches
@@ -1382,10 +1750,10 @@ public:
                          << ") -> no split (no IsNonNull AP)\n";
           }
           // Lightweight bookkeeping only
-          State = State->set<::SymbolStates>(event.Symbol,
-                                             ::SymbolState::Uninitialized);
+          State = dsl::setSymbolState(State, event.Symbol,
+                                      ::SymbolState::Uninitialized);
           State =
-              State->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
+              dsl::setGenericSymbolMap(State, event.Symbol, event.SymbolName);
           C.addTransition(State);
           return;
         }
@@ -1393,15 +1761,13 @@ public:
       break;
     }
     case EventType::PreCall: {
-      if (event.Symbol && !event.FunctionName.empty() &&
-          !event.SymbolName.empty()) {
+      if (event.Symbol && !event.SymbolName.empty()) {
         // Treat a PreCall bound to a parameter as a destruction event
-        BindingType BT =
-            EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+        BindingType BT = event.DerivedBinding;
         if (BT == BindingType::FirstParameter ||
             BT == BindingType::NthParameter) {
           const ::SymbolState *CurPtr =
-              State->get<::SymbolStates>(event.Symbol);
+              dsl::getSymbolState(State, event.Symbol);
           ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
           // If Potential and IsNonNull present for symbol, split on non-null
           if (Cur == ::SymbolState::Uninitialized &&
@@ -1417,16 +1783,16 @@ public:
               std::tie(STrue, SFalse) =
                   C.getConstraintManager().assumeDual(C.getState(), *D);
               if (STrue) {
-                auto Sa = STrue->set<::SymbolStates>(event.Symbol,
-                                                     ::SymbolState::Active);
-                Sa =
-                    Sa->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
-                Sa = Sa->add<::TrackedSymbols>(event.Symbol);
+                auto Sa = dsl::setSymbolState(STrue, event.Symbol,
+                                              ::SymbolState::Active);
+                Sa = dsl::setGenericSymbolMap(Sa, event.Symbol,
+                                              event.SymbolName);
+                Sa = dsl::addTrackedSymbol(Sa, event.Symbol);
                 // Perform destruction on the non-null branch: bookkeeping only
-                Sa = Sa->set<::SymbolStates>(event.Symbol,
-                                             ::SymbolState::Inactive);
-                Sa = Sa->remove<::GenericSymbolMap>(event.Symbol);
-                Sa = Sa->remove<::TrackedSymbols>(event.Symbol);
+                Sa = dsl::setSymbolState(Sa, event.Symbol,
+                                         ::SymbolState::Inactive);
+                Sa = dsl::removeGenericSymbolMap(Sa, event.Symbol);
+                Sa = dsl::removeTrackedSymbol(Sa, event.Symbol);
                 if (edslDebugEnabled()) {
                   llvm::errs()
                       << "[EDSL] destroy: " << event.FunctionName << "("
@@ -1442,7 +1808,7 @@ public:
             }
           }
           const ::SymbolState *CurPtr2 =
-              C.getState()->get<::SymbolStates>(event.Symbol);
+              dsl::getSymbolState(C.getState(), event.Symbol);
           ::SymbolState Cur2 =
               CurPtr2 ? *CurPtr2 : ::SymbolState::Uninitialized;
           if (Cur2 == ::SymbolState::Active) {
@@ -1450,10 +1816,10 @@ public:
               llvm::errs() << "[EDSL] destroy: " << event.FunctionName << "("
                            << event.SymbolName << ") -> Inactive\n";
             }
-            State = State->set<::SymbolStates>(event.Symbol,
-                                               ::SymbolState::Inactive);
-            State = State->remove<::GenericSymbolMap>(event.Symbol);
-            State = State->remove<::TrackedSymbols>(event.Symbol);
+            State = dsl::setSymbolState(State, event.Symbol,
+                                        ::SymbolState::Inactive);
+            State = dsl::removeGenericSymbolMap(State, event.Symbol);
+            State = dsl::removeTrackedSymbol(State, event.Symbol);
             C.addTransition(State);
           }
         }
@@ -1472,8 +1838,22 @@ public:
           llvm::errs() << "[EDSL] escape: dropping PendingLeak obligation for "
                        << event.SymbolName << "\n";
         }
-        State = State->remove<::TrackedSymbols>(event.Symbol);
+        State = dsl::removeTrackedSymbol(State, event.Symbol);
         C.addTransition(State);
+      }
+      break;
+    }
+    case EventType::Bind: {
+      // Handle region binding: remember region only; no splitting here
+      if (event.Symbol) {
+        ProgramStateRef Cur = State;
+        if (event.BoundRegion)
+          Cur = dsl::setSymbolToRegionMap(Cur, event.Symbol, event.BoundRegion);
+        if (edslDebugEnabled())
+          llvm::errs() << "[EDSL][BIND] record region only sym_id="
+                       << event.Symbol->getSymbolID() << " var='"
+                       << event.SymbolName << "'\n";
+        C.addTransition(Cur);
       }
       break;
     }
@@ -1484,8 +1864,8 @@ public:
     }
     case EventType::EndAnalysis: {
       // Enumerate any tracked active symbols and forward EndAnalysis events.
-      for (auto Sym : State->get<::TrackedSymbols>()) {
-        const ::SymbolState *CurPtr = State->get<::SymbolStates>(Sym);
+      for (auto Sym : dsl::getTrackedSymbols(State)) {
+        const ::SymbolState *CurPtr = dsl::getSymbolState(State, Sym);
         ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
         if (Cur == ::SymbolState::Active) {
           std::string name = "sym_" + std::to_string(Sym->getSymbolID());
@@ -1508,8 +1888,8 @@ public:
       if (!n)
         return false;
       if (n->Type == LTLNodeType::Atomic) {
-        if (n->FunctionName == "__isnonnull" &&
-            n->Binding.SymbolName == symbolName)
+        if (n->Binding.SymbolName == symbolName &&
+            isNonNullBinding(n->Binding.Type))
           return true;
       }
       for (const auto &ch : n->Children)
@@ -1537,85 +1917,6 @@ public:
     }
 
     return propositions;
-  }
-
-  // Create event using binding-driven approach
-  dsl::GenericEvent createBindingDrivenEvent(const CallEvent &Call,
-                                             EventType eventType,
-                                             CheckerContext &C) const {
-    std::string funcName = Call.getCalleeIdentifier()
-                               ? Call.getCalleeIdentifier()->getName().str()
-                               : "unknown";
-
-    // If we have binding information for this function, use it
-    if (EventCreator.hasBindingInfo(funcName)) {
-      // For now, we'll use the first symbol we find for this function
-      // In a more sophisticated implementation, we could match symbols more
-      // precisely
-      SymbolRef Sym = nullptr;
-      std::string symbolName = "unknown";
-
-      // Try to find a symbol using the binding information
-      // This is a simplified approach - in practice, we'd need more
-      // sophisticated matching
-      for (const auto &binding : FormulaBuilder.getSymbolBindings()) {
-        if (EventCreator.getBindingType(funcName, binding.SymbolName) !=
-            BindingType::Variable) {
-          Sym = EventCreator.extractSymbolFromCall(Call, funcName,
-                                                   binding.SymbolName);
-          if (Sym) {
-            symbolName = binding.SymbolName;
-            break;
-          }
-        }
-      }
-
-      // If binding-based extraction failed, fall back to default extraction
-      if (!Sym) {
-        if (eventType == EventType::PostCall) {
-          Sym = Call.getReturnValue().getAsSymbol();
-          symbolName =
-              Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
-        } else {
-          // Prefer the underlying stored symbol of the region argument, if any
-          Sym = nullptr;
-          if (Call.getNumArgs() > 0) {
-            SVal Arg = Call.getArgSVal(0);
-            if (const MemRegion *MR = Arg.getAsRegion()) {
-              SVal Stored = C.getState()->getSVal(MR);
-              if (SymbolRef StoredSym = Stored.getAsSymbol()) {
-                Sym = StoredSym;
-              }
-            }
-            if (!Sym)
-              Sym = Arg.getAsSymbol();
-          }
-          symbolName =
-              Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
-        }
-      }
-
-      return dsl::GenericEvent(eventType, funcName, symbolName, Sym,
-                               Call.getSourceRange().getBegin());
-    } else {
-      // Fallback to traditional approach
-      SymbolRef Sym = nullptr;
-      std::string symbolName = "unknown";
-
-      if (eventType == EventType::PostCall) {
-        Sym = Call.getReturnValue().getAsSymbol();
-        symbolName =
-            Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
-      } else {
-        Sym =
-            Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
-        symbolName =
-            Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
-      }
-
-      return dsl::GenericEvent(eventType, funcName, symbolName, Sym,
-                               Call.getSourceRange().getBegin());
-    }
   }
 
 private:
@@ -1701,11 +2002,11 @@ class SymbolTracker {
 public:
   static void trackSymbol(ProgramStateRef State, SymbolRef sym,
                           const std::string &value, CheckerContext &C) {
-    C.addTransition(State->set<::GenericSymbolMap>(sym, value));
+    C.addTransition(dsl::setGenericSymbolMap(State, sym, value));
   }
 
   static std::string getSymbolValue(ProgramStateRef State, SymbolRef sym) {
-    if (const std::string *value = State->get<::GenericSymbolMap>(sym)) {
+    if (const std::string *value = dsl::getGenericSymbolMap(State, sym)) {
       return *value;
     }
     return "";
@@ -1713,11 +2014,11 @@ public:
 
   static void removeSymbol(ProgramStateRef State, SymbolRef sym,
                            CheckerContext &C) {
-    C.addTransition(State->remove<::GenericSymbolMap>(sym));
+    C.addTransition(dsl::removeGenericSymbolMap(State, sym));
   }
 
   static bool hasSymbol(ProgramStateRef State, SymbolRef sym) {
-    return State->get<::GenericSymbolMap>(sym) != nullptr;
+    return dsl::hasGenericSymbolMap(State, sym);
   }
 };
 
@@ -1769,8 +2070,8 @@ public:
   }
 };
 
-// Example: Mutex Lock/Unlock Property
-// This demonstrates how the framework can be used for other temporal properties
+// Example: Mutex Lock/Unlock Property // This demonstrates how the framework
+// can be used for other temporal properties
 class MutexLockUnlockProperty : public PropertyDefinition {
 private:
   LTLFormulaBuilder FormulaBuilder;

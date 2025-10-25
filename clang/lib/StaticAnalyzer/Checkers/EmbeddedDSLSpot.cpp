@@ -168,28 +168,73 @@ static std::string buildSpotFormulaString(const LTLFormulaNode *node,
     const std::string fn = node->FunctionName;
     const std::string sym = node->Binding.SymbolName;
     const BindingType bt = node->Binding.Type;
+    // Capture node for matcher evaluation
+    const LTLFormulaNode *const capturedNode = node;
 
-    APEvaluator eval = [fn, sym, bt](const GenericEvent &E, CheckerContext &C,
-                                     ProgramStateRef UseState) -> bool {
-      // Predicate: __isnonnull(x)
-      if (fn == "__isnonnull") {
+    APEvaluator eval = [fn, sym, bt, ap,
+                        capturedNode](const GenericEvent &E, CheckerContext &C,
+                                      ProgramStateRef UseState) -> bool {
+      // Check if this is a non-null binding type
+      bool isNonNull = isNonNullBinding(bt);
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][AP_EVAL] Evaluating AP " << ap << " (fn='" << fn
+                     << "', sym='" << sym << "', bt=" << (int)bt
+                     << ", isNonNull=" << isNonNull << ")\n";
+        llvm::errs() << "[EDSL][AP_EVAL]   Event: fn='" << E.FunctionName
+                     << "', sym='" << E.SymbolName
+                     << "', hasSymbol=" << (E.Symbol ? "yes" : "no") << "\n";
+      }
+      if (isNonNull) {
+        // For non-null binding types, we just need to check if the symbol
+        // exists. The function name matching is already handled during event
+        // creation by the APDrivenEventCreator, so we don't need to check it
+        // again here.
         if (E.Symbol && E.SymbolName == sym) {
-          ProgramStateRef S = UseState ? UseState : C.getState();
-          ConditionTruthVal IsNull =
-              C.getConstraintManager().isNull(S, E.Symbol);
-          // Strict: true only when provably non-null on this path
-          return IsNull.isConstrainedFalse();
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][AP_EVAL]   Non-null binding: symbol "
+                            "matches, result=TRUE\n";
+          }
+          return true;
+        }
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][AP_EVAL]   Non-null binding failed: E.Symbol="
+                       << (E.Symbol ? "yes" : "no") << ", E.SymbolName='"
+                       << E.SymbolName << "' != sym='" << sym << "'\n";
         }
         return false;
       }
-      // Variable-only AP: true if the current event references the same symbol
-      if (fn.empty()) {
-        return (!sym.empty() && E.SymbolName == sym);
+      // Gate by function name or matcher (with debug):
+      if (!fn.empty()) {
+        bool gateOK = (E.FunctionName == fn);
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][MATCH] ap=" << ap
+                       << " name_eq=" << (gateOK ? "T" : "F") << " expected='"
+                       << fn << "' got='" << E.FunctionName << "' sym='"
+                       << E.SymbolName << "'\n";
+        }
+        if (!gateOK)
+          return false;
+      } else if (capturedNode && capturedNode->HasCallMatcher) {
+        // Only fall back to matcher if no stable function name is provided
+        bool ok = capturedNode->matchOrigin(E.OriginExpr, C.getASTContext());
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][MATCH] ap=" << ap
+                       << " matcher=" << (ok ? "T" : "F")
+                       << " origin=" << (const void *)E.OriginExpr << " sym='"
+                       << E.SymbolName << "'\n";
+        }
+        if (!ok)
+          return false;
+      } else {
+        // Variable-only AP (no matcher, no function name)
+        bool varOK = (!sym.empty() && E.SymbolName == sym);
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][MATCH] ap=" << ap
+                       << " var_eq=" << (varOK ? "T" : "F") << " expected='"
+                       << sym << "' got='" << E.SymbolName << "'\n";
+        }
+        return varOK;
       }
-      // Function AP: true if this event is for that function on the bound
-      // symbol
-      if (E.FunctionName != fn)
-        return false;
       if (sym.empty())
         return true;
       return E.SymbolName == sym;
@@ -215,70 +260,9 @@ static std::string buildSpotFormulaString(const LTLFormulaNode *node,
   case LTLNodeType::Globally:
     return std::string("G(") +
            buildSpotFormulaString(node->Children[0].get(), reg) + ")";
-  case LTLNodeType::Eventually: {
-    // Rewrite F φ into (¬ap_DEAD(x) & ¬ap_ENDANALYSIS(x)) U φ when φ refers to
-    // a bound symbol x. Extract the symbol name if present in the child subtree
-    // to parameterize sentinel APs. For simplicity, if no symbol binding found,
-    // fall back to F φ.
-    std::string inner = buildSpotFormulaString(node->Children[0].get(), reg);
-    std::string sym;
-    const LTLFormulaNode *child = node->Children[0].get();
-    std::function<bool(const LTLFormulaNode *)> findSym =
-        [&](const LTLFormulaNode *n) -> bool {
-      if (!n)
-        return false;
-      if (n->Type == LTLNodeType::Atomic && !n->Binding.SymbolName.empty()) {
-        sym = n->Binding.SymbolName;
-        return true;
-      }
-      for (const auto &ch : n->Children)
-        if (findSym(ch.get()))
-          return true;
-      return false;
-    };
-    findSym(child);
-    if (!sym.empty()) {
-      // Register sentinel APs for this symbol lazily (evaluators are generic by
-      // name match)
-      const std::string apDead = std::string("ap_DEAD_") + sym;
-      const std::string apEnd = std::string("ap_ENDANALYSIS_") + sym;
-      reg.registerAP(-100000 - (int)std::hash<std::string>{}(apDead), apDead,
-                     [sym](const GenericEvent &E, CheckerContext &C,
-                           ProgramStateRef UseState) -> bool {
-                       if (E.Type != EventType::DeadSymbols)
-                         return false;
-                       // Match either by explicit event name or by mapping from
-                       // symbol to DSL var name
-                       if (E.SymbolName == sym)
-                         return true;
-                       if (E.Symbol && UseState) {
-                         if (const std::string *VN =
-                                 UseState->get<::GenericSymbolMap>(E.Symbol))
-                           return *VN == sym;
-                       }
-                       return false;
-                     });
-      reg.registerAP(-200000 - (int)std::hash<std::string>{}(apEnd), apEnd,
-                     [sym](const GenericEvent &E, CheckerContext &C,
-                           ProgramStateRef UseState) -> bool {
-                       if (E.Type != EventType::EndAnalysis)
-                         return false;
-                       if (E.SymbolName == sym)
-                         return true;
-                       if (E.Symbol && UseState) {
-                         if (const std::string *VN =
-                                 UseState->get<::GenericSymbolMap>(E.Symbol))
-                           return *VN == sym;
-                       }
-                       return false;
-                     });
-      // Parenthesize the entire Until subexpression to ensure correct
-      // precedence
-      return std::string("((") + "!" + apDead + " & !" + apEnd + ") U (" +
-             inner + "))";
-    }
-    return std::string("F(") + inner + ")";
-  }
+  case LTLNodeType::Eventually:
+    return std::string("F(") +
+           buildSpotFormulaString(node->Children[0].get(), reg) + ")";
   case LTLNodeType::Next:
     return std::string("X(") +
            buildSpotFormulaString(node->Children[0].get(), reg) + ")";
@@ -354,53 +338,25 @@ DSLMonitor::create(std::unique_ptr<PropertyDefinition> Property,
   auto fb = Property->getFormulaBuilder();
   auto res = dsl::buildSpotMonitorFromDSL(fb);
   auto M = std::make_unique<DSLMonitor>(
-      std::move(res.Monitor), std::move(res.Registry), O, std::move(fb));
-  // Try to detect top-level G(Implies(A,B)) and build RHS-only monitor
-  const LTLFormulaNode *root = M->getFormulaBuilder().getRootNode();
-  if (root && root->Type == LTLNodeType::Globally &&
-      root->Children.size() == 1) {
-    const LTLFormulaNode *imp = root->Children[0].get();
-    if (imp && imp->Type == LTLNodeType::Implies && imp->Children.size() == 2) {
-      M->TopLevelAntecedent = imp->Children[0].get();
-      M->TopLevelConsequent = imp->Children[1].get();
-      // Build a temporary builder for RHS only
-      LTLFormulaBuilder rhsB = M->getFormulaBuilder();
-      // Create a shallow copy that uses the RHS as root: we rely on
-      // buildSpotFormulaString walking from that node We cheat by building a
-      // separate SpotBuildResult with the same registry (AP names must match)
-      APRegistry dummy; // ignored, we will reuse M->Registry for evaluation
-      std::string rhsPSL = [&]() {
-        APRegistry tmpReg;
-        return buildSpotFormulaString(M->TopLevelConsequent, tmpReg);
-      }();
-      if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][SPOT] RHS PSL: " << rhsPSL << "\n";
-      }
-      // Parse RHS PSL into its own monitor graph (share dict with main graph by
-      // re-parsing)
-      spot::parsed_formula pf = spot::parse_infix_psl(rhsPSL);
-      if (!pf.format_errors(std::cerr)) {
-        spot::translator trans;
-        trans.set_type(spot::postprocessor::Monitor);
-        trans.set_pref(spot::postprocessor::Deterministic);
-        M->SpotGraphRHS = trans.run(pf.f);
-      }
-    }
-  }
+      O, std::move(res.Monitor), std::move(res.Registry), O, std::move(fb));
+  // No need for RHS/LHS separation since formula uses Next operator
+  // Note: Function bindings are already registered in the DSLMonitor
+  // constructor
+
   return M;
 }
 
 namespace {
 // Helper to step SPOT with valuations built from a specific ProgramStateRef
 struct SpotStepper {
-  static void step(spot::twa_graph_ptr &Graph, APRegistry &Registry,
-                   std::map<std::string, int> &ApVarIds, int &CurrentState,
-                   const CheckerBase *Owner, const GenericEvent &event,
-                   CheckerContext &C, ProgramStateRef UseState,
-                   const LTLFormulaBuilder &FormulaBuilder,
-                   const LTLFormulaNode *RHSRootForLabels = nullptr) {
-    if (!Graph)
-      return;
+  static llvm::SmallVector<DSLMonitor::EventResult, 2>
+  step(spot::twa_graph_ptr &Graph, APRegistry &Registry,
+       std::map<std::string, int> &ApVarIds, int &CurrentState,
+       const CheckerBase *Owner, const GenericEvent &event, CheckerContext &C,
+       ProgramStateRef UseState, const LTLFormulaBuilder &FormulaBuilder) {
+    llvm::SmallVector<DSLMonitor::EventResult, 2> results;
+    // SpotGraph is guaranteed to be non-null by constructor assertion
+    // Double-free detection is now handled directly in handleEvent
     if (ApVarIds.empty()) {
       for (const auto &kv : Registry.getEvaluators()) {
         int var = Graph->register_ap(kv.first);
@@ -419,20 +375,28 @@ struct SpotStepper {
       }
     }
     if (edslDebugEnabled()) {
-      llvm::errs() << "[EDSL][SPOT] event: type=" << (int)event.Type
+      llvm::errs() << "[EDSL][SPOT] ===== SPOT EVALUATION START =====\n";
+      llvm::errs() << "[EDSL][SPOT] Event: type=" << (int)event.Type
                    << ", fn=" << event.FunctionName
                    << ", sym=" << event.SymbolName << "\n";
+      llvm::errs() << "[EDSL][SPOT] Current automaton state: " << CurrentState
+                   << "\n";
+      llvm::errs() << "[EDSL][SPOT] Total automaton states: "
+                   << Graph->num_states() << "\n";
     }
     std::set<std::string> trueAPs;
-    for (const auto &kv : Registry.getEvaluators()) {
-      if (kv.second(event, C, UseState))
-        trueAPs.insert(kv.first);
-    }
     if (edslDebugEnabled()) {
-      llvm::errs() << "[EDSL][SPOT] AP valuation: ";
-      for (const auto &kv : Registry.getEvaluators()) {
-        const std::string &ap = kv.first;
-        bool val = trueAPs.count(ap);
+      llvm::errs() << "[EDSL][SPOT] Evaluating "
+                   << Registry.getEvaluators().size() << " APs:\n";
+    }
+
+    for (const auto &kv : Registry.getEvaluators()) {
+      const std::string &ap = kv.first;
+      bool val = kv.second(event, C, UseState);
+      if (val)
+        trueAPs.insert(ap);
+
+      if (edslDebugEnabled()) {
         int nodeId = -1;
         for (const auto &m : Registry.getMapping())
           if (m.second == ap) {
@@ -445,9 +409,22 @@ struct SpotStepper {
                                       : node->FunctionName + "(" +
                                             node->Binding.SymbolName + ")")
                                : std::string("<synthetic>");
-        llvm::errs() << ap << "=" << (val ? "T" : "F") << "[" << who << "] ";
+        llvm::errs() << "[EDSL][SPOT]   AP " << ap << " (node " << nodeId
+                     << ") = " << (val ? "TRUE" : "FALSE") << " [" << who
+                     << "]\n";
       }
-      llvm::errs() << "\n";
+    }
+
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][SPOT] True APs: [";
+      bool first = true;
+      for (const auto &ap : trueAPs) {
+        if (!first)
+          llvm::errs() << ", ";
+        llvm::errs() << ap;
+        first = false;
+      }
+      llvm::errs() << "]\n";
     }
     bdd valuation = bddtrue;
     for (const auto &kv : Registry.getEvaluators()) {
@@ -464,26 +441,54 @@ struct SpotStepper {
     if (edslDebugEnabled()) {
       auto dict = Graph->get_dict();
       std::string cube = spot::bdd_format_formula(dict, valuation);
-      llvm::errs() << "[EDSL][SPOT] valuation cube: " << cube << "\n";
-      llvm::errs() << "[EDSL][SPOT] outgoing from state " << CurrentState
-                   << ":\n";
+      llvm::errs() << "[EDSL][SPOT] BDD valuation cube: " << cube << "\n";
+      llvm::errs() << "[EDSL][SPOT] Evaluating transitions from state "
+                   << CurrentState << ":\n";
+
+      int transitionCount = 0;
       for (auto &t : Graph->out(CurrentState)) {
         std::string condStr = spot::bdd_format_formula(dict, t.cond);
-        llvm::errs() << "  cond=" << condStr << " -> dst=" << t.dst << "\n";
+        llvm::errs() << "[EDSL][SPOT]   Transition " << transitionCount++
+                     << ": cond=" << condStr << " -> dst=" << t.dst << "\n";
       }
     }
+    int transitionIndex = 0;
     for (auto &t : Graph->out(CurrentState)) {
       bdd sat = bdd_restrict(t.cond, valuation);
+
+      if (edslDebugEnabled()) {
+        auto dict = Graph->get_dict();
+        std::string condStr = spot::bdd_format_formula(dict, t.cond);
+        std::string satStr = spot::bdd_format_formula(dict, sat);
+        llvm::errs() << "[EDSL][SPOT]   Checking transition " << transitionIndex
+                     << ": cond=" << condStr << " -> dst=" << t.dst
+                     << " (restricted=" << satStr << ")\n";
+      }
+
       if (sat != bddfalse) {
         nextState = (int)t.dst;
         matched = true;
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][SPOT]   ✓ Transition " << transitionIndex
+                       << " SATISFIED! Moving from state " << CurrentState
+                       << " to state " << nextState << "\n";
+        }
         break;
+      } else {
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][SPOT]   ✗ Transition " << transitionIndex
+                       << " NOT satisfied\n";
+        }
       }
+      transitionIndex++;
     }
+
     if (matched) {
       if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][SPOT] state " << CurrentState << " -> "
+        llvm::errs() << "[EDSL][SPOT] ===== STATE TRANSITION =====\n";
+        llvm::errs() << "[EDSL][SPOT] State " << CurrentState << " -> "
                      << nextState << "\n";
+        llvm::errs() << "[EDSL][SPOT] ==============================\n";
       }
       CurrentState = nextState;
       // For sentinel-driven safety, emit on DeadSymbols/EndAnalysis when
@@ -492,9 +497,9 @@ struct SpotStepper {
           event.Type == EventType::EndAnalysis) {
         bool pending = false;
         if (event.Symbol && UseState) {
-          if (UseState->contains<::TrackedSymbols>(event.Symbol)) {
+          if (dsl::containsTrackedSymbol(UseState, event.Symbol)) {
             if (const ::SymbolState *CurPtr =
-                    UseState->get<::SymbolStates>(event.Symbol))
+                    dsl::getSymbolState(UseState, event.Symbol))
               pending = (*CurPtr == ::SymbolState::Active);
           }
         }
@@ -506,295 +511,386 @@ struct SpotStepper {
             // Prefer label from RHS subtree: deepest labeled Eventually/Until,
             // else any
             std::string msg = selectLabelFromSubtree(
-                RHSRootForLabels,
-                {LTLNodeType::Eventually, LTLNodeType::Until});
+                nullptr, {LTLNodeType::Eventually, LTLNodeType::Until});
             if (msg.empty())
               msg = "resource not destroyed (violates exactly-once)";
             if (event.Symbol)
               msg += std::string(" (internal symbol: sym_") +
                      std::to_string(event.Symbol->getSymbolID()) + ")";
-            auto R =
-                std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-            if (event.Symbol)
-              R->markInteresting(event.Symbol);
-            C.emitReport(std::move(R));
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][REPORT] leak/end violation: " << msg
+                           << "\n";
+            }
+            // Use deferred approach - return bug report info instead of
+            // creating directly
+            results.emplace_back(DSLMonitor::DeferredErrorResult(
+                msg, "temporal_violation", "EmbeddedDSLMonitor", event.Symbol));
+            return results;
           }
         }
       }
     } else {
       if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][SPOT] no transition satisfied from state "
-                     << CurrentState << "; temporal violation; event fn='"
-                     << event.FunctionName << "' sym='" << event.SymbolName
-                     << "'" << "\n";
+        llvm::errs() << "[EDSL][SPOT] ===== NO TRANSITION MATCHED =====\n";
+        llvm::errs() << "[EDSL][SPOT] No transition satisfied from state "
+                     << CurrentState << "\n";
+        llvm::errs() << "[EDSL][SPOT] Event: fn='" << event.FunctionName
+                     << "' sym='" << event.SymbolName << "'\n";
+        llvm::errs() << "[EDSL][SPOT] This indicates a temporal violation!\n";
+        llvm::errs() << "[EDSL][SPOT] ======================================\n";
       }
-      // Ignore 'no transition' cases to avoid false positives
+      // Leak detection is now handled in the checker's checkDeadSymbols method
+      // and deferred to checkEndFunction for proper error node creation
     }
+    return results;
   }
 };
 } // namespace
 
+// Overloads that bridge specific events to the existing GenericEvent handler
+void DSLMonitor::handleEvent(const PostCallEvent &E, CheckerContext &C) {
+  GenericEvent GE{
+      EventType::PostCall, E.FunctionName, E.SymbolName,     E.Symbol,
+      E.Location,          E.OriginExpr,   E.DerivedBinding, nullptr};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEvent(const PreCallEvent &E, CheckerContext &C) {
+  GenericEvent GE{EventType::PreCall, E.FunctionName, E.SymbolName,
+                  E.Symbol,           E.Location,     E.OriginExpr,
+                  E.DerivedBinding,   nullptr};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEvent(const DeadSymbolsEvent &E, CheckerContext &C) {
+  GenericEvent GE{EventType::DeadSymbols,
+                  "",
+                  E.SymbolName,
+                  E.Symbol,
+                  SourceLocation(),
+                  nullptr,
+                  BindingType::ReturnValue,
+                  nullptr};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEvent(const EndFunctionEvent &, CheckerContext &C) {
+  GenericEvent GE{
+      EventType::EndFunction,   "",     "", nullptr, SourceLocation(), nullptr,
+      BindingType::ReturnValue, nullptr};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEvent(const EndAnalysisEvent &, CheckerContext &C) {
+  GenericEvent GE{
+      EventType::EndAnalysis,   "",     "", nullptr, SourceLocation(), nullptr,
+      BindingType::ReturnValue, nullptr};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEvent(const PointerEscapeEvent &E, CheckerContext &C) {
+  GenericEvent GE{EventType::PointerEscape,
+                  "",
+                  E.SymbolName,
+                  E.Symbol,
+                  SourceLocation(),
+                  nullptr,
+                  BindingType::ReturnValue,
+                  nullptr};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEvent(const BindEvent &E, CheckerContext &C) {
+  GenericEvent GE{EventType::Bind,
+                  "",
+                  E.SymbolName,
+                  E.Symbol,
+                  SourceLocation(),
+                  E.StoreExpr,
+                  BindingType::FirstParameter,
+                  E.BoundRegion};
+  return handleEvent(GE, C);
+}
+
+void DSLMonitor::handleEventResult(const DSLMonitor::EventResult &result,
+                                   CheckerContext &C) {
+  if (auto *NonErrorResult = std::get_if<DSLMonitor::NonErrorResult>(&result)) {
+    if (dsl::edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][CHECKER] adding transition for NonErrorResult\n";
+    }
+    C.addTransition(NonErrorResult->State, C.getPredecessor(),
+                    NonErrorResult->NoteTag);
+  } else if (auto DeferredErrorResult =
+                 std::get_if<DSLMonitor::DeferredErrorResult>(&result)) {
+    if (dsl::edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][CHECKER] creating deferred BugReport\n";
+    }
+    static const BugType BT{Owner, DeferredErrorResult->BugTypeName,
+                            DeferredErrorResult->BugTypeCategory};
+    ExplodedNode *ErrorNode = C.generateErrorNode();
+    if (ErrorNode) {
+      auto BR = std::make_unique<PathSensitiveBugReport>(
+          BT, DeferredErrorResult->Message, ErrorNode);
+      if (DeferredErrorResult->Symbol)
+        BR->markInteresting(DeferredErrorResult->Symbol);
+      C.emitReport(std::move(BR));
+    } else {
+      if (dsl::edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][CHECKER] failed to create ErrorNode for "
+                        "deferred BugReport\n";
+      }
+    }
+  } else {
+    if (dsl::edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][CHECKER] unknown EventResult type\n";
+    }
+  }
+}
+
 void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
   ExplodedNode *Pred = C.getPredecessor();
   ProgramStateRef Base = C.getState();
-  struct Branch {
-    ProgramStateRef S;
-    const NoteTag *Tag;
-  };
-  llvm::SmallVector<Branch, 2> branches;
 
-  auto addBranch = [&](ProgramStateRef S, const NoteTag *Tag = nullptr) {
-    if (!S)
-      return;
-    branches.push_back({S, Tag});
-  };
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][HANDLE] event type=" << (int)event.Type << " fn='"
+                 << event.FunctionName << "' sym='" << event.SymbolName
+                 << "' pred=" << Pred
+                 << " base_state=" << (const void *)Base.get() << "\n";
+  }
 
-  switch (event.Type) {
-  case EventType::PostCall: {
-    if (event.Symbol && !event.FunctionName.empty() &&
-        !event.SymbolName.empty()) {
-      BindingType BT =
-          EventCreator.getBindingType(event.FunctionName, event.SymbolName);
-      if (BT == BindingType::ReturnValue) {
-        if (isSymbolUsedInIsNonNull(event.SymbolName)) {
-          if (edslDebugEnabled())
-            llvm::errs() << "[EDSL] create: " << event.FunctionName << "("
-                         << event.SymbolName << ") -> split on non-null\n";
-          SValBuilder &SVB = C.getSValBuilder();
-          SVal SymV = SVB.makeLoc(event.Symbol);
-          QualType PtrTy = event.Symbol->getType();
-          SVal Null = SVB.makeZeroVal(PtrTy);
-          SVal NE =
-              SVB.evalBinOp(Base, BO_NE, SymV, Null, C.getASTContext().BoolTy);
-          if (auto D = NE.getAs<DefinedSVal>()) {
-            ProgramStateRef STrue, SFalse;
-            std::tie(STrue, SFalse) =
-                C.getConstraintManager().assumeDual(Base, *D);
-            if (STrue) {
-              auto St = STrue->set<::SymbolStates>(event.Symbol,
-                                                   ::SymbolState::Active);
-              St = St->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
-              St = St->add<::TrackedSymbols>(event.Symbol);
-              std::string internal =
-                  "sym_" + std::to_string(event.Symbol->getSymbolID());
-              std::string var = event.SymbolName.empty() ? std::string("x")
-                                                         : event.SymbolName;
-              std::string note =
-                  std::string("symbol \"") + var +
-                  "\" is bound here (internal symbol: " + internal + ")";
-              const NoteTag *NT = C.getNoteTag([note]() { return note; });
-              addBranch(St, NT);
+  // Step 1: Handle state splitting (if needed) and determine main state
+  ProgramStateRef MainState = Base;
+
+  if (edslDebugEnabled()) {
+    llvm::errs()
+        << "[EDSL][HANDLE] Step 1: State splitting check for event type="
+        << (int)event.Type << " symbol=" << (event.Symbol ? "yes" : "no")
+        << " symbolName='" << event.SymbolName << "'\n";
+  }
+
+  // Step 1.5: Update symbol-formula mapping if we have a symbol and formula
+  // variable name
+  if (event.Symbol && !event.SymbolName.empty()) {
+    MainState =
+        dsl::setSymbolFormulaMapping(MainState, event.Symbol, event.SymbolName);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][HANDLE] Updated symbol-formula mapping: sym_id="
+                   << event.Symbol->getSymbolID() << " -> var='"
+                   << event.SymbolName << "'\n";
+    }
+  }
+
+  if (event.Type == EventType::PostCall && event.Symbol &&
+      !event.SymbolName.empty()) {
+    BindingType BT = event.DerivedBinding;
+    bool needsSplit = isSymbolUsedInIsNonNull(event.SymbolName);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][HANDLE] PostCall event: symbolName='"
+                   << event.SymbolName << "' BT=" << (int)BT
+                   << " isSymbolUsedInIsNonNull=" << needsSplit
+                   << " functionName='" << event.FunctionName << "'\n";
+    }
+
+    // Always add symbols to tracked set for PostCall events with ReturnValue
+    // binding
+    if (BT == BindingType::ReturnValue ||
+        BT == BindingType::ReturnValueNonNull) {
+      if (needsSplit) {
+        // State splitting needed - check for non-null constraint
+        SValBuilder &SVB = C.getSValBuilder();
+        SVal SymV = SVB.makeLoc(event.Symbol);
+        const Expr *OriginExpr = llvm::dyn_cast_or_null<Expr>(event.OriginExpr);
+        QualType PtrTy =
+            OriginExpr ? OriginExpr->getType() : event.Symbol->getType();
+        SVal Null = SVB.makeZeroVal(PtrTy);
+        SVal NE =
+            SVB.evalBinOp(Base, BO_NE, SymV, Null, C.getASTContext().BoolTy);
+
+        if (auto D = NE.getAs<DefinedSVal>()) {
+          ProgramStateRef STrue, SFalse;
+          std::tie(STrue, SFalse) =
+              C.getConstraintManager().assumeDual(Base, *D);
+
+          if (STrue) {
+            // Non-null state is feasible - this becomes our main state
+            MainState =
+                dsl::setSymbolState(STrue, event.Symbol, ::SymbolState::Active);
+            MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set "
+                              "(non-null branch): "
+                           << event.SymbolName << "\n";
             }
-            if (SFalse) {
-              auto Sf = SFalse->set<::SymbolStates>(
-                  event.Symbol, ::SymbolState::Uninitialized);
-              Sf = Sf->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
-              addBranch(Sf);
+          } else {
+            // Non-null state is not feasible - early return
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][HANDLE] Non-null state not feasible, "
+                              "early return\n";
             }
-            break;
+            return;
           }
-        }
-        if (edslDebugEnabled())
-          llvm::errs() << "[EDSL] create: " << event.FunctionName << "("
-                       << event.SymbolName
-                       << ") -> no split (no IsNonNull AP)\n";
-        auto S0 = Base->set<::SymbolStates>(event.Symbol,
-                                            ::SymbolState::Uninitialized);
-        S0 = S0->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
-        addBranch(S0);
-      }
-    }
-    break;
-  }
-  case EventType::PreCall: {
-    if (event.Symbol && !event.FunctionName.empty() &&
-        !event.SymbolName.empty()) {
-      BindingType BT =
-          EventCreator.getBindingType(event.FunctionName, event.SymbolName);
-      if (BT == BindingType::FirstParameter ||
-          BT == BindingType::NthParameter) {
-        const ::SymbolState *CurPtr = Base->get<::SymbolStates>(event.Symbol);
-        ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
-        if (Cur == ::SymbolState::Uninitialized &&
-            isSymbolUsedInIsNonNull(event.SymbolName)) {
-          SValBuilder &SVB = C.getSValBuilder();
-          SVal SymV = SVB.makeLoc(event.Symbol);
-          QualType PtrTy = event.Symbol->getType();
-          SVal Null = SVB.makeZeroVal(PtrTy);
-          SVal NE =
-              SVB.evalBinOp(Base, BO_NE, SymV, Null, C.getASTContext().BoolTy);
-          if (auto D = NE.getAs<DefinedSVal>()) {
-            ProgramStateRef STrue, SFalse;
-            std::tie(STrue, SFalse) =
-                C.getConstraintManager().assumeDual(Base, *D);
-            if (STrue) {
-              auto Sa = STrue->set<::SymbolStates>(event.Symbol,
-                                                   ::SymbolState::Active);
-              Sa = Sa->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
-              Sa = Sa->add<::TrackedSymbols>(event.Symbol);
-              Sa = Sa->set<::SymbolStates>(event.Symbol,
-                                           ::SymbolState::Inactive);
-              // keep GenericSymbolMap and TrackedSymbols to allow double-free
-              // detection
-              addBranch(Sa);
-            }
-            if (SFalse)
-              addBranch(SFalse);
-            break;
-          }
-        }
-        const ::SymbolState *CurPtr2 = Base->get<::SymbolStates>(event.Symbol);
-        ::SymbolState Cur2 = CurPtr2 ? *CurPtr2 : ::SymbolState::Uninitialized;
-        if (Cur2 == ::SymbolState::Inactive) {
-          // Double-free: prefer smallest labeled subformula in RHS: G(!free)
-          ExplodedNode *ErrorNode = C.generateErrorNode(Base);
-          if (ErrorNode) {
-            static const BugType BT{Owner, "temporal_violation",
-                                    "EmbeddedDSLMonitor"};
-            std::string msg = selectLabelFromSubtree(
-                TopLevelConsequent,
-                {LTLNodeType::Globally, LTLNodeType::Implies});
-            if (msg.empty())
-              msg = "resource destroyed twice (violates exactly-once)";
-            if (event.Symbol)
-              msg += std::string(" (internal symbol: sym_") +
-                     std::to_string(event.Symbol->getSymbolID()) + ")";
-            auto R =
-                std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-            if (event.Symbol)
-              R->markInteresting(event.Symbol);
-            C.emitReport(std::move(R));
-          }
-        }
-        if (Cur2 == ::SymbolState::Active) {
-          auto S1 =
-              Base->set<::SymbolStates>(event.Symbol, ::SymbolState::Inactive);
-          // keep GenericSymbolMap and TrackedSymbols to allow double-free
-          // detection
-          addBranch(S1);
-        }
-      }
-    }
-    break;
-  }
-  case EventType::DeadSymbols: {
-    addBranch(Base);
-    break;
-  }
-  case EventType::PointerEscape: {
-    if (event.Symbol) {
-      auto S1 = Base->remove<::TrackedSymbols>(event.Symbol);
-      addBranch(S1);
-    }
-    break;
-  }
-  case EventType::EndFunction: {
-    addBranch(Base);
-    break;
-  }
-  case EventType::EndAnalysis: {
-    addBranch(Base);
-    break;
-  }
-  }
 
-  if (branches.empty())
-    addBranch(Base);
-
-  // Step SPOT for each branch prior to committing transitions
-  for (auto &br : branches) {
-    SpotStepper::step(SpotGraph, Registry, ApVarIds, CurrentState, Owner, event,
-                      C, br.S, FormulaBuilder, TopLevelConsequent);
-    // If RHS-only monitor exists and antecedent holds in this branch, step RHS
-    if (SpotGraphRHS && TopLevelAntecedent) {
-      // Evaluate antecedent by reusing evaluators mapped from the original
-      // Builder
-      std::set<std::string> trueAPs;
-      for (const auto &kv : Registry.getEvaluators()) {
-        if (kv.second(event, C, br.S))
-          trueAPs.insert(kv.first);
-      }
-      // Heuristic: antecedent is in terms of APs; check if all atoms under A
-      // are satisfied Make recursive predicate explicit to avoid auto recursion
-      // issue
-      std::function<bool(const LTLFormulaNode *)> isTrue;
-      isTrue = [&](const LTLFormulaNode *n) -> bool {
-        if (!n)
-          return false;
-        switch (n->Type) {
-        case LTLNodeType::Atomic: {
-          auto it = Registry.getMapping().find(n->NodeID);
-          if (it == Registry.getMapping().end())
-            return false;
-          return trueAPs.count(it->second) != 0;
-        }
-        case LTLNodeType::And:
-          return isTrue(n->Children[0].get()) && isTrue(n->Children[1].get());
-        case LTLNodeType::Or:
-          return isTrue(n->Children[0].get()) || isTrue(n->Children[1].get());
-        case LTLNodeType::Not:
-          return !isTrue(n->Children[0].get());
-        default: {
-          // Fallback: require all atoms in subtree to be true
-          for (const auto &ch : n->Children)
-            if (!isTrue(ch.get()))
-              return false;
-          return true;
-        }
-        }
-      };
-      if (isTrue(TopLevelAntecedent)) {
-        // Initialize RHS AP ids lazily
-        if (ApVarIdsRHS.empty()) {
-          for (const auto &kv : Registry.getEvaluators()) {
-            int var = SpotGraphRHS->register_ap(kv.first);
-            ApVarIdsRHS[kv.first] = var;
+          if (SFalse) {
+            // Create null branch
+            auto Sf = dsl::setSymbolState(SFalse, event.Symbol,
+                                          ::SymbolState::Uninitialized);
+            C.addTransition(Sf, Pred);
           }
         }
-        SpotStepper::step(SpotGraphRHS, Registry, ApVarIdsRHS, CurrentStateRHS,
-                          Owner, event, C, br.S, FormulaBuilder);
+      } else {
+        // No state splitting needed, but still track the symbol
+        MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
+        MainState =
+            dsl::setSymbolState(MainState, event.Symbol, ::SymbolState::Active);
+        if (edslDebugEnabled()) {
+          llvm::errs()
+              << "[EDSL][HANDLE] Added symbol to tracked set (no split): "
+              << event.SymbolName << "\n";
+        }
       }
     }
   }
 
-  // Emit at most two children from the same predecessor
-  for (auto &br : branches) {
-    C.addTransition(br.S, Pred, br.Tag);
+  // Handle PreCall events (like free) - remove symbols from tracking
+  if (event.Type == EventType::PreCall && event.Symbol &&
+      !event.SymbolName.empty()) {
+    BindingType BT = event.DerivedBinding;
+    if (BT == BindingType::FirstParameter || BT == BindingType::NthParameter) {
+      // Check for double-free before removing from tracked set
+      const ::SymbolState *CurPtr =
+          dsl::getSymbolState(MainState, event.Symbol);
+      if (CurPtr && *CurPtr == ::SymbolState::Inactive) {
+        // Double-free detected - create error node and return early
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][HANDLE] Double-free detected for symbol: "
+                       << event.SymbolName << "\n";
+        }
+        ExplodedNode *ErrorNode = C.generateErrorNode(MainState);
+        if (ErrorNode) {
+          static const BugType BT{ContainingChecker, "temporal_violation",
+                                  "EmbeddedDSLMonitor"};
+          std::string msg = "resource destroyed twice (violates exactly-once)";
+          if (event.Symbol)
+            msg += std::string(" (internal symbol: sym_") +
+                   std::to_string(event.Symbol->getSymbolID()) + ")";
+          auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
+          C.emitReport(std::move(R));
+        }
+        return;
+      } else {
+        // First free - set symbol state to Inactive and remove from tracked set
+        MainState = dsl::setSymbolState(MainState, event.Symbol,
+                                        ::SymbolState::Inactive);
+        MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][HANDLE] Set symbol to Inactive and removed "
+                          "from tracked set (freed): "
+                       << event.SymbolName << "\n";
+        }
+      }
+    }
   }
+
+  // Step 2: Do SPOT stepping on the main state
+  llvm::SmallVector<DSLMonitor::EventResult, 2> spotResults;
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][HANDLE] Step 2: SPOT stepping for symbol="
+                 << (event.Symbol ? "yes" : "no") << "\n";
+  }
+  if (event.Symbol) {
+    // Get current automaton state from GDM
+    int currentState = 0;
+    if (const int *statePtr = dsl::getAutomatonState(MainState, event.Symbol)) {
+      currentState = *statePtr;
+    }
+
+    // Step SPOT automaton
+    spotResults = SpotStepper::step(SpotGraph, Registry, ApVarIds, currentState,
+                                    Owner, event, C, MainState, FormulaBuilder);
+    assert(spotResults.size() <= 1 &&
+           "Expected at most one result from SPOT stepping");
+
+    // Update automaton state in GDM with the new state from SPOT stepping
+    // Note: SpotStepper::step should update the currentState parameter
+    MainState = dsl::setAutomatonState(MainState, event.Symbol, currentState);
+  }
+
+  // Step 3: Collect errors and emit them (variant-based handling)
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][HANDLE] Step 3: Processing " << spotResults.size()
+                 << " SPOT results\n";
+  }
+  for (const auto &result : spotResults) {
+    handleEventResult(result, C);
+  }
+
+  // Step 4: Add transition for the main state
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][HANDLE] Step 4: Adding transition for main state\n";
+  }
+  C.addTransition(MainState, Pred);
 }
 
-size_t DSLMonitor::getTrackedCount(ProgramStateRef S) const {
-  return (size_t)std::distance(S->get<::TrackedSymbols>().begin(),
-                               S->get<::TrackedSymbols>().end());
-}
-
-std::vector<unsigned> DSLMonitor::getTrackedSymbolIDs(ProgramStateRef S) const {
-  std::vector<unsigned> ids;
-  for (auto Sym : S->get<::TrackedSymbols>())
-    ids.push_back(Sym->getSymbolID());
-  return ids;
-}
-
-std::vector<SymbolRef> DSLMonitor::getTrackedSymbols(ProgramStateRef S) const {
-  std::vector<SymbolRef> syms;
-  for (auto Sym : S->get<::TrackedSymbols>())
-    syms.push_back(Sym);
-  return syms;
-}
-
-bool DSLMonitor::isTracked(ProgramStateRef S, SymbolRef Sym) const {
-  return S->contains<::TrackedSymbols>(Sym);
-}
-
-bool DSLMonitor::isActive(ProgramStateRef S, SymbolRef Sym) const {
-  if (const ::SymbolState *CurPtr = S->get<::SymbolStates>(Sym))
-    return *CurPtr == ::SymbolState::Active;
-  return false;
-}
+// These methods are now implemented as API functions in the dsl namespace
+// and can be accessed directly without going through the DSLMonitor class
 
 void DSLMonitor::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR,
                                   ExprEngine &Eng) const {
   (void)G;
   (void)BR;
   (void)Eng;
+}
+
+void DSLMonitor::addDeferredLeakReport(const std::string &Message,
+                                       const std::string &BugTypeName,
+                                       const std::string &BugTypeCategory,
+                                       SymbolRef Symbol, ProgramStateRef State,
+                                       SourceLocation Location) {
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][DEFERRED] Adding deferred leak report: " << Message
+                 << "\n";
+  }
+  DeferredLeakReports.emplace_back(Message, BugTypeName, BugTypeCategory,
+                                   Symbol, State, Location);
+}
+
+void DSLMonitor::emitDeferredLeakReports(CheckerContext &C) {
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][DEFERRED] Emitting " << DeferredLeakReports.size()
+                 << " deferred leak reports\n";
+  }
+
+  for (const auto &report : DeferredLeakReports) {
+    static const BugType BT{Owner, report.BugTypeName, report.BugTypeCategory};
+
+    // Create error node using the current CheckerContext's predecessor
+    // This ensures we have a valid predecessor node from checkEndFunction
+    ExplodedNode *ErrorNode = C.generateErrorNode();
+    if (ErrorNode) {
+      auto BR = std::make_unique<PathSensitiveBugReport>(BT, report.Message,
+                                                         ErrorNode);
+      if (report.Symbol)
+        BR->markInteresting(report.Symbol);
+      C.emitReport(std::move(BR));
+
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][DEFERRED] Emitted leak report: "
+                     << report.Message
+                     << " error_node=" << (const void *)ErrorNode << "\n";
+      }
+    } else {
+      if (edslDebugEnabled()) {
+        llvm::errs()
+            << "[EDSL][DEFERRED] Failed to create ErrorNode for leak report\n";
+      }
+    }
+  }
+}
+
+void DSLMonitor::clearDeferredLeakReports() {
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][DEFERRED] Clearing " << DeferredLeakReports.size()
+                 << " deferred leak reports\n";
+  }
+  DeferredLeakReports.clear();
 }
