@@ -54,14 +54,21 @@ SpotBuildResult buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder);
 class DSLMonitor {
   // SPOT temporal monitor
   spot::twa_graph_ptr SpotGraph;
+  // Optional RHS-only monitor for G(A -> B): monitor B when A holds
+  spot::twa_graph_ptr SpotGraphRHS;
   APRegistry Registry;
   // Cache of AP name -> BDD var id to avoid per-step registrations
   std::map<std::string, int> ApVarIds;
+  std::map<std::string, int> ApVarIdsRHS;
   int CurrentState = 0;
+  int CurrentStateRHS = 0;
   const CheckerBase *Owner; // for diagnostics
   // Inlined pieces of the runtime/framework we need here
   LTLFormulaBuilder FormulaBuilder;
   BindingDrivenEventCreator EventCreator;
+  // Top-level antecedent and consequent pointers if formula is G(A -> B)
+  const LTLFormulaNode *TopLevelAntecedent = nullptr;
+  const LTLFormulaNode *TopLevelConsequent = nullptr;
 
 public:
   DSLMonitor(spot::twa_graph_ptr M, APRegistry Reg, const CheckerBase *O,

@@ -301,8 +301,41 @@ DSLMonitor::create(std::unique_ptr<PropertyDefinition> Property,
                    const CheckerBase *O) {
   auto fb = Property->getFormulaBuilder();
   auto res = dsl::buildSpotMonitorFromDSL(fb);
-  return std::make_unique<DSLMonitor>(
+  auto M = std::make_unique<DSLMonitor>(
       std::move(res.Monitor), std::move(res.Registry), O, std::move(fb));
+  // Try to detect top-level G(Implies(A,B)) and build RHS-only monitor
+  const LTLFormulaNode *root = M->getFormulaBuilder().getRootNode();
+  if (root && root->Type == LTLNodeType::Globally &&
+      root->Children.size() == 1) {
+    const LTLFormulaNode *imp = root->Children[0].get();
+    if (imp && imp->Type == LTLNodeType::Implies && imp->Children.size() == 2) {
+      M->TopLevelAntecedent = imp->Children[0].get();
+      M->TopLevelConsequent = imp->Children[1].get();
+      // Build a temporary builder for RHS only
+      LTLFormulaBuilder rhsB = M->getFormulaBuilder();
+      // Create a shallow copy that uses the RHS as root: we rely on
+      // buildSpotFormulaString walking from that node We cheat by building a
+      // separate SpotBuildResult with the same registry (AP names must match)
+      APRegistry dummy; // ignored, we will reuse M->Registry for evaluation
+      std::string rhsPSL = [&]() {
+        APRegistry tmpReg;
+        return buildSpotFormulaString(M->TopLevelConsequent, tmpReg);
+      }();
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][SPOT] RHS PSL: " << rhsPSL << "\n";
+      }
+      // Parse RHS PSL into its own monitor graph (share dict with main graph by
+      // re-parsing)
+      spot::parsed_formula pf = spot::parse_infix_psl(rhsPSL);
+      if (!pf.format_errors(std::cerr)) {
+        spot::translator trans;
+        trans.set_type(spot::postprocessor::Monitor);
+        trans.set_pref(spot::postprocessor::Deterministic);
+        M->SpotGraphRHS = trans.run(pf.f);
+      }
+    }
+  }
+  return M;
 }
 
 namespace {
@@ -612,6 +645,56 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
   for (auto &br : branches) {
     SpotStepper::step(SpotGraph, Registry, ApVarIds, CurrentState, Owner, event,
                       C, br.S, FormulaBuilder);
+    // If RHS-only monitor exists and antecedent holds in this branch, step RHS
+    if (SpotGraphRHS && TopLevelAntecedent) {
+      // Evaluate antecedent by reusing evaluators mapped from the original
+      // Builder
+      std::set<std::string> trueAPs;
+      for (const auto &kv : Registry.getEvaluators()) {
+        if (kv.second(event, C, br.S))
+          trueAPs.insert(kv.first);
+      }
+      // Heuristic: antecedent is in terms of APs; check if all atoms under A
+      // are satisfied Make recursive predicate explicit to avoid auto recursion
+      // issue
+      std::function<bool(const LTLFormulaNode *)> isTrue;
+      isTrue = [&](const LTLFormulaNode *n) -> bool {
+        if (!n)
+          return false;
+        switch (n->Type) {
+        case LTLNodeType::Atomic: {
+          auto it = Registry.getMapping().find(n->NodeID);
+          if (it == Registry.getMapping().end())
+            return false;
+          return trueAPs.count(it->second) != 0;
+        }
+        case LTLNodeType::And:
+          return isTrue(n->Children[0].get()) && isTrue(n->Children[1].get());
+        case LTLNodeType::Or:
+          return isTrue(n->Children[0].get()) || isTrue(n->Children[1].get());
+        case LTLNodeType::Not:
+          return !isTrue(n->Children[0].get());
+        default: {
+          // Fallback: require all atoms in subtree to be true
+          for (const auto &ch : n->Children)
+            if (!isTrue(ch.get()))
+              return false;
+          return true;
+        }
+        }
+      };
+      if (isTrue(TopLevelAntecedent)) {
+        // Initialize RHS AP ids lazily
+        if (ApVarIdsRHS.empty()) {
+          for (const auto &kv : Registry.getEvaluators()) {
+            int var = SpotGraphRHS->register_ap(kv.first);
+            ApVarIdsRHS[kv.first] = var;
+          }
+        }
+        SpotStepper::step(SpotGraphRHS, Registry, ApVarIdsRHS, CurrentStateRHS,
+                          Owner, event, C, br.S, FormulaBuilder);
+      }
+    }
   }
 
   // Emit at most two children from the same predecessor
