@@ -19,13 +19,13 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
 #include <set>
 #include <string>
 #include <vector>
-#include <cstdlib>
 
 // Generic symbol state for any temporal property
 enum class SymbolState {
@@ -52,10 +52,8 @@ REGISTER_MAP_WITH_PROGRAMSTATE(SymbolStates, clang::ento::SymbolRef,
                                SymbolState)
 REGISTER_MAP_WITH_PROGRAMSTATE(CrossContextSymbolMap, std::string,
                                clang::ento::SymbolRef)
-// Symbols that should report leak at function end (to place diag at closing brace)
-REGISTER_SET_WITH_PROGRAMSTATE(PendingLeakSet, clang::ento::SymbolRef)
-// Symbols that became dead along a path; finalize at EndFunction for brace location
-REGISTER_SET_WITH_PROGRAMSTATE(FunctionEndLeakSet, clang::ento::SymbolRef)
+// Tracked symbols under the property (for enumeration at analysis end)
+REGISTER_SET_WITH_PROGRAMSTATE(TrackedSymbols, clang::ento::SymbolRef)
 // Map tracked symbols to the last known bound region for nullness checks
 REGISTER_MAP_WITH_PROGRAMSTATE(SymbolToRegionMap, clang::ento::SymbolRef,
                                const clang::ento::MemRegion *)
@@ -81,7 +79,6 @@ static inline bool edslDebugEnabled() {
   }
   return Enabled;
 }
-
 
 // Forward declarations
 class LTLFormulaNode;
@@ -410,7 +407,8 @@ NotNull(std::shared_ptr<LTLFormulaNode> var) {
 // Predicate atom: symbol is provably non-null along the current path
 inline std::shared_ptr<LTLFormulaNode>
 IsNonNull(const std::string &symbolName) {
-  auto node = std::make_shared<AtomicNode>("__isnonnull", SymbolBinding(BindingType::Variable, symbolName));
+  auto node = std::make_shared<AtomicNode>(
+      "__isnonnull", SymbolBinding(BindingType::Variable, symbolName));
   return node;
 }
 
@@ -1117,7 +1115,8 @@ public:
   }
 
   // Find nearest ancestor (including self) carrying a diagnostic label
-  const LTLFormulaNode *findNearestDiagnosticAncestor(const LTLFormulaNode *node) const {
+  const LTLFormulaNode *
+  findNearestDiagnosticAncestor(const LTLFormulaNode *node) const {
     const LTLFormulaNode *cur = node;
     while (cur) {
       if (!cur->DiagnosticLabel.empty())
@@ -1217,10 +1216,13 @@ private:
 
 // Generic event types for the framework
 enum class EventType {
-  PostCall,   // Function call completed
-  PreCall,    // Function call about to start
-  DeadSymbols, // Symbols are no longer reachable
-  EndFunction, // Function is ending; finalize obligations for this frame
+  PostCall,     // Function call completed
+  PreCall,      // Function call about to start
+  DeadSymbols,  // Symbols are no longer reachable
+  EndFunction,  // Function is ending; legacy event (no longer used for
+                // violations)
+  EndAnalysis,  // Analysis is ending; finalize obligations for still-active
+                // symbols
   PointerEscape // Symbol escapes current function/frame ownership
 };
 
@@ -1272,18 +1274,32 @@ public:
         FormulaBuilder(prop->getFormulaBuilder()), Checker(C) {
     // Populate binding-driven event creator with formula information
     FormulaBuilder.populateBindingDrivenEventCreator(EventCreator);
-    // Temporal monitoring is handled by the SPOT-based monitor in the checker TU.
+    // Temporal monitoring is handled by the SPOT-based monitor in the checker
+    // TU.
   }
 
   void handleEvent(const GenericEvent &event, CheckerContext &C) {
     if (edslDebugEnabled()) {
       llvm::errs() << "[EDSL] handleEvent: type=";
       switch (event.Type) {
-      case EventType::PostCall: llvm::errs() << "PostCall"; break;
-      case EventType::PreCall: llvm::errs() << "PreCall"; break;
-      case EventType::DeadSymbols: llvm::errs() << "DeadSymbols"; break;
-      case EventType::EndFunction: llvm::errs() << "EndFunction"; break;
-      case EventType::PointerEscape: llvm::errs() << "PointerEscape"; break;
+      case EventType::PostCall:
+        llvm::errs() << "PostCall";
+        break;
+      case EventType::PreCall:
+        llvm::errs() << "PreCall";
+        break;
+      case EventType::DeadSymbols:
+        llvm::errs() << "DeadSymbols";
+        break;
+      case EventType::EndFunction:
+        llvm::errs() << "EndFunction";
+        break;
+      case EventType::EndAnalysis:
+        llvm::errs() << "EndAnalysis";
+        break;
+      case EventType::PointerEscape:
+        llvm::errs() << "PointerEscape";
+        break;
       }
       llvm::errs() << ", fn=" << event.FunctionName
                    << ", sym=" << event.SymbolName << "\n";
@@ -1294,72 +1310,127 @@ public:
 
     switch (event.Type) {
     case EventType::PostCall: {
-      if (event.Symbol && !event.FunctionName.empty() && !event.SymbolName.empty()) {
+      if (event.Symbol && !event.FunctionName.empty() &&
+          !event.SymbolName.empty()) {
         // Treat a PostCall bound to a ReturnValue as a creation event
-        BindingType BT = EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+        BindingType BT =
+            EventCreator.getBindingType(event.FunctionName, event.SymbolName);
         if (BT == BindingType::ReturnValue) {
-            // Split state on non-nullness of the returned symbol if this is the first introduction
+          // Perform splitting only if the formula actually uses IsNonNull(x)
+          if (isSymbolUsedInIsNonNull(event.SymbolName)) {
             if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL] create: " << event.FunctionName << "(" << event.SymbolName << ") -> split on non-null\n";
+              llvm::errs() << "[EDSL] create: " << event.FunctionName << "("
+                           << event.SymbolName << ") -> split on non-null\n";
             }
             SValBuilder &SVB = C.getSValBuilder();
             SVal SymV = SVB.makeLoc(event.Symbol);
             QualType PtrTy = event.Symbol->getType();
             SVal Null = SVB.makeZeroVal(PtrTy);
-            SVal NE = SVB.evalBinOp(C.getState(), BO_NE, SymV, Null, C.getASTContext().BoolTy);
-            auto D = NE.getAs<DefinedSVal>();
-            if (!D) {
-              // Fallback: mark as Potential without splitting if condition is not defined
-              State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Uninitialized);
-              C.addTransition(State);
-              return;
+            SVal NE = SVB.evalBinOp(C.getState(), BO_NE, SymV, Null,
+                                    C.getASTContext().BoolTy);
+            if (auto D = NE.getAs<DefinedSVal>()) {
+              ProgramStateRef STrue, SFalse;
+              std::tie(STrue, SFalse) =
+                  C.getConstraintManager().assumeDual(C.getState(), *D);
+              if (STrue) {
+                auto St = STrue->set<::SymbolStates>(event.Symbol,
+                                                     ::SymbolState::Active);
+                // Remember the formula variable name and track symbol
+                St =
+                    St->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
+                St = St->add<::TrackedSymbols>(event.Symbol);
+                if (edslDebugEnabled()) {
+                  unsigned cnt =
+                      std::distance(St->get<::TrackedSymbols>().begin(),
+                                    St->get<::TrackedSymbols>().end());
+                  llvm::errs()
+                      << "[EDSL] track: add TrackedSymbols sym_id="
+                      << event.Symbol->getSymbolID() << " name='"
+                      << event.SymbolName
+                      << "' predNode=" << (const void *)C.getPredecessor()
+                      << " tracked_count=" << cnt << "\n";
+                }
+                // Note-only transition for correlation
+                std::string internal =
+                    "sym_" + std::to_string(event.Symbol->getSymbolID());
+                std::string var = event.SymbolName.empty() ? std::string("x")
+                                                           : event.SymbolName;
+                std::string note =
+                    std::string("symbol \"") + var +
+                    "\" is bound here (internal symbol: " + internal + ")";
+                const NoteTag *NT = C.getNoteTag([note]() { return note; });
+                C.addTransition(St, NT);
+                // Ensure the subsequent operations use the latest state on this
+                // path. For CSA, addTransition creates a new node; subsequent
+                // modeling will observe it via C.getState() on the next
+                // callback.
+              }
+              if (SFalse) {
+                auto Sf = SFalse->set<::SymbolStates>(
+                    event.Symbol, ::SymbolState::Uninitialized);
+                Sf =
+                    Sf->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
+                C.addTransition(Sf);
+              }
+              return; // handled both branches
             }
-            ProgramStateRef STrue, SFalse;
-            std::tie(STrue, SFalse) = C.getConstraintManager().assumeDual(C.getState(), *D);
-            if (STrue) {
-              auto St = STrue->set<::SymbolStates>(event.Symbol, ::SymbolState::Active);
-              St = St->add<::PendingLeakSet>(event.Symbol);
-              std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
-              std::string var = event.SymbolName.empty() ? std::string("x") : event.SymbolName;
-              std::string note = std::string("symbol \"") + var + "\" is bound here (internal symbol: " + internal + ")";
-              const NoteTag *NT = C.getNoteTag([note]() { return note; });
-              C.addTransition(St, NT);
-            }
-            if (SFalse) {
-              auto Sf = SFalse->set<::SymbolStates>(event.Symbol, ::SymbolState::Uninitialized);
-              C.addTransition(Sf);
-            }
-            // Stop further processing in this branch: we emitted both successors
-            return;
+          }
+          // If no IsNonNull AP in formula, avoid forcing splits
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL] create: " << event.FunctionName << "("
+                         << event.SymbolName
+                         << ") -> no split (no IsNonNull AP)\n";
+          }
+          // Lightweight bookkeeping only
+          State = State->set<::SymbolStates>(event.Symbol,
+                                             ::SymbolState::Uninitialized);
+          State =
+              State->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
+          C.addTransition(State);
+          return;
         }
       }
       break;
     }
     case EventType::PreCall: {
-      if (event.Symbol && !event.FunctionName.empty() && !event.SymbolName.empty()) {
+      if (event.Symbol && !event.FunctionName.empty() &&
+          !event.SymbolName.empty()) {
         // Treat a PreCall bound to a parameter as a destruction event
-        BindingType BT = EventCreator.getBindingType(event.FunctionName, event.SymbolName);
-        if (BT == BindingType::FirstParameter || BT == BindingType::NthParameter) {
-          const ::SymbolState *CurPtr = State->get<::SymbolStates>(event.Symbol);
+        BindingType BT =
+            EventCreator.getBindingType(event.FunctionName, event.SymbolName);
+        if (BT == BindingType::FirstParameter ||
+            BT == BindingType::NthParameter) {
+          const ::SymbolState *CurPtr =
+              State->get<::SymbolStates>(event.Symbol);
           ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
-          // If Potential, split the state on non-null and proceed accordingly
-          if (Cur == ::SymbolState::Uninitialized) {
+          // If Potential and IsNonNull present for symbol, split on non-null
+          if (Cur == ::SymbolState::Uninitialized &&
+              isSymbolUsedInIsNonNull(event.SymbolName)) {
             SValBuilder &SVB = C.getSValBuilder();
             SVal SymV = SVB.makeLoc(event.Symbol);
             QualType PtrTy = event.Symbol->getType();
             SVal Null = SVB.makeZeroVal(PtrTy);
-            SVal NE = SVB.evalBinOp(C.getState(), BO_NE, SymV, Null, C.getASTContext().BoolTy);
+            SVal NE = SVB.evalBinOp(C.getState(), BO_NE, SymV, Null,
+                                    C.getASTContext().BoolTy);
             if (auto D = NE.getAs<DefinedSVal>()) {
-              ProgramStateRef STrue, SFalse; std::tie(STrue, SFalse) = C.getConstraintManager().assumeDual(C.getState(), *D);
+              ProgramStateRef STrue, SFalse;
+              std::tie(STrue, SFalse) =
+                  C.getConstraintManager().assumeDual(C.getState(), *D);
               if (STrue) {
-                auto Sa = STrue->set<::SymbolStates>(event.Symbol, ::SymbolState::Active);
-                Sa = Sa->add<::PendingLeakSet>(event.Symbol);
-                // Perform destruction on the non-null branch
-                Sa = Sa->set<::SymbolStates>(event.Symbol, ::SymbolState::Inactive);
+                auto Sa = STrue->set<::SymbolStates>(event.Symbol,
+                                                     ::SymbolState::Active);
+                Sa =
+                    Sa->set<::GenericSymbolMap>(event.Symbol, event.SymbolName);
+                Sa = Sa->add<::TrackedSymbols>(event.Symbol);
+                // Perform destruction on the non-null branch: bookkeeping only
+                Sa = Sa->set<::SymbolStates>(event.Symbol,
+                                             ::SymbolState::Inactive);
                 Sa = Sa->remove<::GenericSymbolMap>(event.Symbol);
-                Sa = Sa->remove<::PendingLeakSet>(event.Symbol);
+                Sa = Sa->remove<::TrackedSymbols>(event.Symbol);
                 if (edslDebugEnabled()) {
-                  llvm::errs() << "[EDSL] destroy: " << event.FunctionName << "(" << event.SymbolName << ") -> Inactive (split)\n";
+                  llvm::errs()
+                      << "[EDSL] destroy: " << event.FunctionName << "("
+                      << event.SymbolName << ") -> Inactive (split)\n";
                 }
                 C.addTransition(Sa);
               }
@@ -1370,38 +1441,28 @@ public:
               return;
             }
           }
-          const ::SymbolState *CurPtr2 = C.getState()->get<::SymbolStates>(event.Symbol);
-          ::SymbolState Cur2 = CurPtr2 ? *CurPtr2 : ::SymbolState::Uninitialized;
+          const ::SymbolState *CurPtr2 =
+              C.getState()->get<::SymbolStates>(event.Symbol);
+          ::SymbolState Cur2 =
+              CurPtr2 ? *CurPtr2 : ::SymbolState::Uninitialized;
           if (Cur2 == ::SymbolState::Active) {
             if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL] destroy: " << event.FunctionName << "(" << event.SymbolName << ") -> Inactive\n";
+              llvm::errs() << "[EDSL] destroy: " << event.FunctionName << "("
+                           << event.SymbolName << ") -> Inactive\n";
             }
-            State = State->set<::SymbolStates>(event.Symbol, ::SymbolState::Inactive);
+            State = State->set<::SymbolStates>(event.Symbol,
+                                               ::SymbolState::Inactive);
             State = State->remove<::GenericSymbolMap>(event.Symbol);
-            State = State->remove<::PendingLeakSet>(event.Symbol);
+            State = State->remove<::TrackedSymbols>(event.Symbol);
             C.addTransition(State);
-          } else if (Cur2 == ::SymbolState::Inactive) {
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL] double-destroy detected for sym " << event.SymbolName << "\n";
-            }
-            // Double destruction: emit violation
-            ExplodedNode *ErrorNode = C.generateErrorNode(C.getState());
-            if (ErrorNode) {
-              static const BugType BT{Checker, "temporal_violation", "EmbeddedDSLMonitor"};
-              std::string msg = "resource destroyed twice (violates exactly-once)";
-              std::string internal = "sym_" + std::to_string(event.Symbol->getSymbolID());
-              msg += " (internal symbol: " + internal + ")";
-              auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-              R->markInteresting(event.Symbol);
-              C.emitReport(std::move(R));
-            }
           }
         }
       }
       break;
     }
     case EventType::DeadSymbols: {
-      // Intentionally no-op here; leaks reported at EndFunction for better location
+      // Intentionally no-op here; leaks reported at EndFunction for better
+      // location
       break;
     }
     case EventType::PointerEscape: {
@@ -1411,68 +1472,27 @@ public:
           llvm::errs() << "[EDSL] escape: dropping PendingLeak obligation for "
                        << event.SymbolName << "\n";
         }
-        State = State->remove<::PendingLeakSet>(event.Symbol);
+        State = State->remove<::TrackedSymbols>(event.Symbol);
         C.addTransition(State);
       }
       break;
     }
     case EventType::EndFunction: {
-      // Emit leaks for any symbols still pending at function end.
-      if (edslDebugEnabled()) {
-        unsigned pendingCount = 0;
-        for (auto _ : State->get<::PendingLeakSet>()) (void)_, ++pendingCount;
-        llvm::errs() << "[EDSL] end-function: pending=" << pendingCount << "\n";
+      // No direct diagnostics here; EndFunction does not imply unreachability.
+      C.addTransition(State);
+      break;
+    }
+    case EventType::EndAnalysis: {
+      // Enumerate any tracked active symbols and forward EndAnalysis events.
+      for (auto Sym : State->get<::TrackedSymbols>()) {
+        const ::SymbolState *CurPtr = State->get<::SymbolStates>(Sym);
+        ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
+        if (Cur == ::SymbolState::Active) {
+          std::string name = "sym_" + std::to_string(Sym->getSymbolID());
+          (void)
+              name; // naming retained for SPOT AP evaluation in the checker TU
+        }
       }
-      // Report leaks for symbols promoted to Active but not destroyed
-      for (auto Sym : State->get<::PendingLeakSet>()) {
-        // If the symbol is provably null on this path, drop obligation silently.
-        // Strengthen nullness by checking the associated region if available.
-        ConditionTruthVal __IsNull = C.getConstraintManager().isNull(State, Sym);
-        if (!__IsNull.isConstrainedTrue()) {
-          if (const MemRegion *const *MRP = State->get<::SymbolToRegionMap>(Sym)) {
-            const MemRegion *MR = *MRP;
-            SVal RV = State->getSVal(MR);
-            if (SymbolRef RSym = RV.getAsSymbol()) {
-              __IsNull = C.getConstraintManager().isNull(State, RSym);
-            } else if (RV.isZeroConstant()) {
-              __IsNull = ConditionTruthVal(true);
-            }
-          }
-        }
-        if (edslDebugEnabled()) {
-          const ::SymbolState *CurPtr = State->get<::SymbolStates>(Sym);
-          ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
-          llvm::errs() << "[EDSL] end-function pending: sym=" << Sym->getSymbolID()
-                       << " state=" << (int)Cur
-                       << " isNull=" << (__IsNull.isConstrainedTrue() ? "T" : (__IsNull.isConstrainedFalse() ? "F" : "U"))
-                       << "\n";
-        }
-        if (__IsNull.isConstrainedTrue()) {
-          State = State->remove<::GenericSymbolMap>(Sym);
-          State = State->remove<::SymbolStates>(Sym);
-          State = State->remove<::PendingLeakSet>(Sym);
-          continue;
-        }
-        // Ensure we have a fresh node to attach diagnostics
-        C.addTransition(State);
-        ExplodedNode *ErrorNode = C.generateErrorNode(State);
-        if (ErrorNode) {
-          static const BugType BT{Checker, "temporal_violation", "EmbeddedDSLMonitor"};
-          std::string msg = "resource not destroyed (violates exactly-once)";
-          std::string internal = "sym_" + std::to_string(Sym->getSymbolID());
-          msg += " (internal symbol: " + internal + ")";
-          auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-          R->markInteresting(Sym);
-          // Hint for path location: end-of-function
-          const NoteTag *EndTag = C.getNoteTag([]() { return std::string("function ends here"); });
-          C.addTransition(C.getState(), EndTag);
-          C.emitReport(std::move(R));
-        }
-        State = State->remove<::GenericSymbolMap>(Sym);
-        State = State->remove<::SymbolStates>(Sym);
-        State = State->remove<::PendingLeakSet>(Sym);
-      }
-      // Removed FunctionEndLeakSet leak reporting; rely on PendingLeakSet only
       C.addTransition(State);
       break;
     }
@@ -1481,9 +1501,28 @@ public:
 
   std::string getPropertyName() const { return PropertyName; }
   LTLFormulaBuilder getFormulaBuilder() const { return FormulaBuilder; }
+  bool isSymbolUsedInIsNonNull(const std::string &symbolName) const {
+    const LTLFormulaNode *root = FormulaBuilder.getRootNode();
+    std::function<bool(const LTLFormulaNode *)> dfs =
+        [&](const LTLFormulaNode *n) -> bool {
+      if (!n)
+        return false;
+      if (n->Type == LTLNodeType::Atomic) {
+        if (n->FunctionName == "__isnonnull" &&
+            n->Binding.SymbolName == symbolName)
+          return true;
+      }
+      for (const auto &ch : n->Children)
+        if (dfs(ch.get()))
+          return true;
+      return false;
+    };
+    return dfs(root);
+  }
 
   // Extract atomic propositions from an event
-  std::set<std::string> extractPropositions(const GenericEvent &event, CheckerContext &C) const {
+  std::set<std::string> extractPropositions(const GenericEvent &event,
+                                            CheckerContext &C) const {
     std::set<std::string> propositions;
     ProgramStateRef State = C.getState();
 
@@ -1533,25 +1572,27 @@ public:
 
       // If binding-based extraction failed, fall back to default extraction
       if (!Sym) {
-      if (eventType == EventType::PostCall) {
-        Sym = Call.getReturnValue().getAsSymbol();
-        symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
-      } else {
-        // Prefer the underlying stored symbol of the region argument, if any
-        Sym = nullptr;
-        if (Call.getNumArgs() > 0) {
-          SVal Arg = Call.getArgSVal(0);
-          if (const MemRegion *MR = Arg.getAsRegion()) {
-            SVal Stored = C.getState()->getSVal(MR);
-            if (SymbolRef StoredSym = Stored.getAsSymbol()) {
-              Sym = StoredSym;
+        if (eventType == EventType::PostCall) {
+          Sym = Call.getReturnValue().getAsSymbol();
+          symbolName =
+              Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
+        } else {
+          // Prefer the underlying stored symbol of the region argument, if any
+          Sym = nullptr;
+          if (Call.getNumArgs() > 0) {
+            SVal Arg = Call.getArgSVal(0);
+            if (const MemRegion *MR = Arg.getAsRegion()) {
+              SVal Stored = C.getState()->getSVal(MR);
+              if (SymbolRef StoredSym = Stored.getAsSymbol()) {
+                Sym = StoredSym;
+              }
             }
+            if (!Sym)
+              Sym = Arg.getAsSymbol();
           }
-          if (!Sym)
-            Sym = Arg.getAsSymbol();
+          symbolName =
+              Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
         }
-        symbolName = Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
-      }
       }
 
       return dsl::GenericEvent(eventType, funcName, symbolName, Sym,
@@ -1566,7 +1607,8 @@ public:
         symbolName =
             Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
       } else {
-        Sym = Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
+        Sym =
+            Call.getNumArgs() > 0 ? Call.getArgSVal(0).getAsSymbol() : nullptr;
         symbolName =
             Sym ? "sym_" + std::to_string(Sym->getSymbolID()) : "unknown";
       }
@@ -1599,15 +1641,16 @@ private:
 
     // Enhance diagnostic message with internal symbol name for correlation
     std::string enhancedDiagnostic = diagnostic;
-    
+
     // Add internal symbol name for correlation with notes
     if (event.Symbol) {
-      std::string internalSymbolName = "sym_" + std::to_string(event.Symbol->getSymbolID());
+      std::string internalSymbolName =
+          "sym_" + std::to_string(event.Symbol->getSymbolID());
       enhancedDiagnostic += " (internal symbol: " + internalSymbolName + ")";
     }
 
-    auto R =
-        std::make_unique<PathSensitiveBugReport>(*BT, enhancedDiagnostic, ErrorNode);
+    auto R = std::make_unique<PathSensitiveBugReport>(*BT, enhancedDiagnostic,
+                                                      ErrorNode);
     R->markInteresting(event.Symbol);
     C.emitReport(std::move(R));
   }
@@ -1620,7 +1663,7 @@ private:
 
     // Determine the formula variable name
     std::string formulaVar = "x"; // Default formula variable name
-    
+
     // Try to find the actual formula variable name from the binding
     for (const auto &binding : FormulaBuilder.getSymbolBindings()) {
       if (binding.SymbolName == event.SymbolName) {
@@ -1630,12 +1673,15 @@ private:
     }
 
     // Create the note message
-    std::string internalSymbolName = "sym_" + std::to_string(event.Symbol->getSymbolID());
-    std::string noteMessage = "symbol \"" + formulaVar + "\" is bound here (internal symbol: " + 
-                             internalSymbolName + ")";
+    std::string internalSymbolName =
+        "sym_" + std::to_string(event.Symbol->getSymbolID());
+    std::string noteMessage =
+        "symbol \"" + formulaVar +
+        "\" is bound here (internal symbol: " + internalSymbolName + ")";
 
     // Create a note using getNoteTag
-    const NoteTag *noteTag = C.getNoteTag([noteMessage]() { return noteMessage; });
+    const NoteTag *noteTag =
+        C.getNoteTag([noteMessage]() { return noteMessage; });
     C.addTransition(C.getState(), noteTag);
   }
 };
