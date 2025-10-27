@@ -7,6 +7,7 @@
 #include <spot/twa/bdddict.hh>
 #include <spot/twa/bddprint.hh>
 #include <spot/twa/twagraph.hh>
+#include <spot/twaalgos/complete.hh>
 #include <spot/twaalgos/translate.hh>
 
 using namespace clang;
@@ -311,9 +312,19 @@ SpotBuildResult dsl::buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder) {
     return R;
   }
   spot::translator trans;
-  trans.set_type(spot::postprocessor::Monitor);
+  // Try TGBA instead of Monitor for better transition coverage
+  trans.set_type(spot::postprocessor::TGBA);
   trans.set_pref(spot::postprocessor::Deterministic);
   R.Monitor = trans.run(pf.f);
+
+  // Complete the automaton to ensure all transitions are present
+  if (R.Monitor) {
+    spot::complete_here(R.Monitor);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][SPOT] Automaton completed - now has "
+                   << R.Monitor->num_states() << " states\n";
+    }
+  }
   if (edslDebugEnabled() && R.Monitor) {
     auto dict = R.Monitor->get_dict();
     llvm::errs() << "[EDSL][SPOT] automaton: states=" << R.Monitor->num_states()
@@ -349,7 +360,7 @@ DSLMonitor::create(std::unique_ptr<PropertyDefinition> Property,
 namespace {
 // Helper to step SPOT with valuations built from a specific ProgramStateRef
 struct SpotStepper {
-  static llvm::SmallVector<DSLMonitor::EventResult, 2>
+  static std::pair<llvm::SmallVector<DSLMonitor::EventResult, 2>, int>
   step(spot::twa_graph_ptr &Graph, APRegistry &Registry,
        std::map<std::string, int> &ApVarIds, int &CurrentState,
        const CheckerBase *Owner, const GenericEvent &event, CheckerContext &C,
@@ -498,9 +509,10 @@ struct SpotStepper {
         bool pending = false;
         if (event.Symbol && UseState) {
           if (dsl::containsTrackedSymbol(UseState, event.Symbol)) {
-            if (const ::SymbolState *CurPtr =
-                    dsl::getSymbolState(UseState, event.Symbol))
-              pending = (*CurPtr == ::SymbolState::Active);
+            // Check automaton state for leak detection
+            if (const int *CurPtr =
+                    dsl::getAutomatonState(UseState, event.Symbol))
+              pending = (*CurPtr == 1); // State 1 = waiting for free (leak)
           }
         }
         if (pending) {
@@ -525,7 +537,7 @@ struct SpotStepper {
             // creating directly
             results.emplace_back(DSLMonitor::DeferredErrorResult(
                 msg, "temporal_violation", "EmbeddedDSLMonitor", event.Symbol));
-            return results;
+            return std::make_pair(results, CurrentState);
           }
         }
       }
@@ -542,7 +554,7 @@ struct SpotStepper {
       // Leak detection is now handled in the checker's checkDeadSymbols method
       // and deferred to checkEndFunction for proper error node creation
     }
-    return results;
+    return std::make_pair(results, CurrentState);
   }
 };
 } // namespace
@@ -713,8 +725,7 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
 
           if (STrue) {
             // Non-null state is feasible - this becomes our main state
-            MainState =
-                dsl::setSymbolState(STrue, event.Symbol, ::SymbolState::Active);
+            // Automaton state will be updated by SPOT stepping
             MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
             if (edslDebugEnabled()) {
               llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set "
@@ -732,16 +743,15 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
 
           if (SFalse) {
             // Create null branch
-            auto Sf = dsl::setSymbolState(SFalse, event.Symbol,
-                                          ::SymbolState::Uninitialized);
+            // Automaton state will be updated by SPOT stepping
+            auto Sf = SFalse;
             C.addTransition(Sf, Pred);
           }
         }
       } else {
         // No state splitting needed, but still track the symbol
         MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
-        MainState =
-            dsl::setSymbolState(MainState, event.Symbol, ::SymbolState::Active);
+        // Automaton state will be updated by SPOT stepping
         if (edslDebugEnabled()) {
           llvm::errs()
               << "[EDSL][HANDLE] Added symbol to tracked set (no split): "
@@ -757,9 +767,10 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
     BindingType BT = event.DerivedBinding;
     if (BT == BindingType::FirstParameter || BT == BindingType::NthParameter) {
       // Check for double-free before removing from tracked set
-      const ::SymbolState *CurPtr =
-          dsl::getSymbolState(MainState, event.Symbol);
-      if (CurPtr && *CurPtr == ::SymbolState::Inactive) {
+      const int *CurPtr = dsl::getAutomatonState(MainState, event.Symbol);
+      if (CurPtr &&
+          (*CurPtr == 2 ||
+           *CurPtr == 3)) { // States 2,3 = already fulfilled (double-free)
         // Double-free detected - create error node and return early
         if (edslDebugEnabled()) {
           llvm::errs() << "[EDSL][HANDLE] Double-free detected for symbol: "
@@ -778,9 +789,7 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
         }
         return;
       } else {
-        // First free - set symbol state to Inactive and remove from tracked set
-        MainState = dsl::setSymbolState(MainState, event.Symbol,
-                                        ::SymbolState::Inactive);
+        // Automaton state will be updated by SPOT stepping
         MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
         if (edslDebugEnabled()) {
           llvm::errs() << "[EDSL][HANDLE] Set symbol to Inactive and removed "
@@ -805,14 +814,16 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
     }
 
     // Step SPOT automaton
-    spotResults = SpotStepper::step(SpotGraph, Registry, ApVarIds, currentState,
-                                    Owner, event, C, MainState, FormulaBuilder);
+    auto stepResult =
+        SpotStepper::step(SpotGraph, Registry, ApVarIds, currentState, Owner,
+                          event, C, MainState, FormulaBuilder);
+    spotResults = stepResult.first;
+    int newState = stepResult.second;
     assert(spotResults.size() <= 1 &&
            "Expected at most one result from SPOT stepping");
 
     // Update automaton state in GDM with the new state from SPOT stepping
-    // Note: SpotStepper::step should update the currentState parameter
-    MainState = dsl::setAutomatonState(MainState, event.Symbol, currentState);
+    MainState = dsl::setAutomatonState(MainState, event.Symbol, newState);
   }
 
   // Step 3: Collect errors and emit them (variant-based handling)

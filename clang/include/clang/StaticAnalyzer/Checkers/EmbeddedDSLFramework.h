@@ -30,14 +30,7 @@
 #include <string>
 #include <vector>
 
-// Generic symbol state for any temporal property
-enum class SymbolState {
-  Uninitialized, // Symbol not yet processed
-  Active,        // Symbol is in active state
-  Inactive,      // Symbol is in inactive state
-  Violated,      // Symbol violates the property
-  Invalid        // Invalid state
-};
+// SymbolState enum removed - using automaton states directly
 
 // Generic symbol usage context in temporal formulas
 enum class SymbolContext {
@@ -82,12 +75,7 @@ ProgramStateRef removeGenericSymbolMap(ProgramStateRef State, SymbolRef Sym);
 const std::string *getGenericSymbolMap(ProgramStateRef State, SymbolRef Sym);
 bool hasGenericSymbolMap(ProgramStateRef State, SymbolRef Sym);
 
-// SymbolStates API
-ProgramStateRef setSymbolState(ProgramStateRef State, SymbolRef Sym,
-                               SymbolState SymbolState);
-const SymbolState *getSymbolState(ProgramStateRef State, SymbolRef Sym);
-bool isSymbolActive(ProgramStateRef State, SymbolRef Sym);
-bool isSymbolInactive(ProgramStateRef State, SymbolRef Sym);
+// SymbolState API removed - using automaton states directly
 
 // SymbolToRegionMap API
 ProgramStateRef setSymbolToRegionMap(ProgramStateRef State, SymbolRef Sym,
@@ -1703,8 +1691,8 @@ public:
               std::tie(STrue, SFalse) =
                   C.getConstraintManager().assumeDual(C.getState(), *D);
               if (STrue) {
-                auto St = dsl::setSymbolState(STrue, event.Symbol,
-                                              ::SymbolState::Active);
+                // Automaton state will be updated by SPOT stepping
+                auto St = STrue;
                 // Remember the formula variable name and track symbol
                 St = dsl::setGenericSymbolMap(St, event.Symbol,
                                               event.SymbolName);
@@ -1734,8 +1722,8 @@ public:
                 // callback.
               }
               if (SFalse) {
-                auto Sf = dsl::setSymbolState(SFalse, event.Symbol,
-                                              ::SymbolState::Uninitialized);
+                // Automaton state will be updated by SPOT stepping
+                auto Sf = SFalse;
                 Sf = dsl::setGenericSymbolMap(Sf, event.Symbol,
                                               event.SymbolName);
                 C.addTransition(Sf);
@@ -1750,8 +1738,7 @@ public:
                          << ") -> no split (no IsNonNull AP)\n";
           }
           // Lightweight bookkeeping only
-          State = dsl::setSymbolState(State, event.Symbol,
-                                      ::SymbolState::Uninitialized);
+          // Automaton state will be updated by SPOT stepping
           State =
               dsl::setGenericSymbolMap(State, event.Symbol, event.SymbolName);
           C.addTransition(State);
@@ -1766,11 +1753,11 @@ public:
         BindingType BT = event.DerivedBinding;
         if (BT == BindingType::FirstParameter ||
             BT == BindingType::NthParameter) {
-          const ::SymbolState *CurPtr =
-              dsl::getSymbolState(State, event.Symbol);
-          ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
+          // Check current automaton state
+          const int *CurPtr = dsl::getAutomatonState(State, event.Symbol);
+          int Cur = CurPtr ? *CurPtr : 0; // Default to state 0 (initial)
           // If Potential and IsNonNull present for symbol, split on non-null
-          if (Cur == ::SymbolState::Uninitialized &&
+          if (Cur == 0 && // Initial state
               isSymbolUsedInIsNonNull(event.SymbolName)) {
             SValBuilder &SVB = C.getSValBuilder();
             SVal SymV = SVB.makeLoc(event.Symbol);
@@ -1783,14 +1770,12 @@ public:
               std::tie(STrue, SFalse) =
                   C.getConstraintManager().assumeDual(C.getState(), *D);
               if (STrue) {
-                auto Sa = dsl::setSymbolState(STrue, event.Symbol,
-                                              ::SymbolState::Active);
+                // Automaton state will be updated by SPOT stepping
+                auto Sa = STrue;
                 Sa = dsl::setGenericSymbolMap(Sa, event.Symbol,
                                               event.SymbolName);
                 Sa = dsl::addTrackedSymbol(Sa, event.Symbol);
-                // Perform destruction on the non-null branch: bookkeeping only
-                Sa = dsl::setSymbolState(Sa, event.Symbol,
-                                         ::SymbolState::Inactive);
+                // Automaton state will be updated by SPOT stepping
                 Sa = dsl::removeGenericSymbolMap(Sa, event.Symbol);
                 Sa = dsl::removeTrackedSymbol(Sa, event.Symbol);
                 if (edslDebugEnabled()) {
@@ -1807,17 +1792,16 @@ public:
               return;
             }
           }
-          const ::SymbolState *CurPtr2 =
-              dsl::getSymbolState(C.getState(), event.Symbol);
-          ::SymbolState Cur2 =
-              CurPtr2 ? *CurPtr2 : ::SymbolState::Uninitialized;
-          if (Cur2 == ::SymbolState::Active) {
+          // Check if symbol is in state 1 (waiting for free)
+          const int *CurPtr2 =
+              dsl::getAutomatonState(C.getState(), event.Symbol);
+          int Cur2 = CurPtr2 ? *CurPtr2 : 0; // Default to state 0 (initial)
+          if (Cur2 == 1) {                   // State 1 = waiting for free
             if (edslDebugEnabled()) {
               llvm::errs() << "[EDSL] destroy: " << event.FunctionName << "("
                            << event.SymbolName << ") -> Inactive\n";
             }
-            State = dsl::setSymbolState(State, event.Symbol,
-                                        ::SymbolState::Inactive);
+            // Automaton state will be updated by SPOT stepping
             State = dsl::removeGenericSymbolMap(State, event.Symbol);
             State = dsl::removeTrackedSymbol(State, event.Symbol);
             C.addTransition(State);
@@ -1865,9 +1849,10 @@ public:
     case EventType::EndAnalysis: {
       // Enumerate any tracked active symbols and forward EndAnalysis events.
       for (auto Sym : dsl::getTrackedSymbols(State)) {
-        const ::SymbolState *CurPtr = dsl::getSymbolState(State, Sym);
-        ::SymbolState Cur = CurPtr ? *CurPtr : ::SymbolState::Uninitialized;
-        if (Cur == ::SymbolState::Active) {
+        // Check automaton state for leak detection
+        const int *CurPtr = dsl::getAutomatonState(State, Sym);
+        int Cur = CurPtr ? *CurPtr : 0; // Default to state 0 (initial)
+        if (Cur == 1) {                 // State 1 = waiting for free (leak)
           std::string name = "sym_" + std::to_string(Sym->getSymbolID());
           (void)
               name; // naming retained for SPOT AP evaluation in the checker TU

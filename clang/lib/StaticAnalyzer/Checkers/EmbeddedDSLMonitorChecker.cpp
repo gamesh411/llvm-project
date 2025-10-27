@@ -58,8 +58,7 @@ using namespace ast_matchers;
 REGISTER_SET_WITH_PROGRAMSTATE(TrackedSymbols, clang::ento::SymbolRef)
 REGISTER_MAP_WITH_PROGRAMSTATE(GenericSymbolMap, clang::ento::SymbolRef,
                                std::string)
-REGISTER_MAP_WITH_PROGRAMSTATE(SymbolStates, clang::ento::SymbolRef,
-                               SymbolState)
+// SymbolStates GDM trait removed - using automaton states directly
 REGISTER_MAP_WITH_PROGRAMSTATE(SymbolToRegionMap, clang::ento::SymbolRef,
                                const clang::ento::MemRegion *)
 REGISTER_MAP_WITH_PROGRAMSTATE(AutomatonState, clang::ento::SymbolRef, int)
@@ -140,27 +139,7 @@ bool hasGenericSymbolMap(ProgramStateRef State, SymbolRef Sym) {
   return State->get<GenericSymbolMap>(Sym) != nullptr;
 }
 
-// SymbolStates API implementations
-ProgramStateRef setSymbolState(ProgramStateRef State, SymbolRef Sym,
-                               SymbolState SymbolState) {
-  return State->set<SymbolStates>(Sym, SymbolState);
-}
-
-const SymbolState *getSymbolState(ProgramStateRef State, SymbolRef Sym) {
-  return State->get<SymbolStates>(Sym);
-}
-
-bool isSymbolActive(ProgramStateRef State, SymbolRef Sym) {
-  if (const SymbolState *CurPtr = State->get<SymbolStates>(Sym))
-    return *CurPtr == SymbolState::Active;
-  return false;
-}
-
-bool isSymbolInactive(ProgramStateRef State, SymbolRef Sym) {
-  if (const SymbolState *CurPtr = State->get<SymbolStates>(Sym))
-    return *CurPtr == SymbolState::Inactive;
-  return false;
-}
+// SymbolState API implementations removed - using automaton states directly
 
 // SymbolToRegionMap API implementations
 ProgramStateRef setSymbolToRegionMap(ProgramStateRef State, SymbolRef Sym,
@@ -386,11 +365,16 @@ void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
     }
 
     if (dsl::containsTrackedSymbol(State, Sym)) {
-      if (const ::SymbolState *CurPtr = dsl::getSymbolState(State, Sym)) {
+      // Check automaton state instead of SymbolState
+      if (const int *AutomatonStatePtr = dsl::getAutomatonState(State, Sym)) {
+        int automatonState = *AutomatonStatePtr;
         if (dsl::edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][LEAK] symbol state=" << (int)*CurPtr << "\n";
+          llvm::errs() << "[EDSL][LEAK] automaton state=" << automatonState
+                       << "\n";
         }
-        if (*CurPtr == ::SymbolState::Active) {
+        // State 0 = waiting for free (non-accepting), States 2,3 = fulfilled
+        // (accepting)
+        if (automatonState == 0) { // Non-accepting state = leak
           if (dsl::edslDebugEnabled()) {
             llvm::errs() << "[EDSL][LEAK] Detected leak for sym_id="
                          << Sym->getSymbolID() << " - deferring report\n";
