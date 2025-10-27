@@ -2,12 +2,14 @@
 
 // Minimal SPOT includes; concrete usage will be filled incrementally
 #include <spot/tl/formula.hh>
+#include <spot/tl/ltlf.hh>
 #include <spot/tl/parse.hh>
 #include <spot/tl/print.hh>
 #include <spot/twa/bdddict.hh>
 #include <spot/twa/bddprint.hh>
 #include <spot/twa/twagraph.hh>
 #include <spot/twaalgos/complete.hh>
+#include <spot/twaalgos/remprop.hh>
 #include <spot/twaalgos/translate.hh>
 
 using namespace clang;
@@ -22,34 +24,6 @@ bool isStateAccepting(spot::twa_graph_ptr graph, int state) {
     return false;
   }
   return graph->state_is_accepting((unsigned)state);
-}
-
-// Helper to get diagnostic message from formula based on error type
-std::string getDiagnosticMessage(const LTLFormulaBuilder &formulaBuilder,
-                                 const std::string &errorType) {
-  // Get all diagnostic labels from the formula
-  auto diagnosticLabels = formulaBuilder.getDiagnosticLabels();
-
-  // Map error types to diagnostic messages
-  if (errorType == "leak") {
-    // Look for leak-related diagnostic (eventually free)
-    for (const auto &label : diagnosticLabels) {
-      if (label.find("not destroyed") != std::string::npos) {
-        return label;
-      }
-    }
-    return "resource not destroyed (violates exactly-once)"; // fallback
-  } else if (errorType == "double_free") {
-    // Look for double-free related diagnostic (free implies no more free)
-    for (const auto &label : diagnosticLabels) {
-      if (label.find("destroyed twice") != std::string::npos) {
-        return label;
-      }
-    }
-    return "resource destroyed twice (violates exactly-once)"; // fallback
-  }
-
-  return "temporal property violation"; // default
 }
 
 // Prefer the smallest (deepest) labeled node in a subtree, with optional
@@ -102,6 +76,37 @@ selectLabelFromSubtree(const LTLFormulaNode *root,
       return n->DiagnosticLabel;
   }
   return std::string();
+}
+
+// Helper to get diagnostic message from formula based on error type
+std::string getDiagnosticMessage(const LTLFormulaBuilder &formulaBuilder,
+                                 const std::string &errorType) {
+  // Get the root node to search for diagnostics
+  const LTLFormulaNode *root = formulaBuilder.getRootNode();
+  if (!root) {
+    return "temporal property violation"; // fallback
+  }
+
+  // Search for diagnostics based on error type
+  if (errorType == "leak") {
+    // Look for Eventually nodes with leak diagnostics
+    std::string leakDiag =
+        selectLabelFromSubtree(root, {LTLNodeType::Eventually});
+    if (!leakDiag.empty()) {
+      return leakDiag;
+    }
+    return "resource not destroyed (violates exactly-once)"; // fallback
+  } else if (errorType == "double_free") {
+    // Look for Implies nodes with double-free diagnostics
+    std::string doubleFreeDiag =
+        selectLabelFromSubtree(root, {LTLNodeType::Implies});
+    if (!doubleFreeDiag.empty()) {
+      return doubleFreeDiag;
+    }
+    return "resource destroyed twice (violates exactly-once)"; // fallback
+  }
+
+  return "temporal property violation"; // default
 }
 
 // Tiny boolean evaluator for formulas produced from BDDs using only !, &, |,
@@ -343,21 +348,32 @@ SpotBuildResult dsl::buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder) {
     R.Registry.registerAP(-1, apEnd, std::move(endEval));
   }
 
-  spot::parsed_formula pf = spot::parse_infix_psl(infix);
-  if (pf.format_errors(std::cerr)) {
-    return R;
-  }
-  spot::translator trans;
-  // Try TGBA instead of Monitor for better transition coverage
-  trans.set_type(spot::postprocessor::TGBA);
-  trans.set_pref(spot::postprocessor::Deterministic);
-  R.Monitor = trans.run(pf.f);
+  // Convert LTL to LTLf for finite semantics
+  spot::formula ltlFormula = spot::parse_infix_psl(infix).f;
+  spot::formula ltlfFormula = spot::from_ltlf(ltlFormula);
 
-  // Complete the automaton to ensure all transitions are present
-  if (R.Monitor) {
-    spot::complete_here(R.Monitor);
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][SPOT] LTL formula: " << spot::str_psl(ltlFormula)
+                 << "\n";
+    llvm::errs() << "[EDSL][SPOT] LTLf formula: " << spot::str_psl(ltlfFormula)
+                 << "\n";
+  }
+
+  spot::translator trans;
+  // Use Büchi automaton for LTLf
+  trans.set_type(spot::postprocessor::Buchi);
+  trans.set_pref(spot::postprocessor::Deterministic |
+                 spot::postprocessor::SBAcc);
+  spot::twa_graph_ptr buchiAut = trans.run(ltlfFormula);
+
+  if (buchiAut) {
+    // Convert Büchi automaton to finite automaton
+    R.Monitor = spot::to_finite(buchiAut);
+
     if (edslDebugEnabled()) {
-      llvm::errs() << "[EDSL][SPOT] Automaton completed - now has "
+      llvm::errs() << "[EDSL][SPOT] Büchi automaton: " << buchiAut->num_states()
+                   << " states\n";
+      llvm::errs() << "[EDSL][SPOT] Finite automaton: "
                    << R.Monitor->num_states() << " states\n";
       // Print accepting states for debugging
       llvm::errs() << "[EDSL][SPOT] Accepting states: [";
@@ -550,47 +566,52 @@ struct SpotStepper {
         llvm::errs() << "[EDSL][SPOT] ==============================\n";
       }
       CurrentState = nextState;
-      // For sentinel-driven safety, emit on DeadSymbols/EndAnalysis when
-      // obligation is pending.
+      // Check for violations in the finite automaton
+      // In a finite automaton, violations occur when we reach non-accepting
+      // states or when no valid transition is available
+      bool isViolation = false;
+      std::string violationType;
+
       if (event.Type == EventType::DeadSymbols ||
           event.Type == EventType::EndAnalysis) {
-        bool pending = false;
-        if (event.Symbol && UseState) {
-          if (dsl::containsTrackedSymbol(UseState, event.Symbol)) {
-            // Check automaton state for leak detection using generic approach
-            if (const int *CurPtr =
-                    dsl::getAutomatonState(UseState, event.Symbol)) {
-              int currentState = *CurPtr;
-              // Leak = non-accepting state (property violation)
-              pending = !isStateAccepting(Graph, currentState);
-            }
+        // Leak detection: symbol is still tracked but we're at end of analysis
+        if (event.Symbol && UseState &&
+            dsl::containsTrackedSymbol(UseState, event.Symbol)) {
+          if (!isStateAccepting(Graph, CurrentState)) {
+            isViolation = true;
+            violationType = "leak";
           }
         }
-        if (pending) {
-          ExplodedNode *ErrorNode = C.generateErrorNode(UseState);
-          if (ErrorNode) {
-            static const BugType BT{Owner, "temporal_violation",
-                                    "EmbeddedDSLMonitor"};
-            // Prefer label from RHS subtree: deepest labeled Eventually/Until,
-            // else any
-            std::string msg = selectLabelFromSubtree(
-                nullptr, {LTLNodeType::Eventually, LTLNodeType::Until});
-            if (msg.empty())
-              msg = "resource not destroyed (violates exactly-once)";
-            if (event.Symbol)
-              msg += std::string(" (internal symbol: sym_") +
-                     std::to_string(event.Symbol->getSymbolID()) + ")";
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL][REPORT] leak/end violation: " << msg
-                           << "\n";
-            }
-            // Use deferred approach - return bug report info instead of
-            // creating directly
-            results.emplace_back(DSLMonitor::DeferredErrorResult(
-                msg, "temporal_violation", "EmbeddedDSLMonitor", event.Symbol));
-            return std::make_pair(results, CurrentState);
+      } else if (event.Type == EventType::PreCall ||
+                 event.Type == EventType::PostCall) {
+        // Double-free detection: trying to free when already in accepting state
+        if (event.Symbol && UseState &&
+            dsl::containsTrackedSymbol(UseState, event.Symbol)) {
+          if (isStateAccepting(Graph, CurrentState) &&
+              event.FunctionName == "free") {
+            isViolation = true;
+            violationType = "double_free";
           }
         }
+      }
+
+      if (isViolation) {
+        // Find the appropriate diagnostic message from the formula
+        std::string msg = getDiagnosticMessage(FormulaBuilder, violationType);
+        if (event.Symbol)
+          msg += std::string(" (internal symbol: sym_") +
+                 std::to_string(event.Symbol->getSymbolID()) + ")";
+
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][REPORT] " << violationType
+                       << " violation: " << msg << " (state " << CurrentState
+                       << ")\n";
+        }
+
+        // Return the violation as a deferred error result
+        results.emplace_back(DSLMonitor::DeferredErrorResult(
+            msg, "temporal_violation", "EmbeddedDSLMonitor", event.Symbol));
+        return std::make_pair(results, CurrentState);
       }
     } else {
       if (edslDebugEnabled()) {
@@ -743,67 +764,16 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
     }
   }
 
+  // Track symbols on the main path - let the finite automaton handle all logic
   if (event.Type == EventType::PostCall && event.Symbol &&
       !event.SymbolName.empty()) {
     BindingType BT = event.DerivedBinding;
-    // Check if we need state splitting based on the binding type
-    // ReturnValueNonNull means the formula has an IsNonNull predicate
-    bool needsSplit = (BT == BindingType::ReturnValueNonNull);
-    if (edslDebugEnabled()) {
-      llvm::errs() << "[EDSL][HANDLE] PostCall event: symbolName='"
-                   << event.SymbolName << "' BT=" << (int)BT
-                   << " isSymbolUsedInIsNonNull=" << needsSplit
-                   << " functionName='" << event.FunctionName << "'\n";
-    }
-
-    // Always add symbols to tracked set for PostCall events with ReturnValue
-    // binding
     if (BT == BindingType::ReturnValue ||
         BT == BindingType::ReturnValueNonNull) {
-      if (needsSplit) {
-        // State splitting needed - check for non-null constraint
-        SValBuilder &SVB = C.getSValBuilder();
-        SVal SymV = SVB.makeLoc(event.Symbol);
-        const Expr *OriginExpr = llvm::dyn_cast_or_null<Expr>(event.OriginExpr);
-        QualType PtrTy =
-            OriginExpr ? OriginExpr->getType() : event.Symbol->getType();
-        SVal Null = SVB.makeZeroVal(PtrTy);
-        SVal NE =
-            SVB.evalBinOp(Base, BO_NE, SymV, Null, C.getASTContext().BoolTy);
-
-        if (auto D = NE.getAs<DefinedSVal>()) {
-          ProgramStateRef STrue, SFalse;
-          std::tie(STrue, SFalse) =
-              C.getConstraintManager().assumeDual(Base, *D);
-
-          if (STrue) {
-            // Non-null state is feasible - add symbol to tracking on this state
-            MainState = dsl::addTrackedSymbol(STrue, event.Symbol);
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set "
-                              "(non-null branch): "
-                           << event.SymbolName << "\n";
-            }
-            // Update the main state to the non-null state
-            MainState = STrue;
-          } else {
-            // Non-null state is not feasible - early return (don't track
-            // symbol)
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL][HANDLE] Non-null state not feasible, "
-                              "early return (not tracking symbol)\n";
-            }
-            return;
-          }
-        }
-      } else {
-        // No state splitting needed - add to tracking on main path
-        MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set "
-                          "(no split): "
-                       << event.SymbolName << "\n";
-        }
+      MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set: "
+                     << event.SymbolName << "\n";
       }
     }
   }
@@ -833,74 +803,9 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
     // Update automaton state in GDM with the new state from SPOT stepping
     MainState = dsl::setAutomatonState(MainState, event.Symbol, newState);
 
-    // Handle symbol removal for free calls
-    if (event.Type == EventType::PostCall && event.Symbol &&
-        !event.SymbolName.empty()) {
-      BindingType BT = event.DerivedBinding;
-      if (BT == BindingType::FirstParameter ||
-          BT == BindingType::NthParameter) {
-        // Remove symbol from tracked set after automaton stepping
-        MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
-        if (edslDebugEnabled()) {
-          llvm::errs()
-              << "[EDSL][HANDLE] Removed symbol from tracked set (freed): "
-              << event.SymbolName << "\n";
-        }
-      }
-    }
-
-    // For double-free detection, we need to check if we're already in an
-    // accepting state before the automaton steps
-    if (event.Type == EventType::PreCall && event.Symbol &&
-        !event.SymbolName.empty()) {
-      BindingType BT = event.DerivedBinding;
-      if (BT == BindingType::FirstParameter ||
-          BT == BindingType::NthParameter) {
-        // Check for double-free before automaton stepping
-        if (const int *statePtr =
-                dsl::getAutomatonState(MainState, event.Symbol)) {
-          int currentState = *statePtr;
-          bool wasAlreadyAccepting =
-              SpotGraph->state_is_accepting((unsigned)currentState);
-          if (wasAlreadyAccepting) {
-            // Double-free detected - create error node and return early
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL][HANDLE] Double-free detected for symbol: "
-                           << event.SymbolName << " (current state "
-                           << currentState << " is accepting)\n";
-            }
-            ExplodedNode *ErrorNode = C.generateErrorNode(MainState);
-            if (ErrorNode) {
-              static const BugType BT{ContainingChecker, "temporal_violation",
-                                      "EmbeddedDSLMonitor"};
-              std::string msg =
-                  getDiagnosticMessage(FormulaBuilder, "double_free");
-              if (event.Symbol)
-                msg += std::string(" (internal symbol: sym_") +
-                       std::to_string(event.Symbol->getSymbolID()) + ")";
-              auto R =
-                  std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-              C.emitReport(std::move(R));
-            }
-            return;
-          }
-        }
-        // Don't remove from tracked set yet - let PostCall handle it after
-        // automaton stepping
-      }
-    }
-
-    // If we transitioned to an accepting state, also remove symbol from tracked
-    // set (successful completion of the property)
-    if (SpotGraph->state_is_accepting((unsigned)newState)) {
-      MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
-      if (edslDebugEnabled()) {
-        llvm::errs()
-            << "[EDSL][HANDLE] Symbol completed property (accepting state "
-            << newState << ") - removed from tracked set: " << event.SymbolName
-            << "\n";
-      }
-    }
+    // Let the automaton state encode all information - no manual symbol removal
+    // The finite automaton will handle all error detection through its
+    // transitions
   }
 
   // Step 3: Collect errors and emit them (variant-based handling)
