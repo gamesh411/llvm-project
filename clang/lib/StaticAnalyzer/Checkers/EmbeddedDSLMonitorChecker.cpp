@@ -372,23 +372,47 @@ void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
           llvm::errs() << "[EDSL][LEAK] automaton state=" << automatonState
                        << "\n";
         }
-        // State 0 = waiting for free (non-accepting), States 2,3 = fulfilled
-        // (accepting)
-        if (automatonState == 0) { // Non-accepting state = leak
-          if (dsl::edslDebugEnabled()) {
-            llvm::errs() << "[EDSL][LEAK] Detected leak for sym_id="
-                         << Sym->getSymbolID() << " - deferring report\n";
+        // Generic leak detection: non-accepting state = property violation
+        if (Monitor) {
+          bool isAccepting = Monitor->isStateAccepting(automatonState);
+          if (!isAccepting) { // Non-accepting state = leak
+            if (dsl::edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][LEAK] Detected leak for sym_id="
+                           << Sym->getSymbolID() << " - deferring report\n";
+            }
+
+            // Create deferred leak report instead of emitting immediately
+            std::string msg = "resource not destroyed (violates exactly-once)";
+            msg += std::string(" (internal symbol: sym_") +
+                   std::to_string(Sym->getSymbolID()) + ")";
+
+            // Use the current location from the checker context
+            SourceLocation Loc =
+                C.getLocationContext()->getDecl()->getLocation();
+            Monitor->addDeferredLeakReport(msg, "temporal_violation",
+                                           "EmbeddedDSLMonitor", Sym, State,
+                                           Loc);
           }
+        } else {
+          // Fallback to hard-coded logic if automaton not available
+          if (automatonState == 0) { // Non-accepting state = leak
+            if (dsl::edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][LEAK] Detected leak for sym_id="
+                           << Sym->getSymbolID() << " - deferring report\n";
+            }
 
-          // Create deferred leak report instead of emitting immediately
-          std::string msg = "resource not destroyed (violates exactly-once)";
-          msg += std::string(" (internal symbol: sym_") +
-                 std::to_string(Sym->getSymbolID()) + ")";
+            // Create deferred leak report instead of emitting immediately
+            std::string msg = "resource not destroyed (violates exactly-once)";
+            msg += std::string(" (internal symbol: sym_") +
+                   std::to_string(Sym->getSymbolID()) + ")";
 
-          // Use the current location from the checker context
-          SourceLocation Loc = C.getLocationContext()->getDecl()->getLocation();
-          Monitor->addDeferredLeakReport(msg, "temporal_violation",
-                                         "EmbeddedDSLMonitor", Sym, State, Loc);
+            // Use the current location from the checker context
+            SourceLocation Loc =
+                C.getLocationContext()->getDecl()->getLocation();
+            Monitor->addDeferredLeakReport(msg, "temporal_violation",
+                                           "EmbeddedDSLMonitor", Sym, State,
+                                           Loc);
+          }
         }
       }
     }

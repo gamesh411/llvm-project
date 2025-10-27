@@ -147,6 +147,12 @@ public:
   static std::unique_ptr<DSLMonitor>
   create(std::unique_ptr<PropertyDefinition> Property, const CheckerBase *O);
 
+  // Get the automaton for generic state checking
+  spot::twa_graph_ptr getAutomaton() const;
+
+  // Check if a state is accepting (generic approach)
+  bool isStateAccepting(int state) const;
+
   // Event creation via bindings
   // Factory helpers for specific events
   dsl::PostCallEvent createPostCallEvent(const CallEvent &Call,

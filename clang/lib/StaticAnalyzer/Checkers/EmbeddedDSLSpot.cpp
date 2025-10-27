@@ -16,6 +16,42 @@ using namespace dsl;
 // removed SpotMonitor in favor of unified DSLMonitor
 
 namespace {
+// Generic helper to check if a state is accepting in the automaton
+bool isStateAccepting(spot::twa_graph_ptr graph, int state) {
+  if (!graph || state < 0 || state >= (int)graph->num_states()) {
+    return false;
+  }
+  return graph->state_is_accepting((unsigned)state);
+}
+
+// Helper to get diagnostic message from formula based on error type
+std::string getDiagnosticMessage(const LTLFormulaBuilder &formulaBuilder,
+                                 const std::string &errorType) {
+  // Get all diagnostic labels from the formula
+  auto diagnosticLabels = formulaBuilder.getDiagnosticLabels();
+
+  // Map error types to diagnostic messages
+  if (errorType == "leak") {
+    // Look for leak-related diagnostic (eventually free)
+    for (const auto &label : diagnosticLabels) {
+      if (label.find("not destroyed") != std::string::npos) {
+        return label;
+      }
+    }
+    return "resource not destroyed (violates exactly-once)"; // fallback
+  } else if (errorType == "double_free") {
+    // Look for double-free related diagnostic (free implies no more free)
+    for (const auto &label : diagnosticLabels) {
+      if (label.find("destroyed twice") != std::string::npos) {
+        return label;
+      }
+    }
+    return "resource destroyed twice (violates exactly-once)"; // fallback
+  }
+
+  return "temporal property violation"; // default
+}
+
 // Prefer the smallest (deepest) labeled node in a subtree, with optional
 // preference for specific temporal/boolean node types.
 static std::string
@@ -323,6 +359,18 @@ SpotBuildResult dsl::buildSpotMonitorFromDSL(const LTLFormulaBuilder &Builder) {
     if (edslDebugEnabled()) {
       llvm::errs() << "[EDSL][SPOT] Automaton completed - now has "
                    << R.Monitor->num_states() << " states\n";
+      // Print accepting states for debugging
+      llvm::errs() << "[EDSL][SPOT] Accepting states: [";
+      bool first = true;
+      for (unsigned s = 0; s < R.Monitor->num_states(); ++s) {
+        if (R.Monitor->state_is_accepting(s)) {
+          if (!first)
+            llvm::errs() << ", ";
+          llvm::errs() << s;
+          first = false;
+        }
+      }
+      llvm::errs() << "]\n";
     }
   }
   if (edslDebugEnabled() && R.Monitor) {
@@ -509,10 +557,13 @@ struct SpotStepper {
         bool pending = false;
         if (event.Symbol && UseState) {
           if (dsl::containsTrackedSymbol(UseState, event.Symbol)) {
-            // Check automaton state for leak detection
+            // Check automaton state for leak detection using generic approach
             if (const int *CurPtr =
-                    dsl::getAutomatonState(UseState, event.Symbol))
-              pending = (*CurPtr == 1); // State 1 = waiting for free (leak)
+                    dsl::getAutomatonState(UseState, event.Symbol)) {
+              int currentState = *CurPtr;
+              // Leak = non-accepting state (property violation)
+              pending = !isStateAccepting(Graph, currentState);
+            }
           }
         }
         if (pending) {
@@ -695,7 +746,9 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
   if (event.Type == EventType::PostCall && event.Symbol &&
       !event.SymbolName.empty()) {
     BindingType BT = event.DerivedBinding;
-    bool needsSplit = isSymbolUsedInIsNonNull(event.SymbolName);
+    // Check if we need state splitting based on the binding type
+    // ReturnValueNonNull means the formula has an IsNonNull predicate
+    bool needsSplit = (BT == BindingType::ReturnValueNonNull);
     if (edslDebugEnabled()) {
       llvm::errs() << "[EDSL][HANDLE] PostCall event: symbolName='"
                    << event.SymbolName << "' BT=" << (int)BT
@@ -724,76 +777,31 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
               C.getConstraintManager().assumeDual(Base, *D);
 
           if (STrue) {
-            // Non-null state is feasible - this becomes our main state
-            // Automaton state will be updated by SPOT stepping
-            MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
+            // Non-null state is feasible - add symbol to tracking on this state
+            MainState = dsl::addTrackedSymbol(STrue, event.Symbol);
             if (edslDebugEnabled()) {
               llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set "
                               "(non-null branch): "
                            << event.SymbolName << "\n";
             }
+            // Update the main state to the non-null state
+            MainState = STrue;
           } else {
-            // Non-null state is not feasible - early return
+            // Non-null state is not feasible - early return (don't track
+            // symbol)
             if (edslDebugEnabled()) {
               llvm::errs() << "[EDSL][HANDLE] Non-null state not feasible, "
-                              "early return\n";
+                              "early return (not tracking symbol)\n";
             }
             return;
           }
-
-          if (SFalse) {
-            // Create null branch
-            // Automaton state will be updated by SPOT stepping
-            auto Sf = SFalse;
-            C.addTransition(Sf, Pred);
-          }
         }
       } else {
-        // No state splitting needed, but still track the symbol
+        // No state splitting needed - add to tracking on main path
         MainState = dsl::addTrackedSymbol(MainState, event.Symbol);
-        // Automaton state will be updated by SPOT stepping
         if (edslDebugEnabled()) {
-          llvm::errs()
-              << "[EDSL][HANDLE] Added symbol to tracked set (no split): "
-              << event.SymbolName << "\n";
-        }
-      }
-    }
-  }
-
-  // Handle PreCall events (like free) - remove symbols from tracking
-  if (event.Type == EventType::PreCall && event.Symbol &&
-      !event.SymbolName.empty()) {
-    BindingType BT = event.DerivedBinding;
-    if (BT == BindingType::FirstParameter || BT == BindingType::NthParameter) {
-      // Check for double-free before removing from tracked set
-      const int *CurPtr = dsl::getAutomatonState(MainState, event.Symbol);
-      if (CurPtr &&
-          (*CurPtr == 2 ||
-           *CurPtr == 3)) { // States 2,3 = already fulfilled (double-free)
-        // Double-free detected - create error node and return early
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][HANDLE] Double-free detected for symbol: "
-                       << event.SymbolName << "\n";
-        }
-        ExplodedNode *ErrorNode = C.generateErrorNode(MainState);
-        if (ErrorNode) {
-          static const BugType BT{ContainingChecker, "temporal_violation",
-                                  "EmbeddedDSLMonitor"};
-          std::string msg = "resource destroyed twice (violates exactly-once)";
-          if (event.Symbol)
-            msg += std::string(" (internal symbol: sym_") +
-                   std::to_string(event.Symbol->getSymbolID()) + ")";
-          auto R = std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
-          C.emitReport(std::move(R));
-        }
-        return;
-      } else {
-        // Automaton state will be updated by SPOT stepping
-        MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][HANDLE] Set symbol to Inactive and removed "
-                          "from tracked set (freed): "
+          llvm::errs() << "[EDSL][HANDLE] Added symbol to tracked set "
+                          "(no split): "
                        << event.SymbolName << "\n";
         }
       }
@@ -824,6 +832,75 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
 
     // Update automaton state in GDM with the new state from SPOT stepping
     MainState = dsl::setAutomatonState(MainState, event.Symbol, newState);
+
+    // Handle symbol removal for free calls
+    if (event.Type == EventType::PostCall && event.Symbol &&
+        !event.SymbolName.empty()) {
+      BindingType BT = event.DerivedBinding;
+      if (BT == BindingType::FirstParameter ||
+          BT == BindingType::NthParameter) {
+        // Remove symbol from tracked set after automaton stepping
+        MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
+        if (edslDebugEnabled()) {
+          llvm::errs()
+              << "[EDSL][HANDLE] Removed symbol from tracked set (freed): "
+              << event.SymbolName << "\n";
+        }
+      }
+    }
+
+    // For double-free detection, we need to check if we're already in an
+    // accepting state before the automaton steps
+    if (event.Type == EventType::PreCall && event.Symbol &&
+        !event.SymbolName.empty()) {
+      BindingType BT = event.DerivedBinding;
+      if (BT == BindingType::FirstParameter ||
+          BT == BindingType::NthParameter) {
+        // Check for double-free before automaton stepping
+        if (const int *statePtr =
+                dsl::getAutomatonState(MainState, event.Symbol)) {
+          int currentState = *statePtr;
+          bool wasAlreadyAccepting =
+              SpotGraph->state_is_accepting((unsigned)currentState);
+          if (wasAlreadyAccepting) {
+            // Double-free detected - create error node and return early
+            if (edslDebugEnabled()) {
+              llvm::errs() << "[EDSL][HANDLE] Double-free detected for symbol: "
+                           << event.SymbolName << " (current state "
+                           << currentState << " is accepting)\n";
+            }
+            ExplodedNode *ErrorNode = C.generateErrorNode(MainState);
+            if (ErrorNode) {
+              static const BugType BT{ContainingChecker, "temporal_violation",
+                                      "EmbeddedDSLMonitor"};
+              std::string msg =
+                  getDiagnosticMessage(FormulaBuilder, "double_free");
+              if (event.Symbol)
+                msg += std::string(" (internal symbol: sym_") +
+                       std::to_string(event.Symbol->getSymbolID()) + ")";
+              auto R =
+                  std::make_unique<PathSensitiveBugReport>(BT, msg, ErrorNode);
+              C.emitReport(std::move(R));
+            }
+            return;
+          }
+        }
+        // Don't remove from tracked set yet - let PostCall handle it after
+        // automaton stepping
+      }
+    }
+
+    // If we transitioned to an accepting state, also remove symbol from tracked
+    // set (successful completion of the property)
+    if (SpotGraph->state_is_accepting((unsigned)newState)) {
+      MainState = dsl::removeTrackedSymbol(MainState, event.Symbol);
+      if (edslDebugEnabled()) {
+        llvm::errs()
+            << "[EDSL][HANDLE] Symbol completed property (accepting state "
+            << newState << ") - removed from tracked set: " << event.SymbolName
+            << "\n";
+      }
+    }
   }
 
   // Step 3: Collect errors and emit them (variant-based handling)
@@ -850,6 +927,15 @@ void DSLMonitor::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR,
   (void)G;
   (void)BR;
   (void)Eng;
+}
+
+spot::twa_graph_ptr DSLMonitor::getAutomaton() const { return SpotGraph; }
+
+bool DSLMonitor::isStateAccepting(int state) const {
+  if (!SpotGraph || state < 0 || state >= (int)SpotGraph->num_states()) {
+    return false;
+  }
+  return SpotGraph->state_is_accepting((unsigned)state);
 }
 
 void DSLMonitor::addDeferredLeakReport(const std::string &Message,
