@@ -1,4 +1,3 @@
-#include "clang/AST/Stmt.h"
 //===-- EmbeddedDSLMonitorChecker.cpp --------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -31,6 +30,7 @@
 
 #include "EmbeddedDSLSpot.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/Stmt.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/IdentifierTable.h"

@@ -67,87 +67,7 @@ selectLabelFromSubtree(const LTLFormulaNode *root,
   return std::string();
 }
 
-// Tiny boolean evaluator for formulas produced from BDDs using only !, &, |,
-// (), and atomic proposition names like "ap_1".
-struct BoolParser {
-  const std::string &S;
-  size_t I = 0;
-  const std::set<std::string> &TrueAPs;
-  BoolParser(const std::string &s, const std::set<std::string> &aps)
-      : S(s), TrueAPs(aps) {}
-
-  void skipWS() {
-    while (I < S.size() && isspace(static_cast<unsigned char>(S[I])))
-      ++I;
-  }
-
-  bool parseExpr() {
-    bool v = parseTerm();
-    skipWS();
-    while (I < S.size()) {
-      if (S[I] == '|') {
-        ++I;
-        bool rhs = parseTerm();
-        v = v || rhs;
-        skipWS();
-      } else {
-        break;
-      }
-    }
-    return v;
-  }
-
-  bool parseTerm() {
-    bool v = parseFactor();
-    skipWS();
-    while (I < S.size()) {
-      if (S[I] == '&') {
-        ++I;
-        bool rhs = parseFactor();
-        v = v && rhs;
-        skipWS();
-      } else {
-        break;
-      }
-    }
-    return v;
-  }
-
-  bool parseFactor() {
-    skipWS();
-    if (I >= S.size())
-      return false;
-    if (S[I] == '!') {
-      ++I;
-      return !parseFactor();
-    }
-    if (S[I] == '(') {
-      ++I;
-      bool v = parseExpr();
-      skipWS();
-      if (I < S.size() && S[I] == ')')
-        ++I;
-      return v;
-    }
-    // Parse identifier or constants 1/0
-    if (S[I] == '1') {
-      ++I;
-      return true;
-    }
-    if (S[I] == '0') {
-      ++I;
-      return false;
-    }
-    size_t start = I;
-    while (I < S.size() && (isalnum(static_cast<unsigned char>(S[I])) ||
-                            S[I] == '_' || S[I] == '.'))
-      ++I;
-    std::string tok = S.substr(start, I - start);
-    if (tok.empty())
-      return false;
-    return TrueAPs.count(tok) != 0;
-  }
-};
+// (Removed unused BoolParser)
 
 static std::string makeAPName(int nodeId) {
   return "ap_" + std::to_string(nodeId);
@@ -834,12 +754,7 @@ void DSLMonitor::handleEvent(const GenericEvent &event, CheckerContext &C) {
 // These methods are now implemented as API functions in the dsl namespace
 // and can be accessed directly without going through the DSLMonitor class
 
-void DSLMonitor::checkEndAnalysis(ExplodedGraph &G, BugReporter &BR,
-                                  ExprEngine &Eng) const {
-  (void)G;
-  (void)BR;
-  (void)Eng;
-}
+// (Removed unused DSLMonitor::checkEndAnalysis)
 
 void DSLMonitor::addDeferredLeakReport(const std::string &Message,
                                        const std::string &BugTypeName,

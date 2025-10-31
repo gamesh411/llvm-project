@@ -12,7 +12,6 @@
 namespace spot {
 class formula;
 class twa_graph;
-class twa_run;
 using twa_graph_ptr = std::shared_ptr<twa_graph>;
 } // namespace spot
 
@@ -20,12 +19,7 @@ namespace clang {
 namespace ento {
 namespace dsl {
 
-// Introspection helpers (read traits from this TU)
-size_t getTrackedCount(ProgramStateRef S);
-std::vector<unsigned> getTrackedSymbolIDs(ProgramStateRef S);
-std::vector<SymbolRef> getTrackedSymbols(ProgramStateRef S);
-bool isTracked(ProgramStateRef S, SymbolRef Sym);
-bool isActive(ProgramStateRef S, SymbolRef Sym);
+// (Removed unused introspection helper declarations)
 
 // Evaluator for an atomic proposition at a given event/context and a specific
 // ProgramState
@@ -304,8 +298,7 @@ public:
   void handleEvent(const BindEvent &event, CheckerContext &C);
 
   // Safety net reporting at EndAnalysis
-  void checkEndAnalysis(ExplodedGraph &G, BugReporter &BR,
-                        ExprEngine &Eng) const;
+  // (Removed unused checkEndAnalysis)
 
   // Deferred leak report management
   void addDeferredLeakReport(const std::string &Message,
