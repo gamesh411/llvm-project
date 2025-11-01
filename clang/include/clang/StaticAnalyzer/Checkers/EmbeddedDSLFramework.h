@@ -138,12 +138,13 @@ struct LTLFormulaNode {
 struct AtomicNode : public LTLFormulaNode {
   std::shared_ptr<clang::ast_matchers::StatementMatcher> Matcher;
   std::optional<SymbolBinding> Binding;
+  bool IsTraceSemanticsCall;
 
   AtomicNode(const clang::ast_matchers::StatementMatcher &SM,
-             const SymbolBinding &binding)
+             const SymbolBinding &binding, bool isTraceSemanticsCall = false)
       : LTLFormulaNode(LTLNodeType::Atomic),
         Matcher(std::make_shared<clang::ast_matchers::StatementMatcher>(SM)),
-        Binding(binding) {}
+        Binding(binding), IsTraceSemanticsCall(isTraceSemanticsCall) {}
 
   std::string toString() const override {
     std::stringstream result;
@@ -152,6 +153,9 @@ struct AtomicNode : public LTLFormulaNode {
       result << "Binding: " << (int)Binding->Type
              << ", Name: " << Binding->BindingName
              << ", Index: " << Binding->ParameterIndex;
+      if (IsTraceSemanticsCall) {
+        result << ", TraceSemanticsCall";
+      }
     }
     if (!DiagnosticLabel.empty()) {
       result << " [" << DiagnosticLabel << "]";
@@ -304,13 +308,13 @@ namespace DSL {
 inline std::shared_ptr<LTLFormulaNode>
 Calling(const clang::ast_matchers::StatementMatcher &Matcher,
         const SymbolBinding &Binding) {
-  return std::make_shared<AtomicNode>(Matcher, Binding);
+  return std::make_shared<AtomicNode>(Matcher, Binding, false);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
 Called(const clang::ast_matchers::StatementMatcher &Matcher,
        const SymbolBinding &Binding) {
-  return std::make_shared<AtomicNode>(Matcher, Binding);
+  return std::make_shared<AtomicNode>(Matcher, Binding, true);
 }
 
 inline std::shared_ptr<LTLFormulaNode>
