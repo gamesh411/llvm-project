@@ -294,6 +294,26 @@ extractAPsFromBDD(bdd bddCond,
   return relevantAPs;
 }
 
+// Helper: Check if a BDD condition depends on the "alive" AP
+// Returns true if the condition involves the alive AP (as a BDD variable)
+bool bddDependsOnAliveAP(bdd bddCond, std::optional<bdd> AliveAPBDD) {
+  if (!AliveAPBDD.has_value()) {
+    return false; // No "alive" AP registered
+  }
+
+  bdd aliveBDD = *AliveAPBDD;
+  int aliveVar = bdd_var(aliveBDD);
+  bdd varBDD = bdd_ithvar(aliveVar);
+
+  // Check if the alive variable is in the support of the condition
+  // by comparing restrictions with the variable set to true vs false
+  bdd restrictWithAlive = bdd_restrict(bddCond, varBDD);
+  bdd restrictWithoutAlive = bdd_restrict(bddCond, bdd_not(varBDD));
+
+  // If restrictions differ, the alive variable affects the condition
+  return restrictWithAlive != restrictWithoutAlive;
+}
+
 // Helper: Find all parent nodes (ancestors) of a given node, including the node
 // itself
 std::vector<const LTLFormulaNode *>
@@ -540,68 +560,8 @@ bdd buildBDDValuation(const std::map<AtomicPropositionID, bool> &APValuations,
   return valuation;
 }
 
-// Helper: Step the automaton based on valuation
-// Returns (nextState, foundTransition, violatingEdgeCond)
-std::tuple<unsigned, bool, bdd>
-stepAutomaton(unsigned currentState, bdd valuation,
-              const spot::twa_graph_ptr &SpotGraph, const char *EventName) {
-  unsigned nextState = currentState;
-  bool foundTransition = false;
-  bdd violatingEdgeCond = bddfalse;
-
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][" << EventName << "] Stepping automaton from state "
-                 << currentState
-                 << " with valuation (BDD id: " << valuation.id() << ")\n";
-    llvm::errs() << "[EDSL][" << EventName << "] Checking outgoing edges:\n";
-  }
-
-  for (auto &edge : SpotGraph->out(currentState)) {
-    bdd edgeCond = edge.cond;
-    unsigned edgeDst = edge.dst;
-
-    bdd restricted = bdd_restrict(edgeCond, valuation);
-    int implies = bdd_implies(valuation, edgeCond);
-
-    if (edslDebugEnabled()) {
-      llvm::errs() << "  Edge: " << currentState << " -> " << edgeDst
-                   << ", condition BDD id: " << edgeCond.id() << "\n";
-      llvm::errs() << "    Restricted BDD id: " << restricted.id()
-                   << " (bddfalse id: " << bddfalse.id()
-                   << ", bddtrue id: " << bddtrue.id() << ")\n";
-      llvm::errs() << "    bdd_implies(valuation, edgeCond): " << implies
-                   << "\n";
-    }
-
-    if (restricted == bddtrue || implies) {
-      nextState = edgeDst;
-      foundTransition = true;
-      violatingEdgeCond = edgeCond; // Track the condition that was satisfied
-      if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][" << EventName
-                     << "] ✓ Found matching transition: " << currentState
-                     << " -> " << nextState << "\n";
-      }
-      break;
-    } else if (edslDebugEnabled()) {
-      llvm::errs() << "    Transition not satisfied\n";
-    }
-  }
-
-  if (!foundTransition) {
-    nextState = currentState;
-    if (edslDebugEnabled()) {
-      llvm::errs() << "[EDSL][" << EventName
-                   << "] No matching transition, staying in state "
-                   << currentState << "\n";
-    }
-  }
-
-  return {nextState, foundTransition, violatingEdgeCond};
-}
-
 // Helper: Find ReturnStmt by walking back through predecessors
-static const ReturnStmt *findReturnStmt(const ExplodedNode *N) {
+const ReturnStmt *findReturnStmt(const ExplodedNode *N) {
   const StackFrameContext *SF = N->getStackFrame();
   const ExplodedNode *Current = N;
 
@@ -1096,6 +1056,180 @@ void reportViolation(
                      diagnosticMsg, Loc);
 }
 
+// Helper: Check if a state is a liveness violation state (can only be verified
+// at end of trace) by examining if it has self-loops or can remain accepting
+// when alive=false (end-of-trace scenario)
+// A state is liveness if it can stay accepting even when all regular APs are
+// false (which happens at end-of-trace)
+bool isLivenessViolationState(
+    unsigned state, const spot::twa_graph_ptr &SpotGraph,
+    const std::optional<bdd> &AliveAPBDD,
+    const std::map<AtomicPropositionID, bdd> &BDDForAP) {
+  if (!AliveAPBDD.has_value()) {
+    return false; // Can't determine without alive AP
+  }
+
+  // Build a valuation representing end-of-trace: alive=false, all APs=false
+  bdd endOfTraceValuation = bdd_not(*AliveAPBDD);
+  for (const auto &[apID, apBDD] : BDDForAP) {
+    endOfTraceValuation = bdd_and(endOfTraceValuation, bdd_not(apBDD));
+  }
+
+  // Check if this state can transition to an accepting state when alive=false
+  // (end-of-trace scenario)
+  for (auto &edge : SpotGraph->out(state)) {
+    bdd edgeCond = edge.cond;
+    unsigned edgeDst = edge.dst;
+
+    // Check if this edge can be satisfied with end-of-trace valuation
+    bdd restricted = bdd_restrict(edgeCond, endOfTraceValuation);
+    int implies = bdd_implies(endOfTraceValuation, edgeCond);
+
+    if (restricted == bddtrue || implies) {
+      // This edge can be taken at end-of-trace
+      // If destination is accepting, this state represents a liveness violation
+      if (SpotGraph->state_is_accepting(edgeDst)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+// Helper: Check for violations and report if needed (for PreCall/PostCall)
+// Returns true if violation was reported (should stop processing)
+// Returns false if no violation or violation deferred
+bool checkAndReportImmediateViolation(
+    unsigned nextState, bool isAccepting, bool foundTransition,
+    bdd violatingEdgeCond, const spot::twa_graph_ptr &SpotGraph,
+    const std::map<AtomicPropositionID, bdd> &BDDForAtomicProposition,
+    const std::map<AtomicPropositionID, FormulaNodeID>
+        &FormulaNodeForAtomicProposition,
+    const LTLFormula &Formula, ProgramStateRef State, CheckerContext &C,
+    const CheckerBase *ContainingChecker, const std::optional<bdd> &AliveAPBDD,
+    const char *EventName) {
+  if (!isAccepting) {
+    return false; // No violation
+  }
+
+  // Determine if this is a safety violation (immediate) or liveness violation
+  // (deferred):
+  // Strategy 1: Check if the state is inherently a liveness violation state
+  // (can remain accepting at end-of-trace when alive=false)
+  // Strategy 2: Check if the violating edge condition depends on the "alive" AP
+  bool isSafetyViolation = false;
+
+  // First, check if the state is inherently a liveness violation state
+  bool isLivenessState = isLivenessViolationState(
+      nextState, SpotGraph, AliveAPBDD, BDDForAtomicProposition);
+
+  if (isLivenessState) {
+    isSafetyViolation = false; // This is a liveness violation
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][" << EventName << "] State " << nextState
+                   << " is a liveness violation state (can remain accepting at "
+                      "end-of-trace) -> liveness (deferred)\n";
+    }
+  } else if (foundTransition) {
+    // Check the edge condition
+    bool dependsOnAlive = bddDependsOnAliveAP(violatingEdgeCond, AliveAPBDD);
+    isSafetyViolation = !dependsOnAlive;
+
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][" << EventName << "] Violation edge condition "
+                   << (dependsOnAlive ? "depends on" : "does not depend on")
+                   << " 'alive' AP -> "
+                   << (isSafetyViolation ? "safety (immediate)"
+                                         : "liveness (deferred)")
+                   << "\n";
+    }
+  }
+
+  // Report immediate safety violations (e.g., double-free)
+  // Defer liveness violations (e.g., leak) to EndAnalysis
+  if (isSafetyViolation) {
+    // Immediate violation: safety property violated (e.g., double-free)
+    ExplodedNode *ViolationNode = C.generateNonFatalErrorNode(State);
+    if (ViolationNode) {
+      reportViolation(nextState, violatingEdgeCond, foundTransition,
+                      BDDForAtomicProposition, FormulaNodeForAtomicProposition,
+                      Formula, ViolationNode, C.getBugReporter(),
+                      ContainingChecker,
+                      false); // false = immediate violation (safety)
+      return true;            // Violation reported, should stop processing
+    }
+  } else if (edslDebugEnabled()) {
+    // Liveness violation (depends on alive AP) - defer to EndAnalysis
+    llvm::errs()
+        << "[EDSL][" << EventName << "] Note: Accepting state " << nextState
+        << " reached (liveness violation), violation will be reported at "
+           "EndAnalysis (alive=false)\n";
+  }
+
+  return false; // No immediate violation reported
+}
+
+// Helper: Step the automaton based on valuation
+// Returns (nextState, foundTransition, violatingEdgeCond)
+std::tuple<unsigned, bool, bdd>
+stepAutomaton(unsigned currentState, bdd valuation,
+              const spot::twa_graph_ptr &SpotGraph, const char *EventName) {
+  unsigned nextState = currentState;
+  bool foundTransition = false;
+  bdd violatingEdgeCond = bddfalse;
+
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][" << EventName << "] Stepping automaton from state "
+                 << currentState
+                 << " with valuation (BDD id: " << valuation.id() << ")\n";
+    llvm::errs() << "[EDSL][" << EventName << "] Checking outgoing edges:\n";
+  }
+
+  for (auto &edge : SpotGraph->out(currentState)) {
+    bdd edgeCond = edge.cond;
+    unsigned edgeDst = edge.dst;
+
+    bdd restricted = bdd_restrict(edgeCond, valuation);
+    int implies = bdd_implies(valuation, edgeCond);
+
+    if (edslDebugEnabled()) {
+      llvm::errs() << "  Edge: " << currentState << " -> " << edgeDst
+                   << ", condition BDD id: " << edgeCond.id() << "\n";
+      llvm::errs() << "    Restricted BDD id: " << restricted.id()
+                   << " (bddfalse id: " << bddfalse.id()
+                   << ", bddtrue id: " << bddtrue.id() << ")\n";
+      llvm::errs() << "    bdd_implies(valuation, edgeCond): " << implies
+                   << "\n";
+    }
+
+    if (restricted == bddtrue || implies) {
+      nextState = edgeDst;
+      foundTransition = true;
+      violatingEdgeCond = edgeCond; // Track the condition that was satisfied
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][" << EventName
+                     << "] ✓ Found matching transition: " << currentState
+                     << " -> " << nextState << "\n";
+      }
+      break;
+    } else if (edslDebugEnabled()) {
+      llvm::errs() << "    Transition not satisfied\n";
+    }
+  }
+
+  if (!foundTransition) {
+    nextState = currentState;
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][" << EventName
+                   << "] No matching transition, staying in state "
+                   << currentState << "\n";
+    }
+  }
+
+  return {nextState, foundTransition, violatingEdgeCond};
+}
+
 } // namespace
 
 DSLMonitor::DSLMonitor(const CheckerBase *ContainingChecker,
@@ -1535,27 +1669,13 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
                  << " (accepting: " << (isAccepting ? "yes" : "no") << ")\n";
   }
 
-  // Report immediate violations (e.g., double-free in state 3)
-  // Defer liveness violations (e.g., leak in state 1) to EndAnalysis
-  // State 1 = leak (needs end-of-trace check)
-  // State 3 = double-free (immediate safety violation)
-  if (isAccepting && nextState == 3) {
-    // Immediate violation: double-free detected
-    ExplodedNode *ViolationNode = C.generateNonFatalErrorNode(State);
-    if (ViolationNode) {
-      reportViolation(nextState, violatingEdgeCond, foundTransition,
-                      BDDForAtomicProposition, FormulaNodeForAtomicProposition,
-                      Property->Formula, ViolationNode, C.getBugReporter(),
-                      ContainingChecker,
-                      false); // false = immediate violation (safety)
-      return; // Don't continue after reporting violation
-    }
-  } else if (isAccepting && edslDebugEnabled()) {
-    // State 1 (leak) - defer to EndAnalysis
-    llvm::errs()
-        << "[EDSL][POSTCALL] Note: Accepting state " << nextState
-        << " reached (likely leak), violation will be reported at EndAnalysis "
-           "(alive=false)\n";
+  // Check for immediate violations and report if needed
+  if (checkAndReportImmediateViolation(
+          nextState, isAccepting, foundTransition, violatingEdgeCond, SpotGraph,
+          BDDForAtomicProposition, FormulaNodeForAtomicProposition,
+          Property->Formula, State, C, ContainingChecker, AliveAPBDD,
+          "POSTCALL")) {
+    return; // Violation reported, don't continue
   }
 
   // Update GDM and add transition (we always do this during execution)
@@ -1815,25 +1935,13 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
                  << " (accepting: " << (isAccepting ? "yes" : "no") << ")\n";
   }
 
-  // Report immediate violations (e.g., double-free in state 3)
-  // Defer liveness violations (e.g., leak in state 1) to EndAnalysis
-  if (isAccepting && nextState == 3) {
-    // Immediate violation: double-free detected
-    ExplodedNode *ViolationNode = C.generateNonFatalErrorNode(State);
-    if (ViolationNode) {
-      reportViolation(nextState, violatingEdgeCond, foundTransition,
-                      BDDForAtomicProposition, FormulaNodeForAtomicProposition,
-                      Property->Formula, ViolationNode, C.getBugReporter(),
-                      ContainingChecker,
-                      false); // false = immediate violation (safety)
-      return; // Don't continue after reporting violation
-    }
-  } else if (isAccepting && edslDebugEnabled()) {
-    // State 1 (leak) - defer to EndAnalysis
-    llvm::errs()
-        << "[EDSL][PRECALL] Note: Accepting state " << nextState
-        << " reached (likely leak), violation will be reported at EndAnalysis "
-           "(alive=false)\n";
+  // Check for immediate violations and report if needed
+  if (checkAndReportImmediateViolation(
+          nextState, isAccepting, foundTransition, violatingEdgeCond, SpotGraph,
+          BDDForAtomicProposition, FormulaNodeForAtomicProposition,
+          Property->Formula, State, C, ContainingChecker, AliveAPBDD,
+          "PRECALL")) {
+    return; // Violation reported, don't continue
   }
 
   // Step 6: Update GDM and add transition to exploded graph
