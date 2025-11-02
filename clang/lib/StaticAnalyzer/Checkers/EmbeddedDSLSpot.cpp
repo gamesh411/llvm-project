@@ -362,6 +362,384 @@ std::string collectDiagnosticLabels(
   return "Property violation detected";
 }
 
+// Helper: Evaluate an AP for a given call event
+// Returns (apValue, needsBindingHandling)
+std::pair<bool, bool> evaluateAP(const AtomicNode *Atomic,
+                                 AtomicPropositionID apID, FormulaNodeID nodeID,
+                                 ProgramStateRef &State, const CallEvent &Call,
+                                 ASTContext &ASTCtx, const char *EventName) {
+  bool apValue = false;
+  bool needsBindingHandling = false;
+
+  if (Atomic->IsTraceSemanticsCall) {
+    // Check if already evaluated to true in GDM
+    const bool *alreadyTrue = getTraceSemanticsAPState(State, apID);
+    if (alreadyTrue && *alreadyTrue) {
+      // Already evaluated to true - assume it's true
+      apValue = true;
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][" << EventName << "] AP " << apID << " (node "
+                     << nodeID
+                     << ") already true in trace semantics, assuming true\n";
+      }
+      needsBindingHandling = Atomic->Binding.has_value();
+    } else {
+      // Not in GDM yet - evaluate matcher
+      const Expr *Origin = Call.getOriginExpr();
+      if (Origin && Atomic->Matcher) {
+        auto Matches = ast_matchers::match(*Atomic->Matcher, *Origin, ASTCtx);
+        bool matched = !Matches.empty();
+        if (matched) {
+          apValue = true;
+          // Set trace semantics marker in GDM
+          State = setTraceSemanticsAPState(State, apID, true);
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][" << EventName << "] AP " << apID
+                         << " (node " << nodeID
+                         << ") matched, setting trace semantics marker\n";
+          }
+        }
+        needsBindingHandling = matched && Atomic->Binding.has_value();
+      }
+    }
+  } else {
+    // No trace semantics - evaluate matcher directly
+    const Expr *Origin = Call.getOriginExpr();
+    if (Origin && Atomic->Matcher) {
+      auto Matches = ast_matchers::match(*Atomic->Matcher, *Origin, ASTCtx);
+      apValue = !Matches.empty();
+      needsBindingHandling = apValue && Atomic->Binding.has_value();
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][" << EventName << "] AP " << apID << " (node "
+                     << nodeID << ") evaluated to "
+                     << (apValue ? "TRUE" : "FALSE") << "\n";
+      }
+    }
+  }
+
+  return {apValue, needsBindingHandling};
+}
+
+// Helper: Build BDD valuation from AP valuations
+bdd buildBDDValuation(const std::map<AtomicPropositionID, bool> &APValuations,
+                      const std::map<AtomicPropositionID, bdd> &BDDForAP,
+                      bool alive, const std::optional<bdd> &AliveAPBDD,
+                      const char *EventName) {
+  bdd valuation = bddtrue;
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][" << EventName
+                 << "] Building BDD valuation from AP evaluations:\n";
+  }
+
+  // Add "alive" AP
+  if (AliveAPBDD.has_value()) {
+    if (alive) {
+      valuation = bdd_and(valuation, *AliveAPBDD);
+      if (edslDebugEnabled()) {
+        llvm::errs() << "  alive = TRUE -> BDD var " << bdd_var(*AliveAPBDD)
+                     << "\n";
+      }
+    } else {
+      valuation = bdd_and(valuation, bdd_not(*AliveAPBDD));
+      if (edslDebugEnabled()) {
+        llvm::errs() << "  alive = FALSE -> !BDD var " << bdd_var(*AliveAPBDD)
+                     << "\n";
+      }
+    }
+  }
+
+  // Add AP valuations
+  for (const auto &[apID, value] : APValuations) {
+    bdd apBDD = BDDForAP.at(apID);
+    if (value) {
+      valuation = bdd_and(valuation, apBDD);
+      if (edslDebugEnabled()) {
+        llvm::errs() << "  AP " << apID << " = TRUE -> BDD var "
+                     << bdd_var(apBDD) << "\n";
+      }
+    } else {
+      valuation = bdd_and(valuation, bdd_not(apBDD));
+      if (edslDebugEnabled()) {
+        llvm::errs() << "  AP " << apID << " = FALSE -> !BDD var "
+                     << bdd_var(apBDD) << "\n";
+      }
+    }
+  }
+
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][" << EventName
+                 << "] BDD valuation built (BDD id: " << valuation.id()
+                 << ")\n";
+  }
+
+  return valuation;
+}
+
+// Helper: Step the automaton based on valuation
+// Returns (nextState, foundTransition, violatingEdgeCond)
+std::tuple<unsigned, bool, bdd>
+stepAutomaton(unsigned currentState, bdd valuation,
+              const spot::twa_graph_ptr &SpotGraph, const char *EventName) {
+  unsigned nextState = currentState;
+  bool foundTransition = false;
+  bdd violatingEdgeCond = bddfalse;
+
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][" << EventName << "] Stepping automaton from state "
+                 << currentState
+                 << " with valuation (BDD id: " << valuation.id() << ")\n";
+    llvm::errs() << "[EDSL][" << EventName << "] Checking outgoing edges:\n";
+  }
+
+  for (auto &edge : SpotGraph->out(currentState)) {
+    bdd edgeCond = edge.cond;
+    unsigned edgeDst = edge.dst;
+
+    bdd restricted = bdd_restrict(edgeCond, valuation);
+    int implies = bdd_implies(valuation, edgeCond);
+
+    if (edslDebugEnabled()) {
+      llvm::errs() << "  Edge: " << currentState << " -> " << edgeDst
+                   << ", condition BDD id: " << edgeCond.id() << "\n";
+      llvm::errs() << "    Restricted BDD id: " << restricted.id()
+                   << " (bddfalse id: " << bddfalse.id()
+                   << ", bddtrue id: " << bddtrue.id() << ")\n";
+      llvm::errs() << "    bdd_implies(valuation, edgeCond): " << implies
+                   << "\n";
+    }
+
+    if (restricted == bddtrue || implies) {
+      nextState = edgeDst;
+      foundTransition = true;
+      violatingEdgeCond = edgeCond; // Track the condition that was satisfied
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][" << EventName
+                     << "] ✓ Found matching transition: " << currentState
+                     << " -> " << nextState << "\n";
+      }
+      break;
+    } else if (edslDebugEnabled()) {
+      llvm::errs() << "    Transition not satisfied\n";
+    }
+  }
+
+  if (!foundTransition) {
+    nextState = currentState;
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][" << EventName
+                   << "] No matching transition, staying in state "
+                   << currentState << "\n";
+    }
+  }
+
+  return {nextState, foundTransition, violatingEdgeCond};
+}
+
+// Helper: Find ReturnStmt by walking back through predecessors
+static const ReturnStmt *findReturnStmt(const ExplodedNode *N) {
+  const StackFrameContext *SF = N->getStackFrame();
+  const ExplodedNode *Current = N;
+
+  // First, check if the current node itself is a FunctionExitPoint with a
+  // ReturnStmt
+  const ProgramPoint &CurrentPP = Current->getLocation();
+  if (CurrentPP.getStackFrame() == SF) {
+    if (std::optional<FunctionExitPoint> FEP =
+            CurrentPP.getAs<FunctionExitPoint>()) {
+      if (const Stmt *S = FEP->getStmt()) {
+        if (const ReturnStmt *RS = dyn_cast<ReturnStmt>(S)) {
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][findReturnStmt] Found ReturnStmt in "
+                            "FunctionExitPoint\n";
+          }
+          return RS;
+        }
+      }
+    }
+  }
+
+  // Walk back through predecessors
+  while (Current) {
+    const ProgramPoint &PP = Current->getLocation();
+
+    if (PP.getStackFrame() == SF) {
+      if (std::optional<StmtPoint> SP = PP.getAs<StmtPoint>()) {
+        if (const ReturnStmt *RS = dyn_cast<ReturnStmt>(SP->getStmt())) {
+          if (edslDebugEnabled()) {
+            llvm::errs()
+                << "[EDSL][findReturnStmt] Found ReturnStmt in StmtPoint\n";
+          }
+          return RS;
+        }
+      } else if (std::optional<CallExitBegin> CEB = PP.getAs<CallExitBegin>()) {
+        if (const ReturnStmt *RS = CEB->getReturnStmt()) {
+          if (edslDebugEnabled()) {
+            llvm::errs()
+                << "[EDSL][findReturnStmt] Found ReturnStmt in CallExitBegin\n";
+          }
+          return RS;
+        }
+      }
+    }
+
+    if (Current->pred_empty())
+      break;
+    Current = *Current->pred_begin();
+  }
+
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][findReturnStmt] No ReturnStmt found\n";
+  }
+  return nullptr;
+}
+
+// Helper: Report a violation with diagnostic extraction
+void reportViolation(
+    unsigned nextState, bdd violatingEdgeCond, bool foundTransition,
+    const std::map<AtomicPropositionID, bdd> &BDDForAP,
+    const std::map<AtomicPropositionID, FormulaNodeID> &FormulaNodeForAP,
+    const LTLFormula &Formula, const ExplodedNode *N, BugReporter &BR,
+    const CheckerBase *ContainingChecker) {
+  // Extract relevant APs from the violating edge condition
+  std::set<AtomicPropositionID> relevantAPIDs;
+  if (foundTransition && violatingEdgeCond != bddfalse) {
+    relevantAPIDs = extractAPsFromBDD(violatingEdgeCond, BDDForAP);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL]   Relevant APs from edge condition: ";
+      for (AtomicPropositionID apID : relevantAPIDs) {
+        llvm::errs() << apID << " ";
+      }
+      llvm::errs() << "\n";
+    }
+  }
+
+  // Collect diagnostic labels from formula nodes containing relevant APs
+  std::string diagnosticMsg =
+      collectDiagnosticLabels(relevantAPIDs, FormulaNodeForAP, Formula);
+
+  // Find a good location for the diagnostic
+  // For leak violations (end-of-function), prefer return statement or closing
+  // brace
+  PathDiagnosticLocation Loc;
+  const Stmt *S = N->getStmtForDiagnostics();
+
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][REPORT] Finding location for violation report\n";
+    llvm::errs() << "[EDSL][REPORT] getStmtForDiagnostics() returned: "
+                 << (S ? "non-null" : "null") << "\n";
+    if (S) {
+      llvm::errs() << "[EDSL][REPORT] Stmt type: " << S->getStmtClassName()
+                   << "\n";
+      llvm::errs() << "[EDSL][REPORT] Stmt source range: "
+                   << S->getBeginLoc().printToString(BR.getSourceManager())
+                   << " - "
+                   << S->getEndLoc().printToString(BR.getSourceManager())
+                   << "\n";
+    }
+  }
+
+  if (S) {
+    // Check if this is an end-of-function node (FunctionExitPoint)
+    // or if we got a CompoundStmt (function body) from getStmtForDiagnostics()
+    const ProgramPoint &PP = N->getLocation();
+    bool isEndOfFunction = PP.getAs<FunctionExitPoint>().has_value();
+
+    // Also check if S is a CompoundStmt - this might be the function body
+    // and we're at end-of-function, so we want to find the return statement
+    if (isEndOfFunction || isa<CompoundStmt>(S)) {
+      // For end-of-function, prefer ReturnStmt if available
+      if (isa<ReturnStmt>(S)) {
+        // Already have a ReturnStmt, use it
+        Loc = PathDiagnosticLocation(S, BR.getSourceManager(),
+                                     N->getLocationContext());
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][REPORT] Using ReturnStmt from "
+                          "getStmtForDiagnostics()\n";
+        }
+      } else if (isa<CompoundStmt>(S)) {
+        // Got function body (CompoundStmt), try to find ReturnStmt inside it
+        const CompoundStmt *CS = cast<CompoundStmt>(S);
+        const ReturnStmt *RS = nullptr;
+        // Look for ReturnStmt in the body statements (from last to first for
+        // efficiency)
+        for (auto I = CS->body_rbegin(), E = CS->body_rend(); I != E; ++I) {
+          if (const ReturnStmt *FoundRS = dyn_cast<ReturnStmt>(*I)) {
+            RS = FoundRS;
+            break;
+          }
+        }
+
+        if (RS) {
+          Loc = PathDiagnosticLocation(RS, BR.getSourceManager(),
+                                       N->getLocationContext());
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][REPORT] Found ReturnStmt in CompoundStmt "
+                            "body, using it: "
+                         << RS->getBeginLoc().printToString(
+                                BR.getSourceManager())
+                         << "\n";
+          }
+        } else {
+          // No ReturnStmt in body, try to find it via predecessors or use
+          // closing brace
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL][REPORT] No ReturnStmt in CompoundStmt "
+                            "body, trying findReturnStmt()\n";
+          }
+          S = nullptr; // Fall through to return stmt search
+        }
+      } else {
+        // Other statement type for end-of-function, try to find ReturnStmt in
+        // predecessors
+        if (edslDebugEnabled()) {
+          llvm::errs() << "[EDSL][REPORT] End-of-function node with "
+                       << S->getStmtClassName()
+                       << ", trying to find ReturnStmt\n";
+        }
+        S = nullptr; // Fall through to return stmt search
+      }
+    } else {
+      // For non-end-of-function nodes, use the statement directly
+      Loc = PathDiagnosticLocation(S, BR.getSourceManager(),
+                                   N->getLocationContext());
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][REPORT] Using statement location\n";
+      }
+    }
+  }
+
+  if (!S || Loc.asLocation().isInvalid()) {
+    // For end-of-function nodes, try to find a ReturnStmt
+    const ReturnStmt *RS = findReturnStmt(N);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][REPORT] findReturnStmt() returned: "
+                   << (RS ? "non-null" : "null") << "\n";
+    }
+    if (RS) {
+      Loc = PathDiagnosticLocation(RS, BR.getSourceManager(),
+                                   N->getLocationContext());
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][REPORT] Using ReturnStmt location: "
+                     << RS->getBeginLoc().printToString(BR.getSourceManager())
+                     << "\n";
+      }
+    } else {
+      // Fallback: use declaration end (closing brace)
+      Loc = PathDiagnosticLocation::createDeclEnd(N->getLocationContext(),
+                                                  BR.getSourceManager());
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL][REPORT] Using createDeclEnd location: "
+                     << Loc.asLocation().printToString(BR.getSourceManager())
+                     << "\n";
+      }
+    }
+  }
+
+  BR.EmitBasicReport(N->getCodeDecl().getASTContext().getTranslationUnitDecl(),
+                     ContainingChecker, "Property Violation", "DSL Monitor",
+                     diagnosticMsg, Loc);
+}
+
 } // namespace
 
 DSLMonitor::DSLMonitor(const CheckerBase *ContainingChecker,
@@ -638,7 +1016,7 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
 
   if (edslDebugEnabled()) {
     llvm::errs() << "\n[EDSL][POSTCALL] Processing PostCall event\n";
-    if (const Expr *Origin = Call.getOriginExpr()) {
+    if (Call.getOriginExpr()) {
       llvm::errs() << "[EDSL][POSTCALL] Origin expression found\n";
     }
   }
@@ -675,54 +1053,9 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
       continue;
     }
 
-    // Evaluate AP based on trace semantics
-    bool apValue = false;
-    bool needsBindingHandling = false;
-
-    if (Atomic->IsTraceSemanticsCall) {
-      // Check if already evaluated to true in GDM
-      const bool *alreadyTrue = getTraceSemanticsAPState(State, apID);
-      if (alreadyTrue && *alreadyTrue) {
-        // Already evaluated to true - assume it's true
-        apValue = true;
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][POSTCALL] AP " << apID << " (node " << nodeID
-                       << ") already true in trace semantics, assuming true\n";
-        }
-        needsBindingHandling = Atomic->Binding.has_value();
-      } else {
-        // Not in GDM yet - evaluate matcher
-        const Expr *Origin = Call.getOriginExpr();
-        if (Origin && Atomic->Matcher) {
-          auto Matches = ast_matchers::match(*Atomic->Matcher, *Origin, ASTCtx);
-          bool matched = !Matches.empty();
-          if (matched) {
-            apValue = true;
-            // Set trace semantics marker in GDM
-            State = setTraceSemanticsAPState(State, apID, true);
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL][POSTCALL] AP " << apID << " (node "
-                           << nodeID
-                           << ") matched, setting trace semantics marker\n";
-            }
-          }
-          needsBindingHandling = matched && Atomic->Binding.has_value();
-        }
-      }
-    } else {
-      // No trace semantics - evaluate matcher directly
-      const Expr *Origin = Call.getOriginExpr();
-      if (Origin && Atomic->Matcher) {
-        auto Matches = ast_matchers::match(*Atomic->Matcher, *Origin, ASTCtx);
-        apValue = !Matches.empty();
-        needsBindingHandling = apValue && Atomic->Binding.has_value();
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][POSTCALL] AP " << apID << " (node " << nodeID
-                       << ") evaluated to " << (apValue ? "TRUE" : "FALSE")
-                       << "\n";
-        }
-      }
-    }
+    // Evaluate AP using helper function
+    auto [apValue, needsBindingHandling] =
+        evaluateAP(Atomic, apID, nodeID, State, Call, ASTCtx, "POSTCALL");
 
     APValuations[apID] = apValue;
 
@@ -787,41 +1120,8 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
 
   // Step 2: Build BDD valuation from AP evaluations
   // For finite-trace semantics: set "alive" = true during execution
-  bdd valuation = bddtrue;
-  if (edslDebugEnabled()) {
-    llvm::errs()
-        << "[EDSL][POSTCALL] Building BDD valuation from AP evaluations:\n";
-  }
-
-  // Add "alive" = true for finite-trace semantics (trace is still active)
-  if (AliveAPBDD.has_value()) {
-    valuation = bdd_and(valuation, *AliveAPBDD);
-    if (edslDebugEnabled()) {
-      llvm::errs() << "  alive = TRUE -> BDD var " << bdd_var(*AliveAPBDD)
-                   << "\n";
-    }
-  }
-
-  for (const auto &[apID, value] : APValuations) {
-    bdd apBDD = BDDForAtomicProposition[apID];
-    if (value) {
-      valuation = bdd_and(valuation, apBDD);
-      if (edslDebugEnabled()) {
-        llvm::errs() << "  AP " << apID << " = TRUE -> BDD var "
-                     << bdd_var(apBDD) << "\n";
-      }
-    } else {
-      valuation = bdd_and(valuation, bdd_not(apBDD));
-      if (edslDebugEnabled()) {
-        llvm::errs() << "  AP " << apID << " = FALSE -> !BDD var "
-                     << bdd_var(apBDD) << "\n";
-      }
-    }
-  }
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][POSTCALL] BDD valuation built (BDD id: "
-                 << valuation.id() << ")\n";
-  }
+  bdd valuation = buildBDDValuation(APValuations, BDDForAtomicProposition, true,
+                                    AliveAPBDD, "POSTCALL");
 
   // Step 3: Get current automaton state
   // For PostCall, track per-symbol. Find the symbol we just processed.
@@ -868,116 +1168,38 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
   }
 
   // Step 4: Step automaton based on BDD valuation
-  unsigned nextState = currentState;
-  bool foundTransition = false;
-
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][POSTCALL] Stepping automaton from state "
-                 << currentState
-                 << " with valuation (BDD id: " << valuation.id() << ")\n";
-    llvm::errs() << "[EDSL][POSTCALL] Checking outgoing edges:\n";
-  }
-
-  // Check all edges to find the matching transition
-  // In a deterministic automaton, exactly one edge should match
-  for (auto &edge : SpotGraph->out(currentState)) {
-    bdd edgeCond = edge.cond;
-    unsigned edgeDst = edge.dst;
-
-    if (edslDebugEnabled()) {
-      llvm::errs() << "  Edge: " << currentState << " -> " << edgeDst
-                   << ", condition BDD id: " << edgeCond.id() << "\n";
-    }
-
-    // Check if valuation satisfies edge condition
-    // For a deterministic automaton, we check if valuation implies the edge
-    // condition or equivalently, if the valuation is contained in the edge
-    // condition The correct check: bdd_implies(valuation, edgeCond) returns 1
-    // if valuation => edgeCond However, for automata, the standard is: check if
-    // bdd_restrict(edgeCond, valuation) == bddtrue This means: given the
-    // valuation, the edge condition must be true
-
-    bdd restricted = bdd_restrict(edgeCond, valuation);
-
-    if (edslDebugEnabled()) {
-      llvm::errs() << "    Restricted BDD id: " << restricted.id()
-                   << " (bddfalse id: " << bddfalse.id()
-                   << ", bddtrue id: " << bddtrue.id() << ")\n";
-      // Also check implication for debugging
-      int implies = bdd_implies(valuation, edgeCond);
-      llvm::errs() << "    bdd_implies(valuation, edgeCond): " << implies
-                   << "\n";
-    }
-
-    // The valuation satisfies the edge condition if:
-    // 1. The restricted condition is not false (edgeCond is satisfiable given
-    // valuation)
-    // 2. The valuation implies the edge condition (valuation => edgeCond)
-    // OR more simply: restricted == bddtrue (the edge condition is true given
-    // the valuation)
-
-    if (restricted == bddtrue || bdd_implies(valuation, edgeCond)) {
-      // This transition matches the valuation
-      if (!foundTransition) {
-        nextState = edgeDst;
-        foundTransition = true;
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][POSTCALL] ✓ Found matching transition: "
-                       << currentState << " -> " << nextState << "\n";
-        }
-      } else if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][POSTCALL] ⚠ Multiple transitions match! "
-                     << "Also matches: " << currentState << " -> " << edgeDst
-                     << "\n";
-      }
-      // In a deterministic automaton, we should break after finding a match
-      // But let's check all to see if there are multiple matches (which would
-      // indicate a bug) break; // Don't break yet - check all edges first
-    } else if (edslDebugEnabled()) {
-      llvm::errs() << "    Transition not satisfied\n";
-    }
-  }
-
-  // In a deterministic automaton, we should have found exactly one transition
-  if (!foundTransition && edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][POSTCALL] ⚠ No transition found! "
-                 << "This should not happen in a deterministic automaton.\n";
-  }
-
-  if (!foundTransition) {
-    // No matching transition - stay in current state
-    nextState = currentState;
-    if (edslDebugEnabled()) {
-      llvm::errs()
-          << "[EDSL][POSTCALL] No matching transition, staying in state "
-          << currentState << "\n";
-    }
-  }
+  auto [nextState, foundTransition, violatingEdgeCond] =
+      stepAutomaton(currentState, valuation, SpotGraph, "POSTCALL");
 
   // Step 5: Handle violation detection and state updates
-  // CRITICAL: With finite-trace semantics (to_finite()), accepting states mean
-  // "violation if we END HERE when alive=false". During execution (alive=true),
-  // we should NOT report violations. Only check at EndAnalysis (alive=false).
-  //
-  // For immediate safety violations (e.g., double-free), we might need to
-  // check differently, but for liveness (eventually), we must wait until end.
-  //
-  // For now, we do NOT report violations during execution - they will be
-  // checked at EndAnalysis when alive=false.
   bool isAccepting = SpotGraph->state_is_accepting(nextState);
 
   if (edslDebugEnabled()) {
     llvm::errs() << "[EDSL][POSTCALL] Transitioned to state " << nextState
                  << " (accepting: " << (isAccepting ? "yes" : "no") << ")\n";
-    if (isAccepting) {
-      llvm::errs()
-          << "[EDSL][POSTCALL] Note: Accepting state reached, but violation "
-          << "will only be reported at EndAnalysis (alive=false)\n";
-    }
   }
 
-  // Do NOT report violations during execution - defer to EndAnalysis
-  // Violations will be checked when alive=false (at trace end)
+  // Report immediate violations (e.g., double-free in state 3)
+  // Defer liveness violations (e.g., leak in state 1) to EndAnalysis
+  // State 1 = leak (needs end-of-trace check)
+  // State 3 = double-free (immediate safety violation)
+  if (isAccepting && nextState == 3) {
+    // Immediate violation: double-free detected
+    ExplodedNode *ViolationNode = C.generateNonFatalErrorNode(State);
+    if (ViolationNode) {
+      reportViolation(nextState, violatingEdgeCond, foundTransition,
+                      BDDForAtomicProposition, FormulaNodeForAtomicProposition,
+                      Property->Formula, ViolationNode, C.getBugReporter(),
+                      ContainingChecker);
+      return; // Don't continue after reporting violation
+    }
+  } else if (isAccepting && edslDebugEnabled()) {
+    // State 1 (leak) - defer to EndAnalysis
+    llvm::errs()
+        << "[EDSL][POSTCALL] Note: Accepting state " << nextState
+        << " reached (likely leak), violation will be reported at EndAnalysis "
+           "(alive=false)\n";
+  }
 
   // Update GDM and add transition (we always do this during execution)
   if (trackedSym) {
@@ -1049,7 +1271,7 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
 
   if (edslDebugEnabled()) {
     llvm::errs() << "\n[EDSL][PRECALL] Processing PreCall event\n";
-    if (const Expr *Origin = Call.getOriginExpr()) {
+    if (Call.getOriginExpr()) {
       llvm::errs() << "[EDSL][PRECALL] Origin expression found\n";
     }
   }
@@ -1093,54 +1315,9 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
       continue;
     }
 
-    // Evaluate AP based on trace semantics
-    bool apValue = false;
-    bool needsBindingHandling = false;
-
-    if (Atomic->IsTraceSemanticsCall) {
-      // Check if already evaluated to true in GDM
-      const bool *alreadyTrue = getTraceSemanticsAPState(State, apID);
-      if (alreadyTrue && *alreadyTrue) {
-        // Already evaluated to true - assume it's true
-        apValue = true;
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][PRECALL] AP " << apID << " (node " << nodeID
-                       << ") already true in trace semantics, assuming true\n";
-        }
-        needsBindingHandling = Atomic->Binding.has_value();
-      } else {
-        // Not in GDM yet - evaluate matcher
-        const Expr *Origin = Call.getOriginExpr();
-        if (Origin && Atomic->Matcher) {
-          auto Matches = ast_matchers::match(*Atomic->Matcher, *Origin, ASTCtx);
-          bool matched = !Matches.empty();
-          if (matched) {
-            apValue = true;
-            // Set trace semantics marker in GDM
-            State = setTraceSemanticsAPState(State, apID, true);
-            if (edslDebugEnabled()) {
-              llvm::errs() << "[EDSL][PRECALL] AP " << apID << " (node "
-                           << nodeID
-                           << ") matched, setting trace semantics marker\n";
-            }
-          }
-          needsBindingHandling = matched && Atomic->Binding.has_value();
-        }
-      }
-    } else {
-      // No trace semantics - evaluate matcher directly
-      const Expr *Origin = Call.getOriginExpr();
-      if (Origin && Atomic->Matcher) {
-        auto Matches = ast_matchers::match(*Atomic->Matcher, *Origin, ASTCtx);
-        apValue = !Matches.empty();
-        needsBindingHandling = apValue && Atomic->Binding.has_value();
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][PRECALL] AP " << apID << " (node " << nodeID
-                       << ") evaluated to " << (apValue ? "TRUE" : "FALSE")
-                       << "\n";
-        }
-      }
-    }
+    // Evaluate AP using helper function
+    auto [apValue, needsBindingHandling] =
+        evaluateAP(Atomic, apID, nodeID, State, Call, ASTCtx, "PRECALL");
 
     APValuations[apID] = apValue;
 
@@ -1156,7 +1333,7 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
         paramIndex = 0;
       }
 
-      if (Call.getNumArgs() <= paramIndex) {
+      if (static_cast<int>(Call.getNumArgs()) <= paramIndex) {
         if (edslDebugEnabled()) {
           llvm::errs() << "[EDSL][PRECALL] Parameter index " << paramIndex
                        << " not available (only " << Call.getNumArgs()
@@ -1232,41 +1409,8 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
 
   // Step 2: Build BDD valuation from AP evaluations
   // For finite-trace semantics: set "alive" = true during execution
-  bdd valuation = bddtrue;
-  if (edslDebugEnabled()) {
-    llvm::errs()
-        << "[EDSL][PRECALL] Building BDD valuation from AP evaluations:\n";
-  }
-
-  // Add "alive" = true for finite-trace semantics (trace is still active)
-  if (AliveAPBDD.has_value()) {
-    valuation = bdd_and(valuation, *AliveAPBDD);
-    if (edslDebugEnabled()) {
-      llvm::errs() << "  alive = TRUE -> BDD var " << bdd_var(*AliveAPBDD)
-                   << "\n";
-    }
-  }
-
-  for (const auto &[apID, value] : APValuations) {
-    bdd apBDD = BDDForAtomicProposition[apID];
-    if (value) {
-      valuation = bdd_and(valuation, apBDD);
-      if (edslDebugEnabled()) {
-        llvm::errs() << "  AP " << apID << " = TRUE -> BDD var "
-                     << bdd_var(apBDD) << "\n";
-      }
-    } else {
-      valuation = bdd_and(valuation, bdd_not(apBDD));
-      if (edslDebugEnabled()) {
-        llvm::errs() << "  AP " << apID << " = FALSE -> !BDD var "
-                     << bdd_var(apBDD) << "\n";
-      }
-    }
-  }
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][PRECALL] BDD valuation built (BDD id: "
-                 << valuation.id() << ")\n";
-  }
+  bdd valuation = buildBDDValuation(APValuations, BDDForAtomicProposition, true,
+                                    AliveAPBDD, "PRECALL");
 
   // Step 3: Get current automaton state
   // For PreCall, track per-symbol. Find the symbol(s) we just processed.
@@ -1303,69 +1447,35 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
   }
 
   // Step 4: Step the automaton to the next state based on BDD valuation
-  unsigned nextState = currentState;
-  bool foundTransition = false;
+  auto [nextState, foundTransition, violatingEdgeCond] =
+      stepAutomaton(currentState, valuation, SpotGraph, "PRECALL");
 
-  if (edslDebugEnabled()) {
-    llvm::errs() << "[EDSL][PRECALL] Stepping automaton from state "
-                 << currentState
-                 << " with valuation (BDD id: " << valuation.id() << ")\n";
-    llvm::errs() << "[EDSL][PRECALL] Checking outgoing edges:\n";
-  }
+  // Step 5: Handle violation detection
+  bool isAccepting = SpotGraph->state_is_accepting(nextState);
 
-  for (auto &edge : SpotGraph->out(currentState)) {
-    bdd edgeCond = edge.cond;
-    unsigned edgeDst = edge.dst;
-
-    bdd restricted = bdd_restrict(edgeCond, valuation);
-    int implies = bdd_implies(valuation, edgeCond);
-
-    if (edslDebugEnabled()) {
-      llvm::errs() << "  Edge: " << currentState << " -> " << edgeDst
-                   << ", condition BDD id: " << edgeCond.id() << "\n";
-      llvm::errs() << "    Restricted BDD id: " << restricted.id()
-                   << " (bddfalse id: " << bddfalse.id()
-                   << ", bddtrue id: " << bddtrue.id() << ")\n";
-      llvm::errs() << "    bdd_implies(valuation, edgeCond): " << implies
-                   << "\n";
-    }
-
-    if (restricted == bddtrue || implies) {
-      nextState = edgeDst;
-      foundTransition = true;
-      if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][PRECALL] ✓ Found matching transition: "
-                     << currentState << " -> " << nextState << "\n";
-      }
-      break;
-    } else if (edslDebugEnabled()) {
-      llvm::errs() << "    Transition not satisfied\n";
-    }
-  }
-
-  if (!foundTransition) {
-    nextState = currentState;
-    if (edslDebugEnabled()) {
-      llvm::errs()
-          << "[EDSL][PRECALL] No matching transition, staying in state "
-          << currentState << "\n";
-    }
-  }
-
-  // Step 5: Check if the new state is accepting (violation)
-  bool isViolation = SpotGraph->state_is_accepting(nextState);
   if (edslDebugEnabled()) {
     llvm::errs() << "[EDSL][PRECALL] Transitioned to state " << nextState
-                 << " (accepting: " << (isViolation ? "yes" : "no") << ")\n";
+                 << " (accepting: " << (isAccepting ? "yes" : "no") << ")\n";
   }
 
-  // For finite-trace semantics: defer violation reporting until EndAnalysis
-  // During execution, alive=true, so accepting states are just tracked
-  // Violations will be reported at EndAnalysis when alive=false
-  if (isViolation && edslDebugEnabled()) {
+  // Report immediate violations (e.g., double-free in state 3)
+  // Defer liveness violations (e.g., leak in state 1) to EndAnalysis
+  if (isAccepting && nextState == 3) {
+    // Immediate violation: double-free detected
+    ExplodedNode *ViolationNode = C.generateNonFatalErrorNode(State);
+    if (ViolationNode) {
+      reportViolation(nextState, violatingEdgeCond, foundTransition,
+                      BDDForAtomicProposition, FormulaNodeForAtomicProposition,
+                      Property->Formula, ViolationNode, C.getBugReporter(),
+                      ContainingChecker);
+      return; // Don't continue after reporting violation
+    }
+  } else if (isAccepting && edslDebugEnabled()) {
+    // State 1 (leak) - defer to EndAnalysis
     llvm::errs()
-        << "[EDSL][PRECALL] Note: Accepting state reached, but violation "
-           "will only be reported at EndAnalysis (alive=false)\n";
+        << "[EDSL][PRECALL] Note: Accepting state " << nextState
+        << " reached (likely leak), violation will be reported at EndAnalysis "
+           "(alive=false)\n";
   }
 
   // Step 6: Update GDM and add transition to exploded graph
@@ -1449,7 +1559,6 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
     // Iterate through all tracked symbols in this state
     for (auto It = AutomatonStateMap.begin(), End = AutomatonStateMap.end();
          It != End; ++It) {
-      SymbolRef Sym = It.getKey();
       AutomatonStateID currentState = It.getData();
 
       if (edslDebugEnabled()) {
@@ -1459,80 +1568,17 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
       }
 
       // Build BDD valuation for end of trace: alive=false, all APs=false
-      bdd valuation = bddtrue;
-
-      // Set alive=false (end of trace)
-      if (AliveAPBDD.has_value()) {
-        valuation = bdd_and(valuation, bdd_not(*AliveAPBDD));
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][ENDANALYSIS]   alive = FALSE -> !BDD var "
-                       << bdd_var(*AliveAPBDD) << "\n";
-        }
-      }
-
-      // Set all APs to false (no events at end of trace)
+      std::map<AtomicPropositionID, bool> endOfTraceValuations;
       for (const auto &[apID, nodeID] : FormulaNodeForAtomicProposition) {
-        bdd apBDD = BDDForAtomicProposition[apID];
-        valuation = bdd_and(valuation, bdd_not(apBDD));
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][ENDANALYSIS]   AP " << apID
-                       << " = FALSE -> !BDD var " << bdd_var(apBDD) << "\n";
-        }
+        endOfTraceValuations[apID] = false; // All APs false at end
       }
-
-      if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][ENDANALYSIS] BDD valuation built (BDD id: "
-                     << valuation.id() << ")\n";
-      }
+      bdd valuation =
+          buildBDDValuation(endOfTraceValuations, BDDForAtomicProposition,
+                            false, AliveAPBDD, "ENDANALYSIS");
 
       // Step automaton with end-of-trace valuation
-      unsigned nextState = currentState;
-      bool foundTransition = false;
-
-      if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][ENDANALYSIS] Stepping automaton from state "
-                     << currentState << " with end-of-trace valuation\n";
-      }
-
-      // Check all outgoing edges for matching transition
-      bdd violatingEdgeCond =
-          bddfalse; // Track the edge condition that led to violation
-      for (auto &edge : SpotGraph->out(currentState)) {
-        bdd edgeCond = edge.cond;
-        unsigned edgeDst = edge.dst;
-
-        bdd restricted = bdd_restrict(edgeCond, valuation);
-        int implies = bdd_implies(valuation, edgeCond);
-
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][ENDANALYSIS]   Edge: " << currentState
-                       << " -> " << edgeDst
-                       << ", restricted: " << restricted.id()
-                       << ", implies: " << implies << "\n";
-        }
-
-        if (restricted == bddtrue || implies) {
-          nextState = edgeDst;
-          foundTransition = true;
-          violatingEdgeCond =
-              edgeCond; // Track the condition that was satisfied
-          if (edslDebugEnabled()) {
-            llvm::errs() << "[EDSL][ENDANALYSIS]   ✓ Found transition: "
-                         << currentState << " -> " << nextState << "\n";
-          }
-          break;
-        }
-      }
-
-      if (!foundTransition) {
-        // No transition found - stay in current state
-        nextState = currentState;
-        if (edslDebugEnabled()) {
-          llvm::errs() << "[EDSL][ENDANALYSIS]   No matching transition, "
-                          "staying in state "
-                       << currentState << "\n";
-        }
-      }
+      auto [nextState, foundTransition, violatingEdgeCond] =
+          stepAutomaton(currentState, valuation, SpotGraph, "ENDANALYSIS");
 
       // Check if the resulting state is accepting (violation)
       bool isViolation = SpotGraph->state_is_accepting(nextState);
@@ -1543,55 +1589,11 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
                        << nextState << " is accepting\n";
         }
 
-        // Extract relevant APs from the violating edge condition
-        std::set<AtomicPropositionID> relevantAPIDs;
-        if (foundTransition && violatingEdgeCond != bddfalse) {
-          relevantAPIDs =
-              extractAPsFromBDD(violatingEdgeCond, BDDForAtomicProposition);
-          if (edslDebugEnabled()) {
-            llvm::errs()
-                << "[EDSL][ENDANALYSIS]   Relevant APs from edge condition: ";
-            for (AtomicPropositionID apID : relevantAPIDs) {
-              llvm::errs() << apID << " ";
-            }
-            llvm::errs() << "\n";
-          }
-        }
-
-        // If no APs found from edge condition, fall back to all APs from
-        // valuation
-        if (relevantAPIDs.empty()) {
-          // Extract APs that were evaluated during this step
-          // (in EndAnalysis, all APs are false, so we need to look at the edge
-          // condition differently) Actually, for EndAnalysis, we should use the
-          // edge condition which we already did above If still empty, use a
-          // default message
-        }
-
-        // Collect diagnostic labels from formula nodes containing relevant APs
-        std::string diagnosticMsg = collectDiagnosticLabels(
-            relevantAPIDs, FormulaNodeForAtomicProposition, Property->Formula);
-
-        // Report violation
-        // Find a good location for the diagnostic - use the node's statement
-        const ExplodedNode *ViolationNode = N;
-        const Stmt *S = ViolationNode->getStmtForDiagnostics();
-
-        PathDiagnosticLocation Loc;
-        if (S) {
-          Loc = PathDiagnosticLocation(S, BR.getSourceManager(),
-                                       ViolationNode->getLocationContext());
-        } else {
-          // Fallback: use declaration end
-          Loc = PathDiagnosticLocation::createDeclEnd(
-              ViolationNode->getLocationContext(), BR.getSourceManager());
-        }
-
-        BR.EmitBasicReport(ViolationNode->getCodeDecl()
-                               .getASTContext()
-                               .getTranslationUnitDecl(),
-                           ContainingChecker, "Property Violation",
-                           "DSL Monitor", diagnosticMsg, Loc);
+        // Report violation using helper (extracts diagnostics from formula)
+        reportViolation(nextState, violatingEdgeCond, foundTransition,
+                        BDDForAtomicProposition,
+                        FormulaNodeForAtomicProposition, Property->Formula, N,
+                        BR, ContainingChecker);
       } else if (edslDebugEnabled()) {
         llvm::errs() << "[EDSL][ENDANALYSIS]   No violation (state "
                      << nextState << " is non-accepting)\n";
