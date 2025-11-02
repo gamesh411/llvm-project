@@ -261,6 +261,107 @@ extractBindingVariables(const LTLFormulaNode *Node,
   }
 }
 
+// Helper: Extract AP IDs that appear in a BDD condition
+// Returns a set of AtomicPropositionID that are relevant to the BDD
+// A variable is relevant if it appears in the support of the condition
+std::set<AtomicPropositionID>
+extractAPsFromBDD(bdd bddCond,
+                  const std::map<AtomicPropositionID, bdd> &BDDForAP) {
+  std::set<AtomicPropositionID> relevantAPs;
+
+  // Get the support set (BDD representing all variables that affect the
+  // condition)
+  bdd support = bdd_support(bddCond);
+
+  // Check each AP's BDD variable
+  for (const auto &[apID, apBDD] : BDDForAP) {
+    int apVar = bdd_var(apBDD);
+    bdd varBDD = bdd_ithvar(apVar);
+
+    // Check if this variable is in the support:
+    // The variable is in support if restricting the condition by the variable
+    // produces a different result than restricting by its negation
+    // OR if the variable appears in the support BDD
+    bdd restrictTrue = bdd_restrict(bddCond, varBDD);
+    bdd restrictFalse = bdd_restrict(bddCond, bdd_not(varBDD));
+
+    // If restrictions differ, the variable affects the condition
+    if (restrictTrue != restrictFalse) {
+      relevantAPs.insert(apID);
+    }
+  }
+
+  return relevantAPs;
+}
+
+// Helper: Find all parent nodes (ancestors) of a given node, including the node
+// itself
+std::vector<const LTLFormulaNode *>
+findAllParentNodes(const LTLFormulaNode *node) {
+  std::vector<const LTLFormulaNode *> nodes;
+  const LTLFormulaNode *current = node;
+
+  while (current) {
+    nodes.push_back(current);
+    current = current->Parent;
+  }
+
+  return nodes;
+}
+
+// Helper: Collect diagnostic labels from formula nodes, prioritizing atomic
+// nodes
+std::string collectDiagnosticLabels(
+    const std::set<AtomicPropositionID> &relevantAPIDs,
+    const std::map<AtomicPropositionID, FormulaNodeID> &FormulaNodeForAP,
+    const LTLFormula &Formula) {
+
+  std::vector<std::string> atomicLabels;
+  std::vector<std::string> parentLabels;
+
+  // Find all formula nodes that contain the relevant APs
+  std::set<const LTLFormulaNode *> relevantNodes;
+
+  for (AtomicPropositionID apID : relevantAPIDs) {
+    auto it = FormulaNodeForAP.find(apID);
+    if (it != FormulaNodeForAP.end()) {
+      FormulaNodeID nodeID = it->second;
+      const LTLFormulaNode *node = Formula.getNodeByID(nodeID);
+      if (node) {
+        // Get all ancestors of this node (including itself)
+        std::vector<const LTLFormulaNode *> ancestors =
+            findAllParentNodes(node);
+        relevantNodes.insert(ancestors.begin(), ancestors.end());
+      }
+    }
+  }
+
+  // Collect labels, prioritizing atomic nodes
+  for (const LTLFormulaNode *node : relevantNodes) {
+    if (!node->DiagnosticLabel.empty()) {
+      if (node->Type == LTLNodeType::Atomic) {
+        atomicLabels.push_back(node->DiagnosticLabel);
+      } else {
+        parentLabels.push_back(node->DiagnosticLabel);
+      }
+    }
+  }
+
+  // Prefer atomic node labels (most specific), fall back to parent labels
+  if (!atomicLabels.empty()) {
+    // If multiple atomic labels, join them
+    std::string result = atomicLabels[0];
+    for (size_t i = 1; i < atomicLabels.size(); i++) {
+      result += "; " + atomicLabels[i];
+    }
+    return result;
+  } else if (!parentLabels.empty()) {
+    return parentLabels[0];
+  }
+
+  return "Property violation detected";
+}
+
 } // namespace
 
 DSLMonitor::DSLMonitor(const CheckerBase *ContainingChecker,
@@ -1394,6 +1495,8 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
       }
 
       // Check all outgoing edges for matching transition
+      bdd violatingEdgeCond =
+          bddfalse; // Track the edge condition that led to violation
       for (auto &edge : SpotGraph->out(currentState)) {
         bdd edgeCond = edge.cond;
         unsigned edgeDst = edge.dst;
@@ -1411,6 +1514,8 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
         if (restricted == bddtrue || implies) {
           nextState = edgeDst;
           foundTransition = true;
+          violatingEdgeCond =
+              edgeCond; // Track the condition that was satisfied
           if (edslDebugEnabled()) {
             llvm::errs() << "[EDSL][ENDANALYSIS]   ✓ Found transition: "
                          << currentState << " -> " << nextState << "\n";
@@ -1438,20 +1543,34 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
                        << nextState << " is accepting\n";
         }
 
-        // Find diagnostic message from formula nodes
-        std::string diagnosticMsg = "Property violation detected";
-
-        // Try to find diagnostic from nodes expecting events (likely leak)
-        for (const auto &[nodeID, apID] : AtomicPropositionForFormulaNode) {
-          const LTLFormulaNode *node = Property->Formula.getNodeByID(nodeID);
-          if (node && !node->DiagnosticLabel.empty()) {
-            // Check if this is an "eventually" obligation (likely leak)
-            if (node->Type == LTLNodeType::Atomic) {
-              diagnosticMsg = node->DiagnosticLabel;
-              break;
+        // Extract relevant APs from the violating edge condition
+        std::set<AtomicPropositionID> relevantAPIDs;
+        if (foundTransition && violatingEdgeCond != bddfalse) {
+          relevantAPIDs =
+              extractAPsFromBDD(violatingEdgeCond, BDDForAtomicProposition);
+          if (edslDebugEnabled()) {
+            llvm::errs()
+                << "[EDSL][ENDANALYSIS]   Relevant APs from edge condition: ";
+            for (AtomicPropositionID apID : relevantAPIDs) {
+              llvm::errs() << apID << " ";
             }
+            llvm::errs() << "\n";
           }
         }
+
+        // If no APs found from edge condition, fall back to all APs from
+        // valuation
+        if (relevantAPIDs.empty()) {
+          // Extract APs that were evaluated during this step
+          // (in EndAnalysis, all APs are false, so we need to look at the edge
+          // condition differently) Actually, for EndAnalysis, we should use the
+          // edge condition which we already did above If still empty, use a
+          // default message
+        }
+
+        // Collect diagnostic labels from formula nodes containing relevant APs
+        std::string diagnosticMsg = collectDiagnosticLabels(
+            relevantAPIDs, FormulaNodeForAtomicProposition, Property->Formula);
 
         // Report violation
         // Find a good location for the diagnostic - use the node's statement
