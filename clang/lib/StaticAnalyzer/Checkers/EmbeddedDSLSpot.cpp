@@ -309,6 +309,71 @@ findAllParentNodes(const LTLFormulaNode *node) {
   return nodes;
 }
 
+// Helper: Find the nearest temporal operator ancestor of a node, or nullptr if
+// none Returns the closest temporal operator (Eventually, Globally, Next,
+// Until, Release) and optionally fills a vector with all temporal ancestors
+// found
+static const LTLFormulaNode *findNearestTemporalAncestor(
+    const LTLFormulaNode *node,
+    std::vector<const LTLFormulaNode *> *allTemporalAncestors = nullptr) {
+  const LTLFormulaNode *current = node;
+  const LTLFormulaNode *nearest = nullptr;
+
+  while (current) {
+    LTLNodeType type = current->Type;
+    bool isTemporal =
+        (type == LTLNodeType::Eventually || type == LTLNodeType::Globally ||
+         type == LTLNodeType::Next || type == LTLNodeType::Until ||
+         type == LTLNodeType::Release);
+
+    if (isTemporal) {
+      if (!nearest) {
+        nearest = current; // First (closest) temporal operator
+      }
+      if (allTemporalAncestors) {
+        allTemporalAncestors->push_back(current);
+      }
+    }
+    current = current->Parent;
+  }
+
+  return nearest;
+}
+
+// Helper: Check if a node contains a target node in its subtree
+static bool nodeContains(const LTLFormulaNode *node,
+                         const LTLFormulaNode *targetNode) {
+  if (!node || !targetNode)
+    return false;
+  if (node == targetNode)
+    return true;
+  for (const auto &child : node->Children) {
+    if (nodeContains(child.get(), targetNode))
+      return true;
+  }
+  return false;
+}
+
+// Helper: Recursively find all nodes of a specific type that contain a target
+// node
+static void findNodesContaining(const LTLFormulaNode *root,
+                                const LTLFormulaNode *targetNode,
+                                LTLNodeType searchType,
+                                std::vector<const LTLFormulaNode *> &result) {
+  if (!root || !targetNode)
+    return;
+
+  if (root->Type == searchType) {
+    if (nodeContains(root, targetNode)) {
+      result.push_back(root);
+    }
+  }
+
+  for (const auto &child : root->Children) {
+    findNodesContaining(child.get(), targetNode, searchType, result);
+  }
+}
+
 // Helper: Collect diagnostic labels from formula nodes, prioritizing atomic
 // nodes
 std::string collectDiagnosticLabels(
@@ -599,7 +664,7 @@ void reportViolation(
     const std::map<AtomicPropositionID, bdd> &BDDForAP,
     const std::map<AtomicPropositionID, FormulaNodeID> &FormulaNodeForAP,
     const LTLFormula &Formula, const ExplodedNode *N, BugReporter &BR,
-    const CheckerBase *ContainingChecker) {
+    const CheckerBase *ContainingChecker, bool isEndAnalysisViolation = false) {
   // Extract relevant APs from the violating edge condition
   std::set<AtomicPropositionID> relevantAPIDs;
   if (foundTransition && violatingEdgeCond != bddfalse) {
@@ -613,9 +678,300 @@ void reportViolation(
     }
   }
 
+  // Special handling for violations: detect if violation is related to
+  // - Safety violations (Implications): immediate violations that should be
+  // reported right away
+  // - Liveness violations (Eventually): violations that are only checked at
+  // end-of-analysis
+  const LTLFormulaNode *selectedTemporalNode = nullptr;
+  std::string temporalNodeTypeName;
+
+  const LTLFormulaNode *rootNode = Formula.getRootNode();
+  if (rootNode) {
+    // For immediate violations (safety), prefer Implies nodes
+    // For deferred violations (liveness), prefer Eventually nodes
+    // But we don't know if this is immediate or deferred from context alone,
+    // so we search for both and prefer Implies if found, then Eventually
+
+    std::vector<const LTLFormulaNode *> allCandidates;
+
+    for (AtomicPropositionID apID : relevantAPIDs) {
+      auto it = FormulaNodeForAP.find(apID);
+      if (it != FormulaNodeForAP.end()) {
+        FormulaNodeID nodeID = it->second;
+        const LTLFormulaNode *apNode = Formula.getNodeByID(nodeID);
+        if (apNode) {
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL]   Searching formula tree for relevant "
+                            "operators containing AP "
+                         << apID << " (node " << nodeID << ")\n";
+          }
+
+          // Search for Implies nodes (safety violations)
+          std::vector<const LTLFormulaNode *> impliesNodes;
+          findNodesContaining(rootNode, apNode, LTLNodeType::Implies,
+                              impliesNodes);
+
+          // Search for Eventually nodes (liveness violations)
+          std::vector<const LTLFormulaNode *> eventuallyNodes;
+          findNodesContaining(rootNode, apNode, LTLNodeType::Eventually,
+                              eventuallyNodes);
+
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL]   Found " << impliesNodes.size()
+                         << " Implies node(s) and " << eventuallyNodes.size()
+                         << " Eventually node(s) containing AP " << apID
+                         << ":\n";
+            for (const LTLFormulaNode *impNode : impliesNodes) {
+              llvm::errs() << "[EDSL]     - Node " << impNode->NodeID
+                           << ": Implies(→)";
+              if (!impNode->DiagnosticLabel.empty()) {
+                llvm::errs()
+                    << " [label: \"" << impNode->DiagnosticLabel << "\"]";
+              } else {
+                llvm::errs() << " [no label]";
+              }
+              llvm::errs() << "\n";
+            }
+            for (const LTLFormulaNode *evNode : eventuallyNodes) {
+              llvm::errs() << "[EDSL]     - Node " << evNode->NodeID
+                           << ": Eventually(F)";
+              if (!evNode->DiagnosticLabel.empty()) {
+                llvm::errs()
+                    << " [label: \"" << evNode->DiagnosticLabel << "\"]";
+              } else {
+                llvm::errs() << " [no label]";
+              }
+              llvm::errs() << "\n";
+            }
+          }
+
+          // Selection strategy depends on violation type:
+          // - EndAnalysis violations: prefer Eventually (liveness violations
+          // like leaks)
+          // - Immediate violations: prefer Implies (safety violations like
+          // double-free)
+          if (isEndAnalysisViolation) {
+            // For EndAnalysis: prefer Eventually (liveness) over Implies
+            // (safety)
+            for (const LTLFormulaNode *evNode : eventuallyNodes) {
+              if (!evNode->DiagnosticLabel.empty()) {
+                selectedTemporalNode = evNode;
+                temporalNodeTypeName = "Eventually(F)";
+                break;
+              }
+            }
+
+            if (!selectedTemporalNode && !eventuallyNodes.empty()) {
+              selectedTemporalNode = eventuallyNodes[0];
+              temporalNodeTypeName = "Eventually(F)";
+            }
+
+            // Fallback to Implies if no Eventually found
+            if (!selectedTemporalNode) {
+              for (const LTLFormulaNode *impNode : impliesNodes) {
+                if (!impNode->DiagnosticLabel.empty()) {
+                  selectedTemporalNode = impNode;
+                  temporalNodeTypeName = "Implies(→)";
+                  break;
+                }
+              }
+
+              if (!selectedTemporalNode && !impliesNodes.empty()) {
+                selectedTemporalNode = impliesNodes[0];
+                temporalNodeTypeName = "Implies(→)";
+              }
+            }
+          } else {
+            // For immediate violations: prefer Implies (safety) over Eventually
+            // (liveness)
+            for (const LTLFormulaNode *impNode : impliesNodes) {
+              if (!impNode->DiagnosticLabel.empty()) {
+                selectedTemporalNode = impNode;
+                temporalNodeTypeName = "Implies(→)";
+                break;
+              }
+            }
+
+            if (!selectedTemporalNode && !impliesNodes.empty()) {
+              selectedTemporalNode = impliesNodes[0];
+              temporalNodeTypeName = "Implies(→)";
+            }
+
+            // Fallback to Eventually if no Implies found
+            if (!selectedTemporalNode) {
+              for (const LTLFormulaNode *evNode : eventuallyNodes) {
+                if (!evNode->DiagnosticLabel.empty()) {
+                  selectedTemporalNode = evNode;
+                  temporalNodeTypeName = "Eventually(F)";
+                  break;
+                }
+              }
+
+              if (!selectedTemporalNode && !eventuallyNodes.empty()) {
+                selectedTemporalNode = eventuallyNodes[0];
+                temporalNodeTypeName = "Eventually(F)";
+              }
+            }
+          }
+
+          if (selectedTemporalNode) {
+            break; // Use first AP that gives us a node
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: if no Eventually found, look at temporal ancestors
+  if (!selectedTemporalNode) {
+    for (AtomicPropositionID apID : relevantAPIDs) {
+      auto it = FormulaNodeForAP.find(apID);
+      if (it != FormulaNodeForAP.end()) {
+        FormulaNodeID nodeID = it->second;
+        const LTLFormulaNode *apNode = Formula.getNodeByID(nodeID);
+        if (apNode) {
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL]   Examining temporal ancestors of AP "
+                         << apID << " (node " << nodeID << ")\n";
+          }
+
+          std::vector<const LTLFormulaNode *> allTemporalAncestors;
+          const LTLFormulaNode *nearestTemporal =
+              findNearestTemporalAncestor(apNode, &allTemporalAncestors);
+
+          if (edslDebugEnabled()) {
+            llvm::errs() << "[EDSL]   Found " << allTemporalAncestors.size()
+                         << " temporal ancestor(s):\n";
+            for (const LTLFormulaNode *tempNode : allTemporalAncestors) {
+              std::string typeStr;
+              switch (tempNode->Type) {
+              case LTLNodeType::Eventually:
+                typeStr = "Eventually(F)";
+                break;
+              case LTLNodeType::Globally:
+                typeStr = "Globally(G)";
+                break;
+              case LTLNodeType::Next:
+                typeStr = "Next(X)";
+                break;
+              case LTLNodeType::Until:
+                typeStr = "Until(U)";
+                break;
+              case LTLNodeType::Release:
+                typeStr = "Release(R)";
+                break;
+              default:
+                typeStr = "Unknown";
+                break;
+              }
+              llvm::errs() << "[EDSL]     - Node " << tempNode->NodeID << ": "
+                           << typeStr;
+              if (!tempNode->DiagnosticLabel.empty()) {
+                llvm::errs()
+                    << " [label: \"" << tempNode->DiagnosticLabel << "\"]";
+              } else {
+                llvm::errs() << " [no label]";
+              }
+              llvm::errs() << "\n";
+            }
+          }
+
+          // Prefer nodes with labels
+          for (const LTLFormulaNode *tempNode : allTemporalAncestors) {
+            if (!tempNode->DiagnosticLabel.empty()) {
+              selectedTemporalNode = tempNode;
+              switch (tempNode->Type) {
+              case LTLNodeType::Eventually:
+                temporalNodeTypeName = "Eventually(F)";
+                break;
+              case LTLNodeType::Globally:
+                temporalNodeTypeName = "Globally(G)";
+                break;
+              case LTLNodeType::Next:
+                temporalNodeTypeName = "Next(X)";
+                break;
+              case LTLNodeType::Until:
+                temporalNodeTypeName = "Until(U)";
+                break;
+              case LTLNodeType::Release:
+                temporalNodeTypeName = "Release(R)";
+                break;
+              default:
+                temporalNodeTypeName = "Unknown";
+                break;
+              }
+              break;
+            }
+          }
+
+          // If still none, use the nearest one
+          if (!selectedTemporalNode && nearestTemporal) {
+            selectedTemporalNode = nearestTemporal;
+            switch (nearestTemporal->Type) {
+            case LTLNodeType::Eventually:
+              temporalNodeTypeName = "Eventually(F)";
+              break;
+            case LTLNodeType::Globally:
+              temporalNodeTypeName = "Globally(G)";
+              break;
+            case LTLNodeType::Next:
+              temporalNodeTypeName = "Next(X)";
+              break;
+            case LTLNodeType::Until:
+              temporalNodeTypeName = "Until(U)";
+              break;
+            case LTLNodeType::Release:
+              temporalNodeTypeName = "Release(R)";
+              break;
+            default:
+              temporalNodeTypeName = "Unknown";
+              break;
+            }
+          }
+
+          if (selectedTemporalNode) {
+            break;
+          }
+        }
+      }
+    }
+  }
+
   // Collect diagnostic labels from formula nodes containing relevant APs
-  std::string diagnosticMsg =
-      collectDiagnosticLabels(relevantAPIDs, FormulaNodeForAP, Formula);
+  std::string diagnosticMsg;
+
+  // If we found a temporal operator node, prioritize its diagnostic label
+  // (this handles leak violations where "eventually free" was never satisfied,
+  // or other temporal property violations)
+  if (selectedTemporalNode) {
+    if (!selectedTemporalNode->DiagnosticLabel.empty()) {
+      diagnosticMsg = selectedTemporalNode->DiagnosticLabel;
+      if (edslDebugEnabled()) {
+        llvm::errs()
+            << "[EDSL]   Temporal violation detected: using label from "
+            << temporalNodeTypeName << " node " << selectedTemporalNode->NodeID
+            << ": \"" << diagnosticMsg << "\"\n";
+      }
+    } else {
+      if (edslDebugEnabled()) {
+        llvm::errs() << "[EDSL]   Found " << temporalNodeTypeName << " node "
+                     << selectedTemporalNode->NodeID
+                     << " but it has no diagnostic label, falling back to "
+                        "standard collection\n";
+      }
+      diagnosticMsg =
+          collectDiagnosticLabels(relevantAPIDs, FormulaNodeForAP, Formula);
+    }
+  } else {
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL]   No temporal operator ancestor found, using "
+                      "standard label collection\n";
+    }
+    // Fall back to standard label collection
+    diagnosticMsg =
+        collectDiagnosticLabels(relevantAPIDs, FormulaNodeForAP, Formula);
+  }
 
   // Find a good location for the diagnostic
   // For leak violations (end-of-function), prefer return statement or closing
@@ -1190,7 +1546,8 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
       reportViolation(nextState, violatingEdgeCond, foundTransition,
                       BDDForAtomicProposition, FormulaNodeForAtomicProposition,
                       Property->Formula, ViolationNode, C.getBugReporter(),
-                      ContainingChecker);
+                      ContainingChecker,
+                      false); // false = immediate violation (safety)
       return; // Don't continue after reporting violation
     }
   } else if (isAccepting && edslDebugEnabled()) {
@@ -1467,7 +1824,8 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
       reportViolation(nextState, violatingEdgeCond, foundTransition,
                       BDDForAtomicProposition, FormulaNodeForAtomicProposition,
                       Property->Formula, ViolationNode, C.getBugReporter(),
-                      ContainingChecker);
+                      ContainingChecker,
+                      false); // false = immediate violation (safety)
       return; // Don't continue after reporting violation
     }
   } else if (isAccepting && edslDebugEnabled()) {
@@ -1593,7 +1951,8 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
         reportViolation(nextState, violatingEdgeCond, foundTransition,
                         BDDForAtomicProposition,
                         FormulaNodeForAtomicProposition, Property->Formula, N,
-                        BR, ContainingChecker);
+                        BR, ContainingChecker,
+                        true); // true = EndAnalysis violation (liveness)
       } else if (edslDebugEnabled()) {
         llvm::errs() << "[EDSL][ENDANALYSIS]   No violation (state "
                      << nextState << " is non-accepting)\n";
