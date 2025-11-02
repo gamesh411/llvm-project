@@ -1,5 +1,6 @@
 #include "EmbeddedDSLSpot.h"
 #include "spot/twaalgos/postproc.hh"
+#include "clang/AST/Decl.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Basic/LLVM.h"
@@ -106,6 +107,29 @@ const bool *getTraceSemanticsAPState(ProgramStateRef State,
 ProgramStateRef removeTraceSemanticsAPState(ProgramStateRef State,
                                             AtomicPropositionID APID) {
   return State->remove<TraceSemanticsAPState>(APID);
+}
+} // namespace clang::ento::dsl
+
+REGISTER_MAP_WITH_PROGRAMSTATE(LastStmtForBindingVar,
+                               ::clang::ento::dsl::BindingVarID,
+                               const ::clang::Stmt *)
+
+namespace clang::ento::dsl {
+ProgramStateRef setLastStmtForBindingVar(ProgramStateRef State,
+                                         BindingVarID VarID, const Stmt *S) {
+  return State->set<LastStmtForBindingVar>(VarID, S);
+}
+
+const Stmt *getLastStmtForBindingVar(ProgramStateRef State,
+                                     BindingVarID VarID) {
+  if (const Stmt *const *Stored = State->get<LastStmtForBindingVar>(VarID))
+    return *Stored;
+  return nullptr;
+}
+
+ProgramStateRef removeLastStmtForBindingVar(ProgramStateRef State,
+                                            BindingVarID VarID) {
+  return State->remove<LastStmtForBindingVar>(VarID);
 }
 } // namespace clang::ento::dsl
 
@@ -619,12 +643,57 @@ const ReturnStmt *findReturnStmt(const ExplodedNode *N) {
 }
 
 // Helper: Report a violation with diagnostic extraction
+// PreferredStmt/PreferredLC allow callers (e.g., PreCall/PostCall) to pin the
+// diagnostic to a precise location such as the current call expression.
 void reportViolation(
     unsigned nextState, bdd violatingEdgeCond, bool foundTransition,
     const std::map<AtomicPropositionID, bdd> &BDDForAP,
     const std::map<AtomicPropositionID, FormulaNodeID> &FormulaNodeForAP,
     const LTLFormula &Formula, const ExplodedNode *N, BugReporter &BR,
-    const CheckerBase *ContainingChecker, bool isEndAnalysisViolation = false) {
+    const CheckerBase *ContainingChecker, bool isEndAnalysisViolation = false,
+    const Stmt *PreferredStmt = nullptr,
+    const LocationContext *PreferredLC = nullptr) {
+  if (edslDebugEnabled()) {
+    const Decl &CodeDecl = N->getCodeDecl();
+    llvm::errs() << "[EDSL][REPORT] ---- reportViolation begin ----\n";
+    llvm::errs() << "[EDSL][REPORT] isEndAnalysisViolation="
+                 << (isEndAnalysisViolation ? "true" : "false")
+                 << ", foundTransition=" << (foundTransition ? "true" : "false")
+                 << ", nextState=" << nextState << "\n";
+    if (const auto *FD = dyn_cast<FunctionDecl>(&CodeDecl)) {
+      llvm::errs() << "[EDSL][REPORT] Function: " << FD->getNameAsString()
+                   << " ("
+                   << FD->getLocation().printToString(BR.getSourceManager())
+                   << ")\n";
+    } else {
+      llvm::errs() << "[EDSL][REPORT] Decl: " << CodeDecl.getDeclKindName()
+                   << "\n";
+    }
+    const ProgramPoint &PPDbg = N->getLocation();
+    llvm::errs() << "[EDSL][REPORT] ProgramPoint: ";
+    if (PPDbg.getAs<FunctionExitPoint>())
+      llvm::errs() << "FunctionExitPoint";
+    else if (PPDbg.getAs<CallEnter>())
+      llvm::errs() << "CallEnter";
+    else if (PPDbg.getAs<CallExitBegin>())
+      llvm::errs() << "CallExitBegin";
+    else if (PPDbg.getAs<CallExitEnd>())
+      llvm::errs() << "CallExitEnd";
+    else if (PPDbg.getAs<BlockEntrance>())
+      llvm::errs() << "BlockEntrance";
+    else if (PPDbg.getAs<BlockEdge>())
+      llvm::errs() << "BlockEdge";
+    else if (PPDbg.getAs<PostStmt>() || PPDbg.getAs<StmtPoint>())
+      llvm::errs() << "StmtPoint/PostStmt";
+    else
+      llvm::errs() << "(unknown kind)";
+    llvm::errs() << "\n";
+    if (PreferredStmt && PreferredLC) {
+      llvm::errs() << "[EDSL][REPORT] PreferredStmt provided: yes\n";
+    } else {
+      llvm::errs() << "[EDSL][REPORT] PreferredStmt provided: no\n";
+    }
+  }
   // Extract relevant APs from the violating edge condition
   std::set<AtomicPropositionID> relevantAPIDs;
   if (foundTransition && violatingEdgeCond != bddfalse) {
@@ -933,6 +1002,27 @@ void reportViolation(
         collectDiagnosticLabels(relevantAPIDs, FormulaNodeForAP, Formula);
   }
 
+  // If we still have the generic fallback or no labels could be determined,
+  // choose a better default by preferring a labeled temporal operator in the
+  // formula tree: Implies for immediate (safety) and Eventually for end
+  // (liveness).
+  if (diagnosticMsg == "Property violation detected" || diagnosticMsg.empty()) {
+    const LTLFormulaNode *rootNode = Formula.getRootNode();
+    if (rootNode) {
+      if (isEndAnalysisViolation) {
+        std::string pick = selectLabelFromSubtree(
+            rootNode, {LTLNodeType::Eventually, LTLNodeType::Implies});
+        if (!pick.empty())
+          diagnosticMsg = pick;
+      } else {
+        std::string pick = selectLabelFromSubtree(
+            rootNode, {LTLNodeType::Implies, LTLNodeType::Eventually});
+        if (!pick.empty())
+          diagnosticMsg = pick;
+      }
+    }
+  }
+
   // Find a good location for the diagnostic
   // For leak violations (end-of-function), prefer return statement or closing
   // brace
@@ -954,11 +1044,25 @@ void reportViolation(
     }
   }
 
-  if (S) {
+  // Use preferred statement if supplied (e.g., current call site for
+  // immediate violations like double-free)
+  if (PreferredStmt && PreferredLC) {
+    Loc = PathDiagnosticLocation(PreferredStmt, BR.getSourceManager(),
+                                 PreferredLC);
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][REPORT] Using preferred statement location: "
+                   << Loc.asLocation().printToString(BR.getSourceManager())
+                   << "\n";
+    }
+  } else if (S) {
     // Check if this is an end-of-function node (FunctionExitPoint)
     // or if we got a CompoundStmt (function body) from getStmtForDiagnostics()
     const ProgramPoint &PP = N->getLocation();
     bool isEndOfFunction = PP.getAs<FunctionExitPoint>().has_value();
+    if (edslDebugEnabled()) {
+      llvm::errs() << "[EDSL][REPORT] isEndOfFunction="
+                   << (isEndOfFunction ? "true" : "false") << "\n";
+    }
 
     // Also check if S is a CompoundStmt - this might be the function body
     // and we're at end-of-function, so we want to find the return statement
@@ -976,6 +1080,12 @@ void reportViolation(
         // Got function body (CompoundStmt), try to find ReturnStmt inside it
         const CompoundStmt *CS = cast<CompoundStmt>(S);
         const ReturnStmt *RS = nullptr;
+        if (edslDebugEnabled()) {
+          llvm::errs()
+              << "[EDSL][REPORT] Scanning CompoundStmt for ReturnStmt ("
+              << CS->getBeginLoc().printToString(BR.getSourceManager()) << " - "
+              << CS->getEndLoc().printToString(BR.getSourceManager()) << ")\n";
+        }
         // Look for ReturnStmt in the body statements (from last to first for
         // efficiency)
         for (auto I = CS->body_rbegin(), E = CS->body_rend(); I != E; ++I) {
@@ -1019,7 +1129,9 @@ void reportViolation(
       Loc = PathDiagnosticLocation(S, BR.getSourceManager(),
                                    N->getLocationContext());
       if (edslDebugEnabled()) {
-        llvm::errs() << "[EDSL][REPORT] Using statement location\n";
+        llvm::errs() << "[EDSL][REPORT] Using statement location: "
+                     << Loc.asLocation().printToString(BR.getSourceManager())
+                     << "\n";
       }
     }
   }
@@ -1049,6 +1161,15 @@ void reportViolation(
                      << "\n";
       }
     }
+  }
+
+  if (edslDebugEnabled()) {
+    llvm::errs() << "[EDSL][REPORT] Final diagnostic message: '"
+                 << diagnosticMsg << "'\n";
+    llvm::errs() << "[EDSL][REPORT] Final diagnostic location: "
+                 << Loc.asLocation().printToString(BR.getSourceManager())
+                 << "\n";
+    llvm::errs() << "[EDSL][REPORT] ---- reportViolation end ----\n";
   }
 
   BR.EmitBasicReport(N->getCodeDecl().getASTContext().getTranslationUnitDecl(),
@@ -1108,34 +1229,32 @@ bool checkAndReportImmediateViolation(
         &FormulaNodeForAtomicProposition,
     const LTLFormula &Formula, ProgramStateRef State, CheckerContext &C,
     const CheckerBase *ContainingChecker, const std::optional<bdd> &AliveAPBDD,
-    const char *EventName) {
+    const char *EventName, const Stmt *PreferredStmt = nullptr,
+    const LocationContext *PreferredLC = nullptr) {
   if (!isAccepting) {
     return false; // No violation
   }
 
   // Determine if this is a safety violation (immediate) or liveness violation
-  // (deferred):
-  // Strategy 1: Check if the state is inherently a liveness violation state
-  // (can remain accepting at end-of-trace when alive=false)
-  // Strategy 2: Check if the violating edge condition depends on the "alive" AP
+  // (deferred). Preserve original behavior: first classify liveness by state,
+  // then use edge dependence on 'alive' only when not inherently liveness.
   bool isSafetyViolation = false;
+  bool isDeferredLiveness = false;
 
-  // First, check if the state is inherently a liveness violation state
   bool isLivenessState = isLivenessViolationState(
       nextState, SpotGraph, AliveAPBDD, BDDForAtomicProposition);
 
   if (isLivenessState) {
-    isSafetyViolation = false; // This is a liveness violation
+    isDeferredLiveness = true;
     if (edslDebugEnabled()) {
       llvm::errs() << "[EDSL][" << EventName << "] State " << nextState
                    << " is a liveness violation state (can remain accepting at "
                       "end-of-trace) -> liveness (deferred)\n";
     }
   } else if (foundTransition) {
-    // Check the edge condition
     bool dependsOnAlive = bddDependsOnAliveAP(violatingEdgeCond, AliveAPBDD);
     isSafetyViolation = !dependsOnAlive;
-
+    isDeferredLiveness = dependsOnAlive;
     if (edslDebugEnabled()) {
       llvm::errs() << "[EDSL][" << EventName << "] Violation edge condition "
                    << (dependsOnAlive ? "depends on" : "does not depend on")
@@ -1156,15 +1275,18 @@ bool checkAndReportImmediateViolation(
                       BDDForAtomicProposition, FormulaNodeForAtomicProposition,
                       Formula, ViolationNode, C.getBugReporter(),
                       ContainingChecker,
-                      false); // false = immediate violation (safety)
+                      false, // false = immediate violation (safety)
+                      PreferredStmt, PreferredLC);
       return true;            // Violation reported, should stop processing
     }
-  } else if (edslDebugEnabled()) {
-    // Liveness violation (depends on alive AP) - defer to EndAnalysis
-    llvm::errs()
-        << "[EDSL][" << EventName << "] Note: Accepting state " << nextState
-        << " reached (liveness violation), violation will be reported at "
-           "EndAnalysis (alive=false)\n";
+  } else if (isDeferredLiveness) {
+    if (edslDebugEnabled()) {
+      // Liveness violation (depends on alive AP) - defer to EndAnalysis
+      llvm::errs()
+          << "[EDSL][" << EventName << "] Note: Accepting state " << nextState
+          << " reached (liveness violation), violation will be reported at "
+             "EndAnalysis (alive=false)\n";
+    }
   }
 
   return false; // No immediate violation reported
@@ -1674,7 +1796,7 @@ void DSLMonitor::handleEvent(PostCallEvent E) {
           nextState, isAccepting, foundTransition, violatingEdgeCond, SpotGraph,
           BDDForAtomicProposition, FormulaNodeForAtomicProposition,
           Property->Formula, State, C, ContainingChecker, AliveAPBDD,
-          "POSTCALL")) {
+          "POSTCALL", Call.getOriginExpr(), C.getLocationContext())) {
     return; // Violation reported, don't continue
   }
 
@@ -1858,6 +1980,11 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
               State = StateNotNull;
               // Track binding var -> symbol in GDM
               State = setBindingVarForSymbol(State, ArgSym, bindingVar);
+              // Remember last statement for this binding variable (to anchor
+              // end-of-analysis diagnostics to last relevant call)
+              if (const Expr *Origin = Call.getOriginExpr()) {
+                State = setLastStmtForBindingVar(State, bindingVar, Origin);
+              }
               if (edslDebugEnabled()) {
                 llvm::errs()
                     << "[EDSL][PRECALL] Split state: null branch added, "
@@ -1874,6 +2001,9 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
           // FirstParameter or NthParameter (without non-null) - just track the
           // binding
           State = setBindingVarForSymbol(State, ArgSym, bindingVar);
+          if (const Expr *Origin = Call.getOriginExpr()) {
+            State = setLastStmtForBindingVar(State, bindingVar, Origin);
+          }
           if (edslDebugEnabled()) {
             llvm::errs() << "[EDSL][PRECALL] Tracking binding var '"
                          << bindingVar << "' -> symbol (param index "
@@ -1939,8 +2069,8 @@ void DSLMonitor::handleEvent(PreCallEvent E) {
   if (checkAndReportImmediateViolation(
           nextState, isAccepting, foundTransition, violatingEdgeCond, SpotGraph,
           BDDForAtomicProposition, FormulaNodeForAtomicProposition,
-          Property->Formula, State, C, ContainingChecker, AliveAPBDD,
-          "PRECALL")) {
+          Property->Formula, State, C, ContainingChecker, AliveAPBDD, "PRECALL",
+          Call.getOriginExpr(), C.getLocationContext())) {
     return; // Violation reported, don't continue
   }
 
@@ -2017,6 +2147,37 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
     if (edslDebugEnabled()) {
       llvm::errs() << "[EDSL][ENDANALYSIS] Checking end node " << N->getID()
                    << "\n";
+      const Stmt *DiagStmt = N->getStmtForDiagnostics();
+      llvm::errs() << "[EDSL][ENDANALYSIS] Node StmtForDiagnostics: "
+                   << (DiagStmt ? DiagStmt->getStmtClassName() : "(null)")
+                   << "\n";
+      if (DiagStmt) {
+        llvm::errs()
+            << "[EDSL][ENDANALYSIS] Stmt range: "
+            << DiagStmt->getBeginLoc().printToString(BR.getSourceManager())
+            << " - "
+            << DiagStmt->getEndLoc().printToString(BR.getSourceManager())
+            << "\n";
+      }
+      const ProgramPoint &PPDbg = N->getLocation();
+      llvm::errs() << "[EDSL][ENDANALYSIS] ProgramPoint: ";
+      if (PPDbg.getAs<FunctionExitPoint>())
+        llvm::errs() << "FunctionExitPoint";
+      else if (PPDbg.getAs<CallEnter>())
+        llvm::errs() << "CallEnter";
+      else if (PPDbg.getAs<CallExitBegin>())
+        llvm::errs() << "CallExitBegin";
+      else if (PPDbg.getAs<CallExitEnd>())
+        llvm::errs() << "CallExitEnd";
+      else if (PPDbg.getAs<BlockEntrance>())
+        llvm::errs() << "BlockEntrance";
+      else if (PPDbg.getAs<BlockEdge>())
+        llvm::errs() << "BlockEdge";
+      else if (PPDbg.getAs<PostStmt>() || PPDbg.getAs<StmtPoint>())
+        llvm::errs() << "StmtPoint/PostStmt";
+      else
+        llvm::errs() << "(unknown kind)";
+      llvm::errs() << "\n";
     }
 
     // Get the AutomatonStateForSymbol map from GDM
@@ -2053,6 +2214,29 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
         if (edslDebugEnabled()) {
           llvm::errs() << "[EDSL][ENDANALYSIS]   VIOLATION DETECTED! State "
                        << nextState << " is accepting\n";
+          // Extra details to understand if we can tie the violation to a better
+          // Stmt
+          std::set<AtomicPropositionID> rel =
+              extractAPsFromBDD(violatingEdgeCond, BDDForAtomicProposition);
+          llvm::errs() << "[EDSL][ENDANALYSIS]   Edge APs: ";
+          for (auto ap : rel)
+            llvm::errs() << ap << ' ';
+          llvm::errs() << "\n";
+        }
+        // Prefer anchoring to the last relevant call for this resource, if
+        // available
+        const Stmt *PreferredStmt = nullptr;
+        const SymbolRef Sym = It.getKey();
+        if (Sym) {
+          const BindingVarID *GDMVar = getBindingVarForSymbol(State, Sym);
+          if (GDMVar) {
+            PreferredStmt = getLastStmtForBindingVar(State, *GDMVar);
+            if (edslDebugEnabled()) {
+              llvm::errs()
+                  << "[EDSL][ENDANALYSIS]   PreferredStmt from binding var '"
+                  << *GDMVar << "': " << (PreferredStmt ? "yes" : "no") << "\n";
+            }
+          }
         }
 
         // Report violation using helper (extracts diagnostics from formula)
@@ -2060,7 +2244,8 @@ void DSLMonitor::handleEvent(EndAnalysisEvent E) {
                         BDDForAtomicProposition,
                         FormulaNodeForAtomicProposition, Property->Formula, N,
                         BR, ContainingChecker,
-                        true); // true = EndAnalysis violation (liveness)
+                        true, // true = EndAnalysis violation (liveness)
+                        PreferredStmt, N->getLocationContext());
       } else if (edslDebugEnabled()) {
         llvm::errs() << "[EDSL][ENDANALYSIS]   No violation (state "
                      << nextState << " is non-accepting)\n";
