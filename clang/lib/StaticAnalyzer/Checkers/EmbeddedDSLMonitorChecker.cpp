@@ -145,7 +145,7 @@ void EmbeddedDSLMonitorChecker::checkDeadSymbols(SymbolReaper &SR,
 void EmbeddedDSLMonitorChecker::checkEndAnalysis(ExplodedGraph &G,
                                                  BugReporter &BR,
                                                  ExprEngine &Eng) const {
-  Monitor->handleEvent(dsl::EndAnalysisEvent{});
+  Monitor->handleEvent(dsl::EndAnalysisEvent{G, BR, Eng});
 }
 
 } // namespace

@@ -1,5 +1,9 @@
 #pragma once
 
+#include "spot/twa/fwd.hh"
+#include "clang/StaticAnalyzer/Checkers/EmbeddedDSLFramework.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SymExpr.h"
 #include <bddx.h>
 #include <functional>
 #include <map>
@@ -7,13 +11,24 @@
 #include <optional>
 #include <string>
 #include <vector>
-#include "clang/StaticAnalyzer/Checkers/EmbeddedDSLFramework.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SymExpr.h"
-#include "spot/twa/fwd.hh"
-namespace clang { namespace ento { class CallEvent; } }
-namespace clang { namespace ento { class CheckerBase; } }
-namespace clang { namespace ento { class CheckerContext; } }
+namespace clang {
+namespace ento {
+class CallEvent;
+}
+} // namespace clang
+namespace clang {
+namespace ento {
+class CheckerBase;
+}
+} // namespace clang
+namespace clang {
+namespace ento {
+class CheckerContext;
+class ExplodedGraph;
+class BugReporter;
+class ExprEngine;
+} // namespace ento
+} // namespace clang
 
 namespace clang::ento::dsl {
 
@@ -48,6 +63,16 @@ const BindingVarID *getBindingVarForSymbol(ProgramStateRef State,
                                            SymbolRef Sym);
 ProgramStateRef removeBindingVarForSymbol(ProgramStateRef State, SymbolRef Sym);
 
+// For trace semantics, the ap state is stored in the program state, signaling
+// the AP was already true once during evaluation.
+ProgramStateRef setTraceSemanticsAPState(ProgramStateRef State,
+                                         AtomicPropositionID APID,
+                                         bool StateValue);
+const bool *getTraceSemanticsAPState(ProgramStateRef State,
+                                     AtomicPropositionID APID);
+ProgramStateRef removeTraceSemanticsAPState(ProgramStateRef State,
+                                            AtomicPropositionID APID);
+
 struct PostCallEvent {
   const CallEvent &Call;
   CheckerContext &C;
@@ -63,7 +88,11 @@ struct DeadSymbolsEvent {
   CheckerContext &C;
 };
 
-struct EndAnalysisEvent {};
+struct EndAnalysisEvent {
+  ExplodedGraph &G;
+  BugReporter &BR;
+  ExprEngine &Eng;
+};
 
 // Generic Property Implementation
 struct PropertyDefinition {
@@ -90,9 +119,12 @@ class DSLMonitor {
   std::map<BindingVarID, std::vector<FormulaNodeID>> FormulaNodesForBindingVar;
   std::map<AtomicPropositionID, bdd> BDDForAtomicProposition;
 
+  // For finite-trace semantics: track the "alive" AP introduced by from_ltlf()
+  std::optional<bdd> AliveAPBDD; // Set if "alive" AP exists in automaton
+
 public:
   DSLMonitor(const CheckerBase *ContainingChecker,
-             std::unique_ptr<PropertyDefinition> Property);
+             std::unique_ptr<PropertyDefinition> Prop);
 
   // Event handlers for available event types
   void handleEvent(PostCallEvent event);
