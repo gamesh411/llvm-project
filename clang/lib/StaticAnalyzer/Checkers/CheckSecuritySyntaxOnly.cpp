@@ -21,6 +21,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 using namespace clang;
 using namespace ento;
@@ -104,13 +105,15 @@ class WalkAST : public StmtVisitor<WalkAST> {
   const bool ShouldReportAnnexKRelated;
 
   const ChecksFilter &filter;
+  const bool ShouldReportDeprecatedOrUnsafeBufferHandling;
 
 public:
-  WalkAST(BugReporter &br, AnalysisDeclContext *ac, const ChecksFilter &f)
-      : BR(br), AC(ac), II_setid(),
-        CheckRand(isArc4RandomAvailable(BR.getContext())),
-        ShouldReportAnnexKRelated(shouldReportAnnexKRelated(br, f)), filter(f) {
-  }
+  WalkAST(BugReporter &br, AnalysisDeclContext* ac,
+          const ChecksFilter &f, bool shouldReportDeprecatedOrUnsafeBufferHandling)
+  : BR(br), AC(ac), II_setid(),
+    CheckRand(isArc4RandomAvailable(BR.getContext())),
+    filter(f),
+    ShouldReportDeprecatedOrUnsafeBufferHandling(shouldReportDeprecatedOrUnsafeBufferHandling) {}
 
   // Statement visitor methods.
   void VisitCallExpr(CallExpr *CE);
@@ -781,8 +784,7 @@ void WalkAST::checkCall_strcat(const CallExpr *CE, const FunctionDecl *FD) {
 
 void WalkAST::checkDeprecatedOrUnsafeBufferHandling(const CallExpr *CE,
                                                     const FunctionDecl *FD) {
-  if (!filter.check_DeprecatedOrUnsafeBufferHandling ||
-      !ShouldReportAnnexKRelated)
+  if (!ShouldReportDeprecatedOrUnsafeBufferHandling)
     return;
 
   // Issue a warning. ArgIndex == -1: Deprecated but not unsafe (has size
@@ -1103,10 +1105,35 @@ namespace {
 class SecuritySyntaxChecker : public Checker<check::ASTCodeBody> {
 public:
   ChecksFilter filter;
+  mutable std::optional<bool> CachedShouldReportDeprecatedOrUnsafeBufferHandling;
 
   void checkASTCodeBody(const Decl *D, AnalysisManager& mgr,
                         BugReporter &BR) const {
-    WalkAST walker(BR, mgr.getAnalysisDeclContext(D), filter);
+    // Compute ShouldReport once per translation unit (lazy initialization).
+    if (!CachedShouldReportDeprecatedOrUnsafeBufferHandling.has_value()) {
+      if (!filter.check_DeprecatedOrUnsafeBufferHandling) {
+        CachedShouldReportDeprecatedOrUnsafeBufferHandling = false;
+      } else {
+        const bool IsAnnexKAvailable = analysis::isAnnexKAvailable(
+            &mgr.getPreprocessor(), mgr.getLangOpts());
+        const bool IsC11OrLaterStandard = mgr.getLangOpts().C11;
+
+        switch (filter.ReportMode) {
+        case ReportPolicy::All:
+          CachedShouldReportDeprecatedOrUnsafeBufferHandling = true;
+          break;
+        case ReportPolicy::Actionable:
+          CachedShouldReportDeprecatedOrUnsafeBufferHandling = IsAnnexKAvailable;
+          break;
+        case ReportPolicy::C11Only:
+          CachedShouldReportDeprecatedOrUnsafeBufferHandling = IsC11OrLaterStandard;
+          break;
+        }
+      }
+    }
+
+    WalkAST walker(BR, mgr.getAnalysisDeclContext(D), filter,
+                   *CachedShouldReportDeprecatedOrUnsafeBufferHandling);
     walker.Visit(D->getBody());
   }
 };
