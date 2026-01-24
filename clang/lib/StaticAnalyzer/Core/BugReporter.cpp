@@ -2899,7 +2899,8 @@ std::optional<PathDiagnosticBuilder> PathDiagnosticBuilder::findValidReport(
 
     // Register refutation visitors first, if they mark the bug invalid no
     // further analysis is required
-    R->addVisitor<LikelyFalsePositiveSuppressionBRVisitor>();
+    if (Reporter.getAnalyzerOptions().ShouldSuppressLikelyFalsePositives)
+      R->addVisitor<LikelyFalsePositiveSuppressionBRVisitor>();
 
     // Register additional node visitors.
     R->addVisitor<NilReceiverBRVisitor>();

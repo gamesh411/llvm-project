@@ -182,6 +182,12 @@ ANALYZER_OPTION(bool, ShouldSuppressFromCXXStandardLibrary,
                 "standard library should be suppressed.",
                 true)
 
+ANALYZER_OPTION(bool, ShouldSuppressLikelyFalsePositives,
+                "suppress-likely-false-positives",
+                "Whether the LikelyFalsePositiveSuppressionBRVisitor should be "
+                "enabled. This is a debug option for testing suppressions.",
+                true)
+
 ANALYZER_OPTION(bool, ShouldCrosscheckWithZ3, "crosscheck-with-z3",
                 "Whether bug reports should be crosschecked with the Z3 "
                 "constraint manager backend.",
