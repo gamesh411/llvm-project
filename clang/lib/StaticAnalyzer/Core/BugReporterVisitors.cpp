@@ -3280,57 +3280,6 @@ void LikelyFalsePositiveSuppressionBRVisitor::finalizeVisitor(
     if (Options.ShouldSuppressFromCXXStandardLibrary) {
       BR.markInvalid(getTag(), nullptr);
       return;
-    } else {
-      // If the complete 'std' suppression is not enabled, suppress reports
-      // from the 'std' namespace that are known to produce false positives.
-
-      // The analyzer issues a false use-after-free when std::list::pop_front
-      // or std::list::pop_back are called multiple times because we cannot
-      // reason about the internal invariants of the data structure.
-      if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
-        const CXXRecordDecl *CD = MD->getParent();
-        if (CD->getName() == "list") {
-          BR.markInvalid(getTag(), nullptr);
-          return;
-        }
-      }
-
-      // The analyzer issues a false positive when the constructor of
-      // std::__independent_bits_engine from algorithms is used.
-      if (const auto *MD = dyn_cast<CXXConstructorDecl>(D)) {
-        const CXXRecordDecl *CD = MD->getParent();
-        if (CD->getName() == "__independent_bits_engine") {
-          BR.markInvalid(getTag(), nullptr);
-          return;
-        }
-      }
-
-      for (const LocationContext *LCtx = N->getLocationContext(); LCtx;
-           LCtx = LCtx->getParent()) {
-        const auto *MD = dyn_cast<CXXMethodDecl>(LCtx->getDecl());
-        if (!MD)
-          continue;
-
-        const CXXRecordDecl *CD = MD->getParent();
-        // The analyzer issues a false positive on
-        //   std::basic_string<uint8_t> v; v.push_back(1);
-        // and
-        //   std::u16string s; s += u'a';
-        // because we cannot reason about the internal invariants of the
-        // data structure.
-        if (CD->getName() == "basic_string") {
-          BR.markInvalid(getTag(), nullptr);
-          return;
-        }
-
-        // The analyzer issues a false positive on
-        //    std::shared_ptr<int> p(new int(1)); p = nullptr;
-        // because it does not reason properly about temporary destructors.
-        if (CD->getName() == "shared_ptr") {
-          BR.markInvalid(getTag(), nullptr);
-          return;
-        }
-      }
     }
   }
 

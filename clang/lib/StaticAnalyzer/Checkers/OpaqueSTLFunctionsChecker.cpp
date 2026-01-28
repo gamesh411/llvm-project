@@ -51,24 +51,23 @@ bool OpaqueSTLFunctionsChecker::shouldForceConservativeEval(
   if (const auto *MD = dyn_cast<CXXMethodDecl>(D)) {
     const CXXRecordDecl *CD = MD->getParent();
     StringRef ClassName = CD->getName();
-    
+
     // std::list - all methods
     if (ClassName == "list")
       return true;
-    
+
     // std::basic_string - all methods
     if (ClassName == "basic_string")
       return true;
-    
+
     // std::shared_ptr - all methods
     if (ClassName == "shared_ptr")
       return true;
-    
+
     // Sort internal functions
     StringRef FuncName = MD->getName();
     if (FuncName == "__partition_with_equals_on_right" ||
-        FuncName == "__introsort" ||
-        FuncName == "__insertion_sort_incomplete")
+        FuncName == "__introsort" || FuncName == "__insertion_sort_incomplete")
       return true;
   }
 
@@ -76,7 +75,7 @@ bool OpaqueSTLFunctionsChecker::shouldForceConservativeEval(
   if (const auto *CD = dyn_cast<CXXConstructorDecl>(D)) {
     const CXXRecordDecl *RD = CD->getParent();
     StringRef ClassName = RD->getName();
-    
+
     if (ClassName == "__independent_bits_engine")
       return true;
   }
@@ -84,7 +83,7 @@ bool OpaqueSTLFunctionsChecker::shouldForceConservativeEval(
   // Match specific functions
   if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
     StringRef FuncName = FD->getName();
-    
+
     // __uninitialized_construct_buf_dispatch::__ucr
     if (FuncName == "__ucr") {
       if (const auto *MD = dyn_cast<CXXMethodDecl>(FD)) {
