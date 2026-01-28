@@ -762,6 +762,11 @@ def STLAlgorithmModeling : Checker<"STLAlgorithmModeling">,
   Dependencies<[ContainerModeling]>,
   Documentation<NotDocumented>;
 
+def OpaqueSTLFunctionsChecker : Checker<"OpaqueSTLFunctions">,
+  HelpText<"Force conservative evaluation for STL internal functions">,
+  Documentation<NotDocumented>,
+  Hidden;
+
 def InvalidatedIteratorChecker : Checker<"InvalidatedIterator">,
   HelpText<"Check for use of invalidated iterators">,
   Dependencies<[IteratorModeling]>,

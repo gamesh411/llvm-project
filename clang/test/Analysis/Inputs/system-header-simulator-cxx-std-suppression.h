@@ -142,5 +142,81 @@ shared_ptr<_Tp>::shared_ptr(nullptr_t) {
 }
 
 #endif // __has_feature(cxx_decltype)
+
+// Sort and algorithm internal functions
+template<typename _RandomAccessIterator, typename _Compare>
+void __introsort(_RandomAccessIterator __first,
+                 _RandomAccessIterator __last, _Compare __comp) {
+  // Fake error trigger
+  int z = 0;
+  z = 5/z;
+}
+
+template<typename _RandomAccessIterator, typename _Compare>
+bool __insertion_sort_incomplete(_RandomAccessIterator __first,
+                                 _RandomAccessIterator __last,
+                                 _Compare __comp) {
+  // Fake error trigger
+  int z = 0;
+  z = 5/z;
+  return true;
+}
+
+template<typename _RandomAccessIterator, typename _Compare>
+_RandomAccessIterator
+__partition_with_equals_on_right(_RandomAccessIterator __first,
+                                 _RandomAccessIterator __last,
+                                 _Compare __comp) {
+  // Fake error trigger
+  int z = 0;
+  z = 5/z;
+  return __first;
+}
+
+// Uninitialized memory utilities
+template<typename _Tp>
+struct __uninitialized_construct_buf_dispatch {
+  template<typename _ForwardIterator, typename _Allocator>
+  static void __ucr(_ForwardIterator __first, _ForwardIterator __last,
+                    _Allocator& __a) {
+    // Fake error trigger
+    int z = 0;
+    z = 5/z;
+  }
+};
+
+// Algorithm functions that call internal implementations
+template<typename _RandomAccessIterator>
+void stable_sort(_RandomAccessIterator __first, _RandomAccessIterator __last) {
+  // Calls internal __uninitialized_construct_buf_dispatch::__ucr
+  __uninitialized_construct_buf_dispatch<int>::__ucr(__first, __last, allocator<int>());
+}
+
+template<typename _RandomAccessIterator, typename _Compare>
+void stable_sort(_RandomAccessIterator __first, _RandomAccessIterator __last,
+                 _Compare __comp) {
+  __uninitialized_construct_buf_dispatch<int>::__ucr(__first, __last, allocator<int>());
+}
+
+template<typename _BidirectionalIterator>
+void inplace_merge(_BidirectionalIterator __first,
+                   _BidirectionalIterator __middle,
+                   _BidirectionalIterator __last) {
+  // Fake error trigger
+  int z = 0;
+  z = 5/z;
+}
+
+template<typename _RandomAccessIterator>
+void sort(_RandomAccessIterator __first, _RandomAccessIterator __last) {
+  __introsort(__first, __last, [](auto a, auto b) { return a < b; });
+}
+
+template<typename _RandomAccessIterator, typename _Compare>
+void sort(_RandomAccessIterator __first, _RandomAccessIterator __last,
+          _Compare __comp) {
+  __introsort(__first, __last, __comp);
+}
+
 }
 
