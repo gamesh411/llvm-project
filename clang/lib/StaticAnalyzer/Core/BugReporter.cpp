@@ -2899,6 +2899,11 @@ std::optional<PathDiagnosticBuilder> PathDiagnosticBuilder::findValidReport(
 
     // Register refutation visitors first, if they mark the bug invalid no
     // further analysis is required
+    
+    // LikelyFalsePositiveSuppressionBRVisitor now only handles:
+    // 1. Blanket std namespace suppression (if option enabled)
+    // 2. sys/queue.h macro suppression
+    // Most std-specific suppressions moved to OpaqueSTLFunctionsChecker
     R->addVisitor<LikelyFalsePositiveSuppressionBRVisitor>();
 
     // Register additional node visitors.
