@@ -2576,8 +2576,28 @@ void ExprEngine::processCFGBlockEntrance(const BlockEdge &L,
       }
     }
     // Is we are inside an unrolled loop then no need the check the counters.
-    if(isUnrolledState(Pred->getState()))
+    if (isUnrolledState(Pred->getState())) {
+      unsigned int BlockCount = nodeBuilder.getContext().blockCount();
+      if (BlockCount >= AMgr.options.maxBlockVisitOnPath) {
+        if (const LocationContext *LC = getInlinedLocationContext(Pred, G)) {
+          static SimpleProgramPointTag tag(TagProviderName,
+                                           "Block count exceeded");
+          const ExplodedNode *Sink =
+              nodeBuilder.generateSink(Pred->getState(), Pred, &tag);
+
+          Engine.FunctionSummaries->markShouldNotInline(
+              LC->getStackFrame()->getDecl());
+
+          if ((!AMgr.options.NoRetryExhausted &&
+               replayWithoutInlining(Pred, LC)))
+            return;
+          NumMaxBlockCountReachedInInlined++;
+
+          Engine.blocksExhausted.push_back(std::make_pair(L, Sink));
+        }
+      }
       return;
+    }
   }
 
   // If this block is terminated by a loop and it has already been visited the

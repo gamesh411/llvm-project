@@ -1,4 +1,4 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -analyzer-config widen-loops=true -analyzer-disable-retry-exhausted -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -analyzer-config widen-loops=true,unroll-loops=false -analyzer-disable-retry-exhausted -verify %s
 
 void clang_analyzer_eval(bool);
 void clang_analyzer_dump(int);
