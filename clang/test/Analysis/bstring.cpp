@@ -7,23 +7,28 @@
 // DEFINE:     -verify %s
 
 // RUN: %{analyzer} \
+// RUN:     -verify=all-alpha \
 // RUN:     -analyzer-checker=alpha.unix.cstring
 
 // RUN: %{analyzer} -DUSE_BUILTINS \
+// RUN:     -verify=all-alpha \
 // RUN:     -analyzer-checker=alpha.unix.cstring
 
 // RUN: %{analyzer} -DVARIANT \
+// RUN:     -verify=all-alpha \
 // RUN:     -analyzer-checker=alpha.unix.cstring
 
 // RUN: %{analyzer} -DUSE_BUILTINS -DVARIANT \
+// RUN:     -verify=all-alpha \
 // RUN:     -analyzer-checker=alpha.unix.cstring
 
-// RUN: %{analyzer} -DSUPPRESS_OUT_OF_BOUND \
+// RUN: %{analyzer} \
+// RUN:     -verify=oob-suppressed \
 // RUN:     -analyzer-checker=alpha.unix.cstring.BufferOverlap \
 // RUN:     -analyzer-checker=unix.cstring.NotNullTerminated
 
 // RUN: %{analyzer} \
-// RUN:   -DUNINIT_WITHOUT_OUTOFBOUND \
+// RUN:   -verify=uninit-only \
 // RUN:   -analyzer-checker=alpha.unix.cstring.UninitializedRead
 
 #include "Inputs/system-header-simulator-cxx.h"
@@ -122,7 +127,6 @@ void memset1_inheritance() {
   clang_analyzer_eval(d.d_mem == 0); // expected-warning{{TRUE}}
 }
 
-#ifdef SUPPRESS_OUT_OF_BOUND
 void memset2_inheritance_field() {
   Derived d;
   // FIXME: This example wrongly calls `memset` on the derived field, with the
@@ -130,9 +134,11 @@ void memset2_inheritance_field() {
   // should stop at that point as this is UB.
   // This test asserts the current behavior of treating the not set part as
   // UNKNOWN.
-  memset(&d.d_mem, 0, sizeof(Derived));
-  clang_analyzer_eval(d.b_mem == 0); // expected-warning{{UNKNOWN}}
-  clang_analyzer_eval(d.d_mem == 0); // expected-warning{{UNKNOWN}}
+  memset(&d.d_mem, 0, sizeof(Derived)); // all-alpha-warning{{Memory set function overflows the destination buffer}}
+  clang_analyzer_eval(d.b_mem == 0); // oob-suppressed-warning{{UNKNOWN}}
+                                     // uninit-only-warning@-1{{UNKNOWN}}
+  clang_analyzer_eval(d.d_mem == 0); // oob-suppressed-warning{{UNKNOWN}}
+                                     // uninit-only-warning@-1{{UNKNOWN}}
 }
 
 void memset3_inheritance_field() {
@@ -143,11 +149,12 @@ void memset3_inheritance_field() {
   // definitions. If we were to be strict the analysis should stop here.
   // This test asserts the current behavior of nevertheless treating the
   // wrongly set field as correctly set to 0.
-  memset(&d.b_mem, 0, sizeof(Derived));
-  clang_analyzer_eval(d.b_mem == 0); // expected-warning{{TRUE}}
-  clang_analyzer_eval(d.d_mem == 0); // expected-warning{{TRUE}}
+  memset(&d.b_mem, 0, sizeof(Derived)); // all-alpha-warning{{Memory set function overflows the destination buffer}}
+  clang_analyzer_eval(d.b_mem == 0); // oob-suppressed-warning{{TRUE}}
+                                     // uninit-only-warning@-1{{TRUE}}
+  clang_analyzer_eval(d.d_mem == 0); // oob-suppressed-warning{{TRUE}}
+                                     // uninit-only-warning@-1{{TRUE}}
 }
-#endif
 
 void memset4_array_nonpod_object() {
   Derived array[10];
@@ -206,7 +213,6 @@ public:
   int d_mem;
 };
 
-#ifdef SUPPRESS_OUT_OF_BOUND
 void memset8_virtual_inheritance_field() {
   DerivedVirtual d;
   // FIXME: This example wrongly calls `memset` on the derived field, with the
@@ -215,33 +221,35 @@ void memset8_virtual_inheritance_field() {
   // complicated by the fact the base base a virtual function.
   // This test asserts the current behavior of treating the not set part as
   // UNKNOWN.
-  memset(&d.b_mem, 0, sizeof(Derived));
-  clang_analyzer_eval(d.b_mem == 0); // expected-warning{{UNKNOWN}}
-  clang_analyzer_eval(d.d_mem == 0); // expected-warning{{UNKNOWN}}
+  memset(&d.b_mem, 0, sizeof(Derived)); // all-alpha-warning{{Memory set function overflows the destination buffer}}
+  clang_analyzer_eval(d.b_mem == 0); // oob-suppressed-warning{{UNKNOWN}}
+                                     // uninit-only-warning@-1{{UNKNOWN}}
+  clang_analyzer_eval(d.d_mem == 0); // oob-suppressed-warning{{UNKNOWN}}
+                                     // uninit-only-warning@-1{{UNKNOWN}}
 }
-#endif
 } // namespace memset_non_pod
 
-#ifdef SUPPRESS_OUT_OF_BOUND
 void memset1_new_array() {
   int *array = new int[10];
   memset(array, 0, 10 * sizeof(int));
-  clang_analyzer_eval(array[2] == 0); // expected-warning{{TRUE}}
+  clang_analyzer_eval(array[2] == 0); // all-alpha-warning{{TRUE}}
+                                      // oob-suppressed-warning@-1{{TRUE}}
+                                      // uninit-only-warning@-2{{TRUE}}
   // FIXME: The analyzer should stop analysis after memset. Maybe the intent of
   // this test was to test for this as a desired behaviour, but it shouldn't be.
   // Going out-of-bounds with memset is a fatal error, even if we decide not to
   // report it.
-  memset(array + 1, 'a', 10 * sizeof(9));
-  clang_analyzer_eval(array[2] == 0); // expected-warning{{UNKNOWN}}
+  memset(array + 1, 'a', 10 * sizeof(9)); // all-alpha-warning{{Memory set function overflows the destination buffer}}
+  clang_analyzer_eval(array[2] == 0); // oob-suppressed-warning{{UNKNOWN}}
+                                      // uninit-only-warning@-1{{UNKNOWN}}
   delete[] array;
 }
-#endif
 
-#ifdef UNINIT_WITHOUT_OUTOFBOUND
 void memmove_uninit_without_outofbound() {
   int src[4];
   int dst[4];
-  memmove(dst, src, sizeof(src)); // expected-warning{{The first element of the 2nd argument is undefined}}
-                                  // expected-note@-1{{Other elements might also be undefined}}
+  memmove(dst, src, sizeof(src)); // all-alpha-warning{{The first element of the 2nd argument is undefined}}
+                                  // all-alpha-note@-1{{Other elements might also be undefined}}
+                                  // uninit-only-warning@-2{{The first element of the 2nd argument is undefined}}
+                                  // uninit-only-note@-3{{Other elements might also be undefined}}
 }
-#endif
