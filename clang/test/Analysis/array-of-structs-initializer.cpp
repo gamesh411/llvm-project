@@ -37,7 +37,7 @@ struct CPPStructWithUserCtor {
 CPPStructWithUserCtor nonconst_cpp_struct_wctor_array[1] = {};
 
 void use_nonconst_struct_array_cpp(void) {
-  clang_analyzer_value(nonconst_cpp_struct_array->a); // expected-warning {{32s:{ [-2147483648, 2147483647] }}}
+  clang_analyzer_value(nonconst_cpp_struct_array->a); // cpp-warning {{32s:{ [-2147483648, 2147483647] }}}
 }
 
 const CPPStructWithUserCtor const_cpp_struct_wctor_array[1] = {};
