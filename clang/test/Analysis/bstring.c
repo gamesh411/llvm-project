@@ -530,3 +530,11 @@ void nocrash_on_locint_offset(void *addr, void* from, struct S s) {
   size_t iAdd = (size_t) addr;
   memcpy(((void *) &(s.f)), from, iAdd);
 }
+
+// PR#190457 - Crash on memcpy with zero-size element type (empty struct).
+void nocrash_on_empty_struct_memcpy(void) {
+  struct {} a[10];
+  __builtin_memcpy(&a[2], a, 2); // should not crash
+  // expected-warning@-1 {{'memcpy' will always overflow; destination buffer has size 0, but size argument is 2}}
+  // expected-warning@-2 {{Memory copy function overflows the destination buffer}}
+}
