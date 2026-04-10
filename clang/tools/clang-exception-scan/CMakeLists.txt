@@ -10,6 +10,7 @@ add_clang_library(clangExceptionScan
   NoexceptDependeeConsumer.cpp
   TypeMappingConsumer.cpp
   TUDependencyGraph.cpp
+  NoexceptApplier.cpp
   PARTIAL_SOURCES_INTENDED
   LINK_LIBS
   clangAST
@@ -18,6 +19,8 @@ add_clang_library(clangExceptionScan
   clangBasic
   clangCrossTU
   clangFrontend
+  clangRewrite
+  clangSerialization
   clangTooling
   clangIndex
 )
@@ -30,6 +33,7 @@ install(FILES
   USRMappingConsumer.h
   NoexceptDependeeConsumer.h
   TypeMappingConsumer.h
+  NoexceptApplier.h
   GlobalExceptionInfo.h
   TUDependencyGraph.h
   DESTINATION include/clang/Tooling/clang-exception-scan
