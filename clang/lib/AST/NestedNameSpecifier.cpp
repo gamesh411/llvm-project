@@ -303,8 +303,10 @@ void NestedNameSpecifier::print(raw_ostream &OS, const PrintingPolicy &Policy,
     // dependent template-id types (e.g., Outer<T>::template Inner<U>),
     // the type requires its own nested-name-specifier for uniqueness, so we
     // suppress that nested-name-specifier during printing.
-    assert(!isa<ElaboratedType>(T) &&
-           "Elaborated type in nested-name-specifier");
+    // Unwrap ElaboratedType if it somehow ends up here (can happen with
+    // certain dependent template constructs).
+    if (const auto *ET = dyn_cast<ElaboratedType>(T))
+      T = ET->getNamedType().getTypePtr();
     if (const TemplateSpecializationType *SpecType
           = dyn_cast<TemplateSpecializationType>(T)) {
       // Print the template name without its corresponding

@@ -374,12 +374,21 @@ bool runAnalysisUntilFixedPoint(
         PhaseRunner(PhaseName, Compilations, WorkList, Factory, ChangedFlag,
                     TUDependencies);
     if (AnalysisPhaseResult.FailedFiles.size() > 0) {
-      sync_errs << "Error: " << PhaseName << " failed for "
-                << AnalysisPhaseResult.FailedFiles.size() << " file(s).\n";
-      AnalysisSuccess = false;
-      break;
+      sync_errs << "Warning: " << PhaseName << " failed for "
+                << AnalysisPhaseResult.FailedFiles.size()
+                << " file(s), continuing with remaining files.\n";
+      // Remove failed files from future work lists
+      std::set<std::string> FailedSet(
+          AnalysisPhaseResult.FailedFiles.begin(),
+          AnalysisPhaseResult.FailedFiles.end());
+      std::vector<std::string> Filtered;
+      for (const auto &F : AnalysisPhaseResult.ChangedFiles)
+        if (FailedSet.find(F) == FailedSet.end())
+          Filtered.push_back(F);
+      WorkList = std::move(Filtered);
+    } else {
+      WorkList = AnalysisPhaseResult.ChangedFiles;
     }
-    WorkList = AnalysisPhaseResult.ChangedFiles;
   }
 
   if (AnalysisSuccess) {

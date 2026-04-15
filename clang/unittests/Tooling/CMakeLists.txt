@@ -72,6 +72,7 @@ add_clang_unittest(ToolingTests
   StencilTest.cpp
   ToolingTest.cpp
   TransformerTest.cpp
+  NoexceptApplierTest.cpp
   NoexceptDependeeTest.cpp
   TypeMappingConsumerTest.cpp
 )

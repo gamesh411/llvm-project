@@ -1,0 +1,137 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+
+\title{Hivatalos válaszok Siket István tanár úr részére}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{1. kérdés}
+
+\paragraph {Kérdés}
+A “Fordítási Egységek Topologikus Rendezése” alfejezetben a TU-kat topologikusan rendezik. Hogyan kezeli azt az esetet, ha kör van a hívási gráfban, és nincs topologikus rendezés?
+
+\paragraph {Válasz}
+
+Az eszköz fordítási egységek közötti analízise során Kahn algoritmusát \cite{Kahn1962} használja, hogy egyszerre detektálja a függőségi gráfban a körök megjelenését, illetve hogy azon részgráfban amely körmentes gráfot alkot, megadjon egy topologikus rendezést.
+
+These dependencies form a directed graph $G = (V, E)$ where $V$ is the set of TUs and $(A, B) \in E$ means $A$ depends on $B$.
+
+This graph may contain cycles (back-edges). For example, TU~$A$ calls a function in TU~$B$, and TU~$B$ calls a function in TU~$A$. A pure topological sort is undefined for cyclic graphs, and analyzing TUs in any linear order will leave some dependencies unresolved after a single pass.
+
+\section{Solution: Three-Level Approach}
+
+The tool handles cycles at three levels:
+
+\subsection{Level 1: Best-Effort Topological Sort (Kahn's Algorithm)}
+
+The tool uses Kahn's algorithm to produce a processing order that respects as many dependencies as possible. Nodes involved in cycles are appended at the end in arbitrary order.
+
+\begin{algorithm}[H]
+\caption{Best-Effort Topological Sort}
+\begin{algorithmic}[1]
+\Procedure{TopologicalSort}{$G = (V, E)$}
+    \State $\text{InDegree}[v] \gets |\{u : (u, v) \in E\}|$ for all $v \in V$
+    \State $Q \gets \{v \in V : \text{InDegree}[v] = 0\}$
+    \State $\text{Result} \gets []$
+    \While{$Q \neq \emptyset$}
+        \State $v \gets Q.\text{pop}()$
+        \State $\text{Result}.\text{append}(v)$
+        \ForAll{$(v, w) \in E$}
+            \State $\text{InDegree}[w] \gets \text{InDegree}[w] - 1$
+            \If{$\text{InDegree}[w] = 0$}
+                \State $Q.\text{add}(w)$
+            \EndIf
+        \EndFor
+    \EndWhile
+    \State $\text{HasCycle} \gets \exists\, v \in V : \text{InDegree}[v] > 0$
+    \ForAll{$v \in V$ where $\text{InDegree}[v] > 0$} \Comment{Cycle nodes}
+        \State $\text{Result}.\text{append}(v)$
+    \EndFor
+    \State \Return $(\text{Result},\; \neg\text{HasCycle})$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+The result is reversed before use (dependencies before dependents). Cycle nodes are analyzed with potentially incomplete information (defaulting to \texttt{Unknown})---but this is resolved by Level~2.
+
+\subsection{Level 2: Fixed-Point Iteration}
+
+The analysis is run repeatedly on a \textbf{worklist of Translation Units (TUs)} until a fixed point is reached. This resolves circular dependencies across TUs.
+
+\begin{algorithm}[H]
+\caption{Fixed-Point Analysis}
+\begin{algorithmic}[1]
+\Procedure{RunUntilFixedPoint}{$\text{Phase}, \text{TUs}$}
+    \State $\text{WorkList} \gets \text{TUs}$ \Comment{Initially all TUs}
+    \While{$\text{WorkList} \neq \emptyset$}
+        \State $\text{Changed} \gets \textbf{false}$
+        \ForAll{$\text{TU} \in \text{WorkList}$}
+            \State Run $\text{Phase}$ on $\text{TU}$, updating shared \texttt{USRToExceptionMap}
+            \If{shared state was modified}
+                \State $\text{Changed} \gets \textbf{true}$
+            \EndIf
+        \EndFor
+        \If{$\neg\text{Changed}$}
+            \State \textbf{break}
+        \EndIf
+        \State $\text{WorkList} \gets \text{dependents of changed TUs}$
+    \EndWhile
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Lattice and Convergence.} The exception state lattice is finite and monotonic:
+\[
+\text{NotThrowing} \sqsubseteq \text{Unknown} \sqsubseteq \text{Throwing}
+\]
+Each iteration only moves a function's state upward (from \texttt{NotThrowing} toward \texttt{Throwing}). Fixed point is guaranteed as states never revert.
+
+\subsection{Level 3: Cycle Detection and Reporting}
+
+After analysis, the tool explicitly detects TU cycles using a Depth-First Search (DFS) with a recursion stack to report them as diagnostics.
+
+\begin{algorithm}[H]
+\caption{TU Cycle Detection (DFS)}
+\begin{algorithmic}[1]
+\Procedure{DetectCycles}{$G = (V, E)$}
+    \State $\text{Visited} \gets \emptyset$, $\text{RecStack} \gets \emptyset$, $\text{Cycles} \gets []$
+    \ForAll{$v \in V$ not yet visited}
+        \State \Call{DFS}{$v, \text{Visited}, \text{RecStack}, \text{Path}$}
+    \EndFor
+    \State \Return $\text{Cycles}$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+\begin{thebibliography}{9}
+\bibitem{Kahn1962}
+Arthur B. Kahn. 1962. Topological sorting of large networks. \textit{Commun. ACM} 5, 11 (Nov. 1962), 558–562. \url{https://doi.org/10.1145/368996.369025}
+\end{thebibliography}
+
+Cyclic SCCs are reported to the user as diagnostics and written to a \texttt{.dot} file for visualization. This is purely informational---the analysis has already handled cycles via fixed-point iteration.
+
+\section{Summary}
+
+\begin{center}
+\begin{tabular}{lll}
+\hline
+\textbf{Level} & \textbf{Mechanism} & \textbf{Purpose} \\
+\hline
+1. Topological sort & Kahn's algorithm & Best-effort processing order \\
+2. Fixed-point iteration & Re-analyze until stable & Resolve circular dependencies \\
+3. Cycle detection & Tarjan's SCC algorithm & Report cycles to user \\
+\hline
+\end{tabular}
+\end{center}
+
+Back-edges (cycles) do not break correctness. They increase the number of fixed-point iterations needed (typically from 1 to 2--3) but the analysis is guaranteed to converge due to the monotonic exception state lattice.
+
+\end{document}

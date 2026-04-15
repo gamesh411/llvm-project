@@ -94,7 +94,27 @@ public:
     if (InsertLoc.isInvalid() || InsertLoc.isMacroID())
       return true;
 
-    Rewrite_.InsertTextBefore(InsertLoc, " noexcept ");
+    std::string NoexceptStr = " noexcept ";
+    {
+      std::lock_guard<std::mutex> Lock(GEI_.USRToExceptionMapMutex);
+      auto It = GEI_.USRToExceptionMap.find(USRBuf);
+      if (It != GEI_.USRToExceptionMap.end()) {
+        const auto &Info = It->getValue();
+        if (!Info.NoexceptDependencies.empty()) {
+          NoexceptStr = " noexcept( ";
+          for (size_t i = 0; i < Info.NoexceptDependencies.size(); ++i) {
+            if (i > 0)
+              NoexceptStr += " && ";
+            NoexceptStr += "noexcept(" +
+                           std::string(Info.NoexceptDependencies[i].str()) +
+                           ")";
+          }
+          NoexceptStr += ") ";
+        }
+      }
+    }
+
+    Rewrite_.InsertTextBefore(InsertLoc, NoexceptStr);
     return true;
   }
 

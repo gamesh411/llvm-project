@@ -145,7 +145,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   // but good safeguard)
   if (AnalyzingFunctions_.count(Func)) {
     return LocalFunctionExceptionInfo{
-        Func, ExceptionState::Unknown, true, EST_None, {}};
+        Func, ExceptionState::Unknown, true, EST_None, {}, {}};
   }
 
   // Add function to the set of currently analyzed functions
@@ -157,7 +157,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   if (!Func) {
     // Handle null function declarations (should never happen in practice)
     return LocalFunctionExceptionInfo{
-        nullptr, ExceptionState::Unknown, true, EST_None, {}};
+        nullptr, ExceptionState::Unknown, true, EST_None, {}, {}};
   }
 
   // Check if we've already analyzed this function in our local cache
@@ -186,6 +186,10 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
                                            ThrowEvent.Conditions);
       }
 
+      for (const auto &Dep : GlobalIt->second.NoexceptDependencies) {
+        LocalInfo.NoexceptDependencies.push_back(Dep);
+      }
+
       // Cache the result locally
       FunctionCache_[Func] = LocalInfo;
       return LocalInfo;
@@ -198,13 +202,13 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
     // noexcept or if they have an exception specification
     ExceptionSpecificationType EST = Func->getExceptionSpecType();
     LocalFunctionExceptionInfo Info{
-        Func, ExceptionState::Unknown, true, EST, {}};
+        Func, ExceptionState::Unknown, true, EST, {}, {}};
 
     // If the function has an exception specification, we can determine its
     // state
-    if (EST == EST_None || EST == EST_Dynamic) {
+    if (EST == EST_None || EST == EST_Dynamic || EST == EST_NoexceptFalse) {
       Info.State = ExceptionState::Throwing;
-    } else if (EST == EST_NoexceptTrue || EST == EST_NoexceptFalse ||
+    } else if (EST == EST_NoexceptTrue || EST == EST_BasicNoexcept ||
                EST == EST_NoThrow) {
       Info.State = ExceptionState::NotThrowing;
     }
@@ -233,7 +237,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   // Check if this is a noexcept builtin
   if (isNoexceptBuiltin(Func)) {
     LocalFunctionExceptionInfo Info{
-        Func, ExceptionState::NotThrowing, false, EST_NoThrow, {}};
+        Func, ExceptionState::NotThrowing, false, EST_NoThrow, {}, {}};
     FunctionCache_[Func] = Info;
     return Info;
   }
@@ -248,7 +252,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   // First analyze all try-catch blocks in order and cache their results
   for (const auto &TC : TryCatches) {
     LocalFunctionExceptionInfo TryInfo{
-        nullptr, ExceptionState::NotThrowing, false, EST_None, {}};
+        nullptr, ExceptionState::NotThrowing, false, EST_None, {}, {}};
     analyzeTryCatch(TC.TryStmt, TryInfo);
     TryBlockCache_[TC.TryStmt] = TryInfo;
   }
@@ -256,7 +260,7 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
   // Now analyze the function body, which will use the cached try block results
   ExceptionSpecificationType EST = Func->getExceptionSpecType();
   LocalFunctionExceptionInfo Info{
-      Func, ExceptionState::NotThrowing, false, EST, {}};
+      Func, ExceptionState::NotThrowing, false, EST, {}, {}};
   analyzeStatement(Func->getBody(), Info);
 
   // Check if the function's exception specification is violated by our analysis
@@ -283,6 +287,9 @@ ASTBasedExceptionAnalyzer::analyzeFunction(const FunctionDecl *Func) {
     GlobalInfo.ExceptionSpecType = Info.ExceptionSpecType;
     for (const auto &ThrowEvent : Info.ThrowEvents) {
       GlobalInfo.ThrowEvents.push_back(fromLocal(ThrowEvent, Context_));
+    }
+    for (const auto &Dep : Info.NoexceptDependencies) {
+      GlobalInfo.NoexceptDependencies.push_back(Dep);
     }
     GEI_.USRToExceptionMap[*USR] = std::move(GlobalInfo);
     Changed_ = true;
@@ -382,7 +389,7 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(
     const CXXTryStmt *Try, LocalFunctionExceptionInfo &Info) {
   // Create info for this try block
   LocalFunctionExceptionInfo TryInfo{
-      nullptr, ExceptionState::NotThrowing, false, EST_None, {}};
+      nullptr, ExceptionState::NotThrowing, false, EST_None, {}, {}};
 
   // Analyze the try block (nested try blocks will be handled via cache)
   analyzeStatement(Try->getTryBlock(), TryInfo);
@@ -406,7 +413,7 @@ void ASTBasedExceptionAnalyzer::analyzeTryCatch(
 
     // Analyze the catch block for throws/rethrows
     LocalFunctionExceptionInfo HandlerInfo{
-        nullptr, ExceptionState::NotThrowing, false, EST_None, {}};
+        nullptr, ExceptionState::NotThrowing, false, EST_None, {}, {}};
 
     analyzeStatement(Handler->getHandlerBlock(), HandlerInfo);
 
@@ -600,6 +607,34 @@ void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
                               LocalIt->second.ThrowEvents.end());
     }
 
+    if (LocalIt->second.State == ExceptionState::NotThrowing &&
+        LocalIt->second.ExceptionSpecType == EST_None) {
+      std::string CalleeName = Callee->getNameAsString() + "()";
+      bool Found = false;
+      for (const auto &Dep : Info.NoexceptDependencies) {
+        if (Dep == CalleeName) {
+          Found = true;
+          break;
+        }
+      }
+      if (!Found) {
+        Info.NoexceptDependencies.emplace_back(CalleeName);
+      }
+    }
+
+    for (const auto &Dep : LocalIt->second.NoexceptDependencies) {
+      bool Found = false;
+      for (const auto &ExistingDep : Info.NoexceptDependencies) {
+        if (ExistingDep == Dep) {
+          Found = true;
+          break;
+        }
+      }
+      if (!Found) {
+        Info.NoexceptDependencies.push_back(Dep);
+      }
+    }
+
     // Check if the callee has a noexcept specification but our analysis found
     // it can throw
     if (LocalIt->second.ExceptionSpecType == EST_NoexceptTrue ||
@@ -639,6 +674,33 @@ void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
         // TODO: check if we need to set Changed_ = true;
       }
 
+      if (GlobalIt->second.State == ExceptionState::NotThrowing &&
+          GlobalIt->second.ExceptionSpecType == EST_None) {
+        std::string CalleeName = Callee->getNameAsString() + "()";
+        bool Found = false;
+        for (const auto &Dep : Info.NoexceptDependencies) {
+          if (Dep == CalleeName) {
+            Found = true;
+            break;
+          }
+        }
+        if (!Found) {
+          Info.NoexceptDependencies.emplace_back(CalleeName);
+        }
+        }
+
+        for (const auto &Dep : GlobalIt->second.NoexceptDependencies) {
+        bool Found = false;
+        for (const auto &ExistingDep : Info.NoexceptDependencies) {
+          if (ExistingDep == Dep) {
+            Found = true;
+            break;
+          }
+        }
+        if (!Found) {
+          Info.NoexceptDependencies.push_back(Dep);
+        }
+        }
       // Check if the callee has a noexcept specification but our analysis
       // found it can throw
       if (GlobalIt->second.ExceptionSpecType == EST_NoexceptTrue ||
@@ -671,6 +733,38 @@ void ASTBasedExceptionAnalyzer::analyzeFunctionCall(
 
   // If not found in global cache, analyze the callee
   LocalFunctionExceptionInfo CalleeInfo = analyzeFunction(Callee);
+
+  // If the callee is NotThrowing but has no specification, this function
+  // depends on it for its noexcept status.
+  if (CalleeInfo.State == ExceptionState::NotThrowing &&
+      CalleeInfo.ExceptionSpecType == EST_None) {
+    std::string CalleeName = Callee->getNameAsString() + "()";
+    bool Found = false;
+    for (const auto &Dep : Info.NoexceptDependencies) {
+      if (Dep == CalleeName) {
+        Found = true;
+        break;
+      }
+    }
+    if (!Found) {
+      Info.NoexceptDependencies.emplace_back(CalleeName);
+    }
+
+  }
+
+  // Also propagate transitive noexcept dependencies
+  for (const auto &Dep : CalleeInfo.NoexceptDependencies) {
+    bool Found = false;
+    for (const auto &ExistingDep : Info.NoexceptDependencies) {
+      if (ExistingDep == Dep) {
+        Found = true;
+        break;
+      }
+    }
+    if (!Found) {
+      Info.NoexceptDependencies.push_back(Dep);
+    }
+  }
 
   // If the callee can throw, this function can throw
   if (CalleeInfo.State == ExceptionState::Throwing) {

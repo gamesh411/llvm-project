@@ -1259,3 +1259,61 @@ TEST_F(ASTBasedExceptionAnalyzerTest, RecursiveFunctionCalls) {
   EXPECT_FALSE(CallerNoThrowInfo.ContainsUnknown);
   EXPECT_TRUE(CallerNoThrowInfo.ThrowEvents.empty());
 }
+
+// Test dependent noexcept expressions
+TEST_F(ASTBasedExceptionAnalyzerTest, DependentNoexceptExpressions) {
+  auto AST = buildASTFromCode(R"(
+    void g() noexcept {}
+    void h() { throw 42; }
+
+    template<typename T>
+    void f_dependent_true() noexcept(noexcept(g())) {
+      g();
+    }
+
+    template<typename T>
+    void f_dependent_false() noexcept(noexcept(h())) {
+      h();
+    }
+
+    void caller_true() {
+      f_dependent_true<int>();
+    }
+
+    void caller_false() {
+      f_dependent_false<int>();
+    }
+  )");
+
+  ASSERT_TRUE(AST != nullptr);
+  auto &Context = AST->getASTContext();
+
+  GlobalExceptionInfo GEI;
+  ASTBasedExceptionAnalyzer Analyzer(Context, GEI);
+
+  // Test f_dependent_true
+  const FunctionDecl *FDTrue = findFunction(AST.get(), "f_dependent_true");
+  ASSERT_TRUE(FDTrue != nullptr);
+  auto InfoTrue = Analyzer.analyzeFunction(FDTrue);
+  // f_dependent_true calls g() which is noexcept, so f_dependent_true is NotThrowing
+  EXPECT_EQ(InfoTrue.State, ExceptionState::NotThrowing);
+
+  // Test f_dependent_false
+  const FunctionDecl *FDFalse = findFunction(AST.get(), "f_dependent_false");
+  ASSERT_TRUE(FDFalse != nullptr);
+  auto InfoFalse = Analyzer.analyzeFunction(FDFalse);
+  // f_dependent_false calls h() which throws, so f_dependent_false is Throwing
+  EXPECT_EQ(InfoFalse.State, ExceptionState::Throwing);
+
+  // Test caller_true
+  const FunctionDecl *CallerTrue = findFunction(AST.get(), "caller_true");
+  ASSERT_TRUE(CallerTrue != nullptr);
+  auto CallerTrueInfo = Analyzer.analyzeFunction(CallerTrue);
+  EXPECT_EQ(CallerTrueInfo.State, ExceptionState::NotThrowing);
+
+  // Test caller_false
+  const FunctionDecl *CallerFalse = findFunction(AST.get(), "caller_false");
+  ASSERT_TRUE(CallerFalse != nullptr);
+  auto CallerFalseInfo = Analyzer.analyzeFunction(CallerFalse);
+  EXPECT_EQ(CallerFalseInfo.State, ExceptionState::Throwing);
+}

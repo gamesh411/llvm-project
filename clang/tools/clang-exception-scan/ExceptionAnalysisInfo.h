@@ -85,6 +85,8 @@ struct LocalFunctionExceptionInfo {
       ExceptionSpecType; ///< The function's exception specification type
   llvm::SmallVector<LocalThrowInfo, 2>
       ThrowEvents; ///< Types of exceptions that can be thrown
+  llvm::SmallVector<OwningStringTy, 4>
+      NoexceptDependencies; ///< Function names this noexcept depends on
 };
 
 struct GlobalFunctionExceptionInfo {
@@ -95,6 +97,8 @@ struct GlobalFunctionExceptionInfo {
       ExceptionSpecType; ///< The function's exception specification type
   llvm::SmallVector<GlobalThrowInfo, 2>
       ThrowEvents; ///< Types of exceptions that can be thrown
+  llvm::SmallVector<OwningStringTy, 4>
+      NoexceptDependencies; ///< Function names this noexcept depends on
 };
 
 } // namespace exception_scan
