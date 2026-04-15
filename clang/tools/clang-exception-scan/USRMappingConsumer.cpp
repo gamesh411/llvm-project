@@ -16,6 +16,8 @@ public:
                   ASTContext &Context)
       : CurrentTU_(CurrentTU), GCG_(GCG), Context_(Context) {}
 
+  bool shouldVisitTemplateInstantiations() const { return true; }
+
 private:
   // Helper to get USR and basic FunctionMappingInfo
   // Returns std::nullopt if USR cannot be determined (or FD is null)
