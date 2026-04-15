@@ -201,7 +201,13 @@ hasCycleDFS(const std::string &TU,
   Path.push_back(TU);
 
   bool HasCycle = false;
-  for (const auto &Neighbor : Graph.at(TU)) {
+  auto It = Graph.find(TU);
+  if (It == Graph.end()) {
+    RecStack.erase(TU);
+    Path.pop_back();
+    return false;
+  }
+  for (const auto &Neighbor : It->second) {
     if (RecStack.find(Neighbor) != RecStack.end()) {
       // Found a cycle, add the current path to the result
       auto It = std::find(Path.begin(), Path.end(), Neighbor);
