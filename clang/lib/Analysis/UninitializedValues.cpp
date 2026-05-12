@@ -661,10 +661,196 @@ public:
 
 } // namespace
 
+/// Check if the use of a MayUninitialized variable is guarded by a condition
+/// on a "correlated guard" variable that is always initialized in the same
+/// CFG blocks as the target variable. This suppresses false positives like:
+///
+///   int guard = 0, value;
+///   if (cond) { value = x; guard = 1; }
+///   if (guard) { use(value); }  // value is always initialized here
+///
+/// The heuristic: if the current block's sole predecessor has a branch
+/// condition that tests a variable G, and every CFG block that assigns V
+/// also assigns G, then the use is safe (the guard is correlated with
+/// initialization of V).
+static const VarDecl *extractGuardVar(const CFGBlock *PredBlock,
+                                      const DeclContext *DC) {
+  const Stmt *Term = PredBlock->getTerminatorCondition(/*StripParens=*/true);
+  if (!Term)
+    return nullptr;
+
+  const Expr *TermExpr = dyn_cast<Expr>(Term);
+  if (!TermExpr)
+    return nullptr;
+
+  TermExpr = TermExpr->IgnoreParenImpCasts();
+
+  const DeclRefExpr *GuardDRE = nullptr;
+  if (const auto *BO = dyn_cast<BinaryOperator>(TermExpr)) {
+    if (BO->isComparisonOp()) {
+      if (const auto *DRE = dyn_cast<DeclRefExpr>(
+              BO->getLHS()->IgnoreParenImpCasts()))
+        GuardDRE = DRE;
+      else if (const auto *DRE = dyn_cast<DeclRefExpr>(
+                   BO->getRHS()->IgnoreParenImpCasts()))
+        GuardDRE = DRE;
+    }
+  } else if (const auto *UO = dyn_cast<UnaryOperator>(TermExpr)) {
+    if (UO->getOpcode() == UO_LNot)
+      if (const auto *DRE = dyn_cast<DeclRefExpr>(
+              UO->getSubExpr()->IgnoreParenImpCasts()))
+        GuardDRE = DRE;
+  } else if (const auto *DRE = dyn_cast<DeclRefExpr>(TermExpr)) {
+    GuardDRE = DRE;
+  }
+
+  if (!GuardDRE)
+    return nullptr;
+
+  const auto *GuardVD = dyn_cast<VarDecl>(GuardDRE->getDecl());
+  if (!GuardVD || !isTrackedVar(GuardVD, DC))
+    return nullptr;
+
+  return GuardVD;
+}
+
+/// Check if a CFG block contains an assignment to the given variable.
+static bool blockAssignsVar(const CFGBlock *B, const VarDecl *VD) {
+  for (const auto &Elem : *B) {
+    if (auto CS = Elem.getAs<CFGStmt>()) {
+      const Stmt *S = CS->getStmt();
+      if (const auto *BO = dyn_cast<BinaryOperator>(S)) {
+        if (BO->isAssignmentOp()) {
+          if (const auto *DRE = dyn_cast<DeclRefExpr>(
+                  BO->getLHS()->IgnoreParenImpCasts())) {
+            if (DRE->getDecl() == VD)
+              return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+static bool isGuardedByCorrelatedCondition(const CFGBlock *Block,
+                                           const VarDecl *VD,
+                                           CFGBlockValues &Vals,
+                                           const CFG &Cfg,
+                                           const DeclContext *DC) {
+  // We only handle the case where the block has a single predecessor
+  // whose terminator is a branch condition.
+  if (Block->pred_size() != 1)
+    return false;
+
+  const CFGBlock *PredBlock = *Block->pred_begin();
+  if (!PredBlock)
+    return false;
+
+  const VarDecl *GuardVD = extractGuardVar(PredBlock, DC);
+  if (!GuardVD || GuardVD == VD)
+    return false;
+
+  // Find all CFG blocks that initialize VD (where VD transitions from
+  // not-Initialized to Initialized).
+  SmallVector<const CFGBlock *, 4> InitBlocks;
+  for (const auto *B : Cfg) {
+    if (!B || B == &Cfg.getEntry())
+      continue;
+
+    // Check if this block initializes VD: VD is Initialized at exit of B,
+    // but not Initialized at entry (i.e., not all predecessors have it
+    // Initialized).
+    Value VDValAtBlock = Vals.getValue(B, VD);
+    if (VDValAtBlock != Initialized)
+      continue;
+
+    // Check if VD was not already Initialized from all predecessors.
+    bool AllPredsInitialized = true;
+    bool HasPred = false;
+    for (CFGBlock::const_pred_iterator PI = B->pred_begin(),
+                                       PE = B->pred_end();
+         PI != PE; ++PI) {
+      const CFGBlock *Pred = *PI;
+      if (!Pred)
+        continue;
+      HasPred = true;
+      if (Vals.getValue(Pred, VD) != Initialized) {
+        AllPredsInitialized = false;
+        break;
+      }
+    }
+
+    if (!HasPred || AllPredsInitialized)
+      continue;
+
+    InitBlocks.push_back(B);
+  }
+
+  if (InitBlocks.empty())
+    return false;
+
+  // Direct check: guard variable is assigned in every block that initializes V.
+  bool DirectMatch = true;
+  for (const auto *B : InitBlocks) {
+    if (!blockAssignsVar(B, GuardVD)) {
+      DirectMatch = false;
+      break;
+    }
+  }
+  if (DirectMatch)
+    return true;
+
+  // Transitive check: the guard variable is assigned in a block whose sole
+  // predecessor branches on a variable that IS co-initialized with V.
+  // This handles: psData set with row_status, then data_storage set when
+  // psData==1, then row_status used when data_storage==1.
+  //
+  // Find blocks where GuardVD is assigned.
+  for (const auto *B : Cfg) {
+    if (!B || B == &Cfg.getEntry())
+      continue;
+    if (!blockAssignsVar(B, GuardVD))
+      continue;
+
+    // Check if this block has a single predecessor with a branch condition
+    // on a variable that is co-initialized with VD.
+    if (B->pred_size() != 1)
+      continue;
+    const CFGBlock *GuardPred = *B->pred_begin();
+    if (!GuardPred)
+      continue;
+
+    const VarDecl *TransGuardVD = extractGuardVar(GuardPred, DC);
+    if (!TransGuardVD || TransGuardVD == VD || TransGuardVD == GuardVD)
+      continue;
+
+    // Check if TransGuardVD is assigned in every block that initializes VD.
+    bool TransMatch = true;
+    for (const auto *IB : InitBlocks) {
+      if (!blockAssignsVar(IB, TransGuardVD)) {
+        TransMatch = false;
+        break;
+      }
+    }
+    if (TransMatch)
+      return true;
+  }
+
+  return false;
+}
+
 void TransferFunctions::reportUse(const Expr *ex, const VarDecl *vd) {
   Value v = vals[vd];
-  if (isUninitialized(v))
+  if (isUninitialized(v)) {
+    // For MayUninitialized, check if the use is guarded by a correlated
+    // condition that ensures the variable is actually initialized.
+    if (v == MayUninitialized &&
+        isGuardedByCorrelatedCondition(
+            block, vd, vals, cfg, cast<DeclContext>(ac.getDecl())))
+      return;
     handler.handleUseOfUninitVariable(vd, getUninitUse(ex, vd, v));
+  }
 }
 
 void TransferFunctions::reportConstRefUse(const Expr *ex, const VarDecl *vd) {
