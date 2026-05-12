@@ -51,7 +51,47 @@ private:
 
   void reportBug(ExplodedNode *N, const Expr *E, CheckerContext &C,
                  const char Msg[]) const;
+
+  /// Return true if the cast is part of a sizeof multiplication pattern
+  /// like sizeof(T) * count or count * sizeof(T). These are idiomatic size
+  /// computations where the count is virtually always non-negative.
+  static bool isInSizeofMultiplication(const ImplicitCastExpr *Cast,
+                                       const ParentMap &PM);
+
+  /// Return true if E is or contains a sizeof/alignof expression.
+  static bool isSizeofExpr(const Expr *E);
 };
+}
+
+/// Check whether E is a UnaryExprOrTypeTraitExpr (sizeof, alignof, etc.)
+/// possibly wrapped in implicit casts.
+bool ConversionChecker::isSizeofExpr(const Expr *E) {
+  E = E->IgnoreParenImpCasts();
+  return isa<UnaryExprOrTypeTraitExpr>(E);
+}
+
+/// Check if the implicit cast is an operand of a multiplication where the
+/// other operand involves sizeof. This suppresses false positives from
+/// patterns like: memcpy(dst, src, sizeof(*dst) * count)
+/// where count is a signed int that is contextually non-negative.
+bool ConversionChecker::isInSizeofMultiplication(const ImplicitCastExpr *Cast,
+                                                 const ParentMap &PM) {
+  const Stmt *Parent = PM.getParent(Cast);
+  if (!Parent)
+    return false;
+
+  const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent);
+  if (!BO)
+    return false;
+
+  if (BO->getOpcode() != BO_Mul)
+    return false;
+
+  // Check if either side of the multiplication is a sizeof expression.
+  const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
+  const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+
+  return isSizeofExpr(LHS) || isSizeofExpr(RHS);
 }
 
 void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
@@ -71,6 +111,12 @@ void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
     return;
   // Dont warn if this is part of an explicit cast
   if (isa<ExplicitCastExpr>(Parent))
+    return;
+
+  // Don't warn for sizeof(T) * signed_var patterns — these are idiomatic
+  // size computations where the signed variable is a count/size that is
+  // non-negative by construction.
+  if (isInSizeofMultiplication(Cast, PM))
     return;
 
   bool LossOfSign = false;
