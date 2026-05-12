@@ -60,38 +60,93 @@ private:
 
   /// Return true if E is or contains a sizeof/alignof expression.
   static bool isSizeofExpr(const Expr *E);
+
+  /// Return true if the other operand of the parent binary operator contains
+  /// an explicit cast to unsigned. This indicates the programmer intentionally
+  /// chose unsigned arithmetic.
+  static bool otherOperandHasExplicitUnsignedCast(const ImplicitCastExpr *Cast,
+                                                  const ParentMap &PM);
 };
 }
 
 /// Check whether E is a UnaryExprOrTypeTraitExpr (sizeof, alignof, etc.)
-/// possibly wrapped in implicit casts.
+/// possibly wrapped in implicit casts or nested in a multiplication chain.
 bool ConversionChecker::isSizeofExpr(const Expr *E) {
   E = E->IgnoreParenImpCasts();
-  return isa<UnaryExprOrTypeTraitExpr>(E);
+  if (isa<UnaryExprOrTypeTraitExpr>(E))
+    return true;
+  // Check inside multiplication chains: sizeof(T) * x is itself not sizeof,
+  // but contains sizeof.
+  if (const auto *BO = dyn_cast<BinaryOperator>(E))
+    if (BO->getOpcode() == BO_Mul)
+      return isSizeofExpr(BO->getLHS()) || isSizeofExpr(BO->getRHS());
+  return false;
 }
 
-/// Check if the implicit cast is an operand of a multiplication where the
-/// other operand involves sizeof. This suppresses false positives from
-/// patterns like: memcpy(dst, src, sizeof(*dst) * count)
-/// where count is a signed int that is contextually non-negative.
+/// Check if the implicit cast is an operand of a multiplication where
+/// sizeof appears anywhere in the multiplication chain. This suppresses
+/// false positives from patterns like:
+///   memcpy(dst, src, sizeof(*dst) * count)
+///   memset(buf, 0, sizeof(*buf) * width * height)
+/// where the signed variables are counts that are non-negative by construction.
 bool ConversionChecker::isInSizeofMultiplication(const ImplicitCastExpr *Cast,
                                                  const ParentMap &PM) {
+  // Walk up through chained multiplications to find any sizeof.
+  const Stmt *S = Cast;
+  while (true) {
+    const Stmt *Parent = PM.getParent(S);
+    if (!Parent)
+      return false;
+
+    const auto *BO = dyn_cast<BinaryOperator>(Parent);
+    if (!BO || BO->getOpcode() != BO_Mul)
+      return false;
+
+    // Check both sides of this multiplication for sizeof.
+    if (isSizeofExpr(BO->getLHS()) || isSizeofExpr(BO->getRHS()))
+      return true;
+
+    // Walk up — maybe this multiplication is itself part of a larger one
+    // that has sizeof on the other side.
+    S = BO;
+  }
+}
+
+/// Check if the other operand of the parent binary operator has an explicit
+/// cast to unsigned or is an unsigned integer literal. When a programmer
+/// writes V * (unsigned)coeff, idx >= (unsigned)count, or k > 31U, they
+/// intentionally chose unsigned arithmetic/comparison semantics.
+bool ConversionChecker::otherOperandHasExplicitUnsignedCast(
+    const ImplicitCastExpr *Cast, const ParentMap &PM) {
   const Stmt *Parent = PM.getParent(Cast);
   if (!Parent)
     return false;
 
-  const BinaryOperator *BO = dyn_cast<BinaryOperator>(Parent);
+  const auto *BO = dyn_cast<BinaryOperator>(Parent);
   if (!BO)
     return false;
 
-  if (BO->getOpcode() != BO_Mul)
+  // Only suppress for multiplicative, additive, and relational operators.
+  if (!BO->isMultiplicativeOp() && !BO->isRelationalOp() && !BO->isAdditiveOp())
     return false;
 
-  // Check if either side of the multiplication is a sizeof expression.
-  const Expr *LHS = BO->getLHS()->IgnoreParenImpCasts();
-  const Expr *RHS = BO->getRHS()->IgnoreParenImpCasts();
+  // Find the other operand (the one that isn't our cast).
+  const Expr *Other =
+      (BO->getLHS()->IgnoreParenImpCasts() == Cast->IgnoreParenImpCasts())
+          ? BO->getRHS()
+          : BO->getLHS();
 
-  return isSizeofExpr(LHS) || isSizeofExpr(RHS);
+  Other = Other->IgnoreParenImpCasts();
+
+  // Explicit cast to unsigned.
+  if (const auto *ECE = dyn_cast<ExplicitCastExpr>(Other))
+    return ECE->getType()->isUnsignedIntegerType();
+
+  // Unsigned integer literal (e.g. 31U, 1024U).
+  if (const auto *IL = dyn_cast<IntegerLiteral>(Other))
+    return IL->getType()->isUnsignedIntegerType();
+
+  return false;
 }
 
 void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
@@ -117,6 +172,11 @@ void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
   // size computations where the signed variable is a count/size that is
   // non-negative by construction.
   if (isInSizeofMultiplication(Cast, PM))
+    return;
+
+  // Don't warn when the other operand of the binary operator has an explicit
+  // cast to unsigned — the programmer intentionally chose unsigned arithmetic.
+  if (otherOperandHasExplicitUnsignedCast(Cast, PM))
     return;
 
   bool LossOfSign = false;
