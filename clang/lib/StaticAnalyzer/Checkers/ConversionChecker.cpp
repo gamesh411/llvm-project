@@ -200,10 +200,9 @@ void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
       LossOfSign = isLossOfSign(Cast, C);
       // No loss of precision.
     } else if (Opc == BO_AndAssign) {
-      LossOfSign = isLossOfSign(Cast, C);
-      // No loss of precision.
+      // No loss of sign or precision for bitwise AND — it's a mask operation.
     } else if (Opc == BO_OrAssign || Opc == BO_XorAssign) {
-      LossOfSign = isLossOfSign(Cast, C);
+      // No loss of sign for bitwise OR/XOR — these are bit-pattern operations.
       LossOfPrecision = isLossOfPrecision(Cast, B->getLHS()->getType(), C);
     } else if (B->isRelationalOp() || B->isMultiplicativeOp()) {
       LossOfSign = isLossOfSign(Cast, C);

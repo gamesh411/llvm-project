@@ -58,21 +58,21 @@ void andAssign(void) {
   unsigned long L = 1000;
   int I = -1;
   U8 &= L; // no-warning
-  L &= I; // expected-warning {{Loss of sign in implicit conversion}}
+  L &= I; // no-warning (bitwise AND is a mask operation)
 }
 
 void orAssign(void) {
   unsigned long L = 1000;
   int I = -1;
   U8 |= L; // expected-warning {{Loss of precision in implicit conversion}}
-  L |= I;  // expected-warning {{Loss of sign in implicit conversion}}
+  L |= I;  // no-warning (bitwise OR is a bit-pattern operation)
 }
 
 void xorAssign(void) {
   unsigned long L = 1000;
   int I = -1;
   U8 ^= L; // expected-warning {{Loss of precision in implicit conversion}}
-  L ^= I;  // expected-warning {{Loss of sign in implicit conversion}}
+  L ^= I;  // no-warning (bitwise XOR is a bit-pattern operation)
 }
 
 void init1(void) {
