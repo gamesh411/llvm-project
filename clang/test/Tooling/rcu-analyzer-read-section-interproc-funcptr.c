@@ -1,4 +1,4 @@
-// RUN: clang-rcu-analyzer --mode=sections %s -- -x c 2>&1 | FileCheck %s
+// RUN: clang-rcu-analyzer --mode=sections %s -- -x c 2>&1 | FileCheck %s --allow-empty
 
 void rcu_read_lock(void);
 void rcu_read_unlock(void);

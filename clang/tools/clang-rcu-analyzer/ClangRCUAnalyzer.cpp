@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //===----------------------------------------------------------------------===//
 
+#include "RCUApiNames.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTTypeTraits.h"
@@ -49,17 +50,26 @@ static llvm::cl::opt<AnalysisMode> ModeOpt(
                           "ranges")),
     llvm::cl::init(AnalysisMode::Points), llvm::cl::cat(RCUAnalyzerCategory));
 
+static llvm::cl::opt<bool> MultiExitOpt(
+    "experimental-multi-exit",
+    llvm::cl::desc(
+        "Also report a lock closed by several unlocks on distinct exit paths, as "
+        "one region spanning up to its last closing unlock. The span is an "
+        "approximation: it need not be protected throughout, so this is off by "
+        "default and exists to quantify the recall such an approximation buys"),
+    llvm::cl::init(false), llvm::cl::cat(RCUAnalyzerCategory));
+
 static llvm::cl::opt<std::string> RootFunctionOpt(
     "root-function",
     llvm::cl::desc(
         "Limit interprocedural dominator aggregation to call-sites reachable from the given function (qualified name)"),
     llvm::cl::init(""), llvm::cl::cat(RCUAnalyzerCategory));
 
-static bool isTargetRCUName(StringRef Name) {
-  return Name == "rcu_read_lock" || Name == "rcu_read_unlock" ||
-         Name == "rcu_assign_pointer" || Name == "synchronize_rcu" ||
-         Name == "call_rcu" || Name == "rcu_dereference";
+static StringRef canonicalRCUName(StringRef Name) {
+  return clang::rcu::canonicalName(Name);
 }
+
+static bool isTargetRCUName(StringRef Name) { return clang::rcu::isApiName(Name); }
 
 struct DomInfo { SourceLocation Loc; std::string Text; bool Value; };
 static std::string makeDomKey(const ASTContext &Ctx, const DomInfo &D) {
@@ -88,8 +98,8 @@ public:
     if (!FD)
       return true;
 
-    StringRef CalleeName = FD->getName();
-    if (!isTargetRCUName(CalleeName))
+    StringRef CalleeName = canonicalRCUName(FD->getName());
+    if (CalleeName.empty())
       return true;
 
     // Ignore calls that are not located in the main file.
@@ -578,7 +588,7 @@ public:
         if (const auto *CE = dyn_cast<CallExpr>(S)) {
           if (const FunctionDecl *Callee = CE->getDirectCallee()) {
             CallsFrom[FD].push_back({Callee, CE});
-            if (Callee->getName() == "rcu_read_unlock") {
+            if (canonicalRCUName(Callee->getName()) == "rcu_read_unlock") {
               DirectUnlockLocs[FD].push_back(CE->getExprLoc());
             }
           }
@@ -630,7 +640,7 @@ public:
               if (auto CS = Elt.getAs<CFGStmt>()) {
                 if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
                   if (const FunctionDecl *Callee = CE->getDirectCallee()) {
-                    if (Callee->getName() == "rcu_read_unlock") {
+                    if (canonicalRCUName(Callee->getName()) == "rcu_read_unlock") {
                       UnlockBlocks.push_back(BB);
                     }
                   }
@@ -736,7 +746,7 @@ public:
           if (auto CS = Elt.getAs<CFGStmt>()) {
             if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
               if (const FunctionDecl *Callee = CE->getDirectCallee()) {
-                StringRef N = Callee->getName();
+                StringRef N = canonicalRCUName(Callee->getName());
                 if (N == "rcu_read_lock") Locks.push_back({BB, CE->getExprLoc(), CE});
                 else if (N == "rcu_read_unlock") Unlocks.push_back({BB, CE->getExprLoc(), CE});
               }
@@ -757,7 +767,7 @@ public:
             if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
               const FunctionDecl *Callee = CE->getDirectCallee();
               if (!Callee) continue;
-              StringRef N = Callee->getName();
+              StringRef N = canonicalRCUName(Callee->getName());
               if (N == "rcu_read_lock") {
                 Stack.push_back(CE);
               } else if (N == "rcu_read_unlock") {
@@ -787,18 +797,172 @@ public:
         }
       }
 
-      for (const auto &L : Locks) {
-        for (const auto &U : Unlocks) {
-          // Skip pairs already emitted via intrablock linear pairing.
-          if (UsedLock.count(L.CE) || UsedUnlock.count(U.CE)) continue;
-          if (L.BB == U.BB) continue;
-          const bool DomOK = Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(U.BB));
-          const bool PostOK = PostDom.dominates(const_cast<CFGBlock *>(U.BB), const_cast<CFGBlock *>(L.BB));
-          if (DomOK && PostOK) {
-            printSection(L.Loc, U.Loc, "branched");
+      // Locks already closed by an in-function pairing. Tracked separately from
+      // UsedLock so that the intrablock pass keeps its behaviour, while the
+      // passes below can tell an open lock from an already closed one.
+      llvm::SmallPtrSet<const CallExpr *, 32> ClosedLock(UsedLock.begin(), UsedLock.end());
+
+      auto srcBefore = [&](SourceLocation A, SourceLocation B) {
+        PresumedLoc PA = SM.getPresumedLoc(A), PB = SM.getPresumedLoc(B);
+        if (!PA.isValid() || !PB.isValid()) return false;
+        StringRef FA(PA.getFilename()), FB(PB.getFilename());
+        if (FA != FB) return FA < FB;
+        if (PA.getLine() != PB.getLine()) return PA.getLine() < PB.getLine();
+        return PA.getColumn() < PB.getColumn();
+      };
+
+      // A block whose last action cannot return, so that the paths leaving the
+      // function through it are not paths on which an unlock could still be
+      // reached. Ignoring them is what lets a section survive an assertion or
+      // any other bail-out in its interior.
+      auto endsWithoutReturning = [&](const CFGBlock *BB) {
+        for (const CFGElement &Elt : llvm::reverse(*BB)) {
+          auto CS = Elt.getAs<CFGStmt>();
+          if (!CS) continue;
+          const Stmt *S = CS->getStmt();
+          if (const auto *CE = dyn_cast<CallExpr>(S)) {
+            if (const FunctionDecl *Callee = CE->getDirectCallee())
+              return Callee->isNoReturn();
+            return false;
+          }
+          return false;
+        }
+        return false;
+      };
+
+      // The unlock closes the lock on every normally returning path: no path
+      // from the lock leaves the function without passing through the unlock,
+      // paths that cannot return being disregarded. On a CFG without such paths
+      // this is exactly post-dominance, which the tree below decides directly.
+      auto closesOnEveryReturningPath = [&](const CFGBlock *From, const CFGBlock *Through) {
+        if (PostDom.dominates(const_cast<CFGBlock *>(Through), const_cast<CFGBlock *>(From)))
+          return true;
+        const CFGBlock *Exit = &Cfg->getExit();
+        llvm::SmallPtrSet<const CFGBlock *, 32> Seen{Through};
+        llvm::SmallVector<const CFGBlock *, 32> Work{From};
+        Seen.insert(From);
+        while (!Work.empty()) {
+          const CFGBlock *Cur = Work.pop_back_val();
+          for (const CFGBlock *Succ : Cur->succs()) {
+            if (!Succ) continue;
+            if (Succ == Exit) {
+              if (!endsWithoutReturning(Cur)) return false;
+              continue;
+            }
+            if (Seen.insert(Succ).second) Work.push_back(Succ);
           }
         }
+        return true;
+      };
+
+      // Pair each unlock with the innermost still-open lock that dominates it.
+      // Consuming both ends of a pair is what keeps consecutive sections apart:
+      // without it the lock of the first section also pairs with the unlock of
+      // every later one, reporting the code between them as protected.
+      llvm::SmallVector<const CallSite *, 16> UnlockOrder;
+      for (const auto &U : Unlocks) UnlockOrder.push_back(&U);
+      llvm::sort(UnlockOrder, [&](const CallSite *A, const CallSite *B) {
+        return srcBefore(A->Loc, B->Loc);
+      });
+
+      struct Section { SourceLocation Begin, End; };
+      llvm::SmallVector<Section, 16> Branched;
+      for (const CallSite *U : UnlockOrder) {
+        if (UsedUnlock.count(U->CE)) continue;
+        const CallSite *Innermost = nullptr;
+        for (const auto &L : Locks) {
+          if (ClosedLock.count(L.CE)) continue;
+          if (L.BB == U->BB) continue;
+          if (!Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(U->BB)))
+            continue;
+          if (!closesOnEveryReturningPath(L.BB, U->BB)) continue;
+          if (!Innermost) {
+            Innermost = &L;
+          } else if (Innermost->BB == L.BB ? srcBefore(Innermost->Loc, L.Loc)
+                                           : Dom.dominates(const_cast<CFGBlock *>(Innermost->BB),
+                                                           const_cast<CFGBlock *>(L.BB))) {
+            Innermost = &L;
+          }
+        }
+        if (!Innermost) continue;
+        Branched.push_back({Innermost->Loc, U->Loc});
+        ClosedLock.insert(Innermost->CE);
+        UsedUnlock.insert(U->CE);
       }
+      llvm::sort(Branched, [&](const Section &A, const Section &B) {
+        return srcBefore(A.Begin, B.Begin);
+      });
+      for (const Section &S : Branched)
+        printSection(S.Begin, S.End, "branched");
+
+      // Experiment: a lock released on several exit paths has no single unlock
+      // that closes it, so the pairing above reports nothing. Collecting the
+      // unlocks that together close it does identify the region, but its extent
+      // can only be given as the span up to the last of them, and that span is
+      // not necessarily protected throughout: code following an earlier unlock
+      // falls inside it. The flag exists to measure that trade-off.
+      if (MultiExitOpt) {
+        llvm::DenseMap<const CFGBlock *, const CallSite *> FirstUnlockOf;
+        for (const auto &U : Unlocks) {
+          auto It = FirstUnlockOf.find(U.BB);
+          if (It == FirstUnlockOf.end() || srcBefore(U.Loc, It->second->Loc))
+            FirstUnlockOf[U.BB] = &U;
+        }
+
+        llvm::SmallVector<Section, 16> MultiExit;
+        for (const auto &L : Locks) {
+          if (ClosedLock.count(L.CE)) continue;
+          // Walk forward to the first unlock on each path. The lock is closed
+          // when no normally returning path escapes without meeting one.
+          llvm::SmallPtrSet<const CFGBlock *, 32> Seen{L.BB};
+          llvm::SmallVector<const CFGBlock *, 32> Work{L.BB};
+          llvm::SmallVector<const CallSite *, 8> Ends;
+          bool Covered = true;
+          while (!Work.empty() && Covered) {
+            const CFGBlock *Cur = Work.pop_back_val();
+            for (const CFGBlock *Succ : Cur->succs()) {
+              if (!Succ) continue;
+              if (Succ == &Cfg->getExit()) {
+                if (!endsWithoutReturning(Cur)) Covered = false;
+                continue;
+              }
+              auto It = FirstUnlockOf.find(Succ);
+              if (It != FirstUnlockOf.end()) {
+                Ends.push_back(It->second);
+                continue;
+              }
+              if (Seen.insert(Succ).second) Work.push_back(Succ);
+            }
+          }
+          if (!Covered || Ends.size() < 2) continue;
+          const CallSite *Last = Ends.front();
+          for (const CallSite *U : Ends)
+            if (srcBefore(Last->Loc, U->Loc)) Last = U;
+          MultiExit.push_back({L.Loc, Last->Loc});
+          ClosedLock.insert(L.CE);
+        }
+        llvm::sort(MultiExit, [&](const Section &A, const Section &B) {
+          return srcBefore(A.Begin, B.Begin);
+        });
+        for (const Section &S : MultiExit)
+          printSection(S.Begin, S.End, "multi_exit");
+      }
+
+      auto reachesBlock = [&](const CFGBlock *From, const CFGBlock *To) {
+        if (From == To) return true;
+        llvm::SmallPtrSet<const CFGBlock *, 32> Seen;
+        llvm::SmallVector<const CFGBlock *, 32> Work{From};
+        Seen.insert(From);
+        while (!Work.empty()) {
+          const CFGBlock *Cur = Work.pop_back_val();
+          for (const CFGBlock *Succ : Cur->succs()) {
+            if (!Succ) continue;
+            if (Succ == To) return true;
+            if (Seen.insert(Succ).second) Work.push_back(Succ);
+          }
+        }
+        return false;
+      };
 
       // Interprocedural: if this function calls a callee summarized to unlock (transitively), emit an interprocedural section.
       if (!Locks.empty()) {
@@ -809,8 +973,21 @@ public:
               if (const auto *CE = dyn_cast<CallExpr>(CS->getStmt())) {
                 if (const FunctionDecl *Callee = CE->getDirectCallee()) {
                   if (DoesUnlock.lookup(Callee)) {
-                    // Pick first lock as begin, and use callee unlock loc as end (approx: use call loc).
-                    SourceLocation Begin = Locks.front().Loc;
+                    // The section may only start at a lock that is still open at
+                    // this call site: one that is not already closed in this
+                    // function, that dominates the call site, and from which the
+                    // call site is actually reachable. Of those, the innermost
+                    // (latest in source order) is the enclosing one.
+                    const CallSite *Open = nullptr;
+                    for (const auto &L : Locks) {
+                      if (ClosedLock.count(L.CE)) continue;
+                      if (!Dom.dominates(const_cast<CFGBlock *>(L.BB), const_cast<CFGBlock *>(BB)))
+                        continue;
+                      if (!reachesBlock(L.BB, BB)) continue;
+                      Open = &L;
+                    }
+                    if (!Open) continue;
+                    SourceLocation Begin = Open->Loc;
                     SourceLocation End = CE->getExprLoc();
                     // Confidence: definite if single call-site; probable otherwise
                     const char *Conf = "probable";
