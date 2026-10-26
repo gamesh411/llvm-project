@@ -8,7 +8,9 @@
 
 #include "clang/Analysis/Analyses/LifetimeSafety/LiveOrigins.h"
 #include "Dataflow.h"
+#include "clang/AST/ASTContext.h"
 #include "clang/Analysis/Analyses/LifetimeSafety/Facts.h"
+#include "clang/Basic/SourceManager.h"
 #include "llvm/Support/ErrorHandling.h"
 
 namespace clang::lifetimes::internal {
@@ -85,7 +87,8 @@ public:
   AnalysisImpl(const CFG &C, AnalysisDeclContext &AC, FactManager &F,
                LivenessMap::Factory &SF)
       : DataflowAnalysis(C, AC, F), FactMgr(F), Factory(SF),
-        PersistentOrigins(F.getPersistentOrigins()) {}
+        PersistentOrigins(F.getPersistentOrigins()),
+        SM(AC.getASTContext().getSourceManager()) {}
   using DataflowAnalysis<AnalysisImpl, Lattice, Direction::Backward>::transfer;
 
   StringRef getAnalysisName() const { return "LiveOrigins"; }
@@ -112,14 +115,16 @@ public:
   Lattice join(Lattice L1, Lattice L2) const {
     assert(L1.BlockLocal.isEmpty() && L2.BlockLocal.isEmpty() &&
            "block-local origins must not reach a block boundary");
-    // Take the earliest Fact to make the join hermetic and commutative.
-    auto CombineCausingFact = [](CausingFactType A,
-                                 CausingFactType B) -> CausingFactType {
+    // Take the earliest Fact to make the join hermetic and commutative. A raw
+    // SourceLocation compare is only meaningful within a single FileID, so
+    // order by translation-unit position instead.
+    auto CombineCausingFact = [this](CausingFactType A,
+                                     CausingFactType B) -> CausingFactType {
       if (!A)
         return B;
       if (!B)
         return A;
-      return GetFactLoc(A) < GetFactLoc(B) ? A : B;
+      return SM.isBeforeInTranslationUnit(GetFactLoc(A), GetFactLoc(B)) ? A : B;
     };
     auto CombineLivenessKind = [](LivenessKind K1,
                                   LivenessKind K2) -> LivenessKind {
@@ -241,6 +246,7 @@ private:
   /// Origins referenced from more than one basic block; see
   /// `FactManager::getPersistentOrigins`.
   const llvm::BitVector &PersistentOrigins;
+  const SourceManager &SM;
 };
 } // namespace
 
