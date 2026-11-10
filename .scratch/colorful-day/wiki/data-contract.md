@@ -18,3 +18,8 @@ As of the same commit, `path_condition` follows the crosscheck visitor's merge r
 
 As of the same commit, `Calling` and `Entered call` events share the CallEnter node's snapshot, so their variables are the caller's.
 On 2026-11-10 the lead accepted this limit for the prototype, since the callee's parameters appear from the first event inside the call.
+
+## 2026-11-10: ticket 04
+
+As of `codechecker@41f307f73`, CodeChecker steps can be `kind: "control"` with `index` into `executionPath`, every step has an `order` on the Bug Path, and `version` stays 1. Details are in the Comments of `../issues/04-branch-steps-and-line-selection.md`.
+As of `llvm-project@ffa40b68fbaf`, a control edge carries the snapshot of the node at its end, and a merged edge keeps its later node's snapshot.

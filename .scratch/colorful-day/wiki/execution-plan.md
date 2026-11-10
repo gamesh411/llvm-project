@@ -31,3 +31,5 @@ Ticket 08 should decide which version explains "this path" against "this bug" be
 ## 2026-11-10: progress
 
 On 2026-11-10 the lead accepted ticket 03 after viewing `/Users/efulop/colorful-day-env/screens/03-panel-1400-step2.png` and `03-panel-1400-last-step.png`, and started ticket 04.
+
+On 2026-11-10 the lead accepted ticket 04 after viewing `04-picker-1400.png` and `04-offpath-hint-1400.png`, and started ticket 05.

@@ -17,3 +17,11 @@ As of `codechecker@3cdc9faee`, the toggle is a labelled "Show constraints" check
 This implements the decision above, which supersedes the 16px icon layout of `codechecker@45840c305`.
 On 2026-11-10 the lead viewed `/Users/efulop/colorful-day-env/screens/02b-panel-1400.png` and `02b-off-1400.png` and accepted it.
 A tight gap remains between the elided file path and "Found in:" in the file header, left for the ticket 08 visual pass.
+
+## 2026-11-10: ticket 04 line selection
+
+On 2026-11-10 the lead accepted two ticket 04 worker decisions, as of `codechecker@41f307f73`.
+Steps on one line with identical snapshots count as one picker choice, the event if there is one, so an `if` line does not open a picker whose rows all show the same panel.
+The worker also fixed a 2px per bubble drift between line numbers and source text, and let clicks pass through the arrow overlay while "Show constraints" is on.
+
+In `/Users/efulop/colorful-day-env/screens/04-picker-1400.png` the lead saw the source area end at a dotted vertical line about two thirds across, with blank space to its right while the panel is closed. This was assigned to the ticket 05 worker to fix.
