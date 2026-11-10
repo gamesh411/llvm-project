@@ -113,6 +113,11 @@ public:
   void ReportConstraintTrace(raw_ostream &o, unsigned indent);
 
 private:
+  void ReportSymbolRanges(
+      raw_ostream &o, StringRef Key,
+      ArrayRef<PathDiagnosticConstraintSnapshot::SymbolRange> Ranges,
+      unsigned indent);
+
   void ReportPiece(raw_ostream &o, const PathDiagnosticPiece &P,
                    unsigned indent, unsigned depth, bool includeControlFlow,
                    bool isKeyEvent = false) {
@@ -432,6 +437,41 @@ void PlistPrinter::ReportMacroExpansions(raw_ostream &o, unsigned indent) {
   }
 }
 
+static StringRef
+toString(PathDiagnosticConstraintSnapshot::Variable::ValueKind Kind) {
+  using ValueKind = PathDiagnosticConstraintSnapshot::Variable::ValueKind;
+  switch (Kind) {
+  case ValueKind::Symbol:
+    return "symbol";
+  case ValueKind::Integer:
+    return "integer";
+  case ValueKind::Address:
+    return "address";
+  }
+  llvm_unreachable("unknown variable value kind");
+}
+
+void PlistPrinter::ReportSymbolRanges(
+    raw_ostream &o, StringRef Key,
+    ArrayRef<PathDiagnosticConstraintSnapshot::SymbolRange> Ranges,
+    unsigned indent) {
+  Indent(o, indent) << "<key>" << Key << "</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (const auto &[Symbol, Range] : Ranges) {
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>symbol</key>";
+    EmitString(o, Symbol) << '\n';
+    Indent(o, indent) << "<key>range</key>";
+    EmitString(o, Range) << '\n';
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+}
+
 void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
   if (ConstraintSteps.empty())
     return;
@@ -449,21 +489,26 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
     ++indent;
     Indent(o, indent) << "<key>path_index</key>";
     EmitInteger(o, PathIndex) << '\n';
-    Indent(o, indent) << "<key>symbol_ranges</key>\n";
+    ReportSymbolRanges(o, "symbol_ranges", Snapshot->SymbolRanges, indent);
+    Indent(o, indent) << "<key>variables</key>\n";
     Indent(o, indent) << "<array>\n";
     ++indent;
-    for (const auto &[Symbol, Range] : Snapshot->SymbolRanges) {
+    for (const PathDiagnosticConstraintSnapshot::Variable &Var :
+         Snapshot->Variables) {
       Indent(o, indent) << "<dict>\n";
       ++indent;
-      Indent(o, indent) << "<key>symbol</key>";
-      EmitString(o, Symbol) << '\n';
-      Indent(o, indent) << "<key>range</key>";
-      EmitString(o, Range) << '\n';
+      Indent(o, indent) << "<key>name</key>";
+      EmitString(o, Var.Name) << '\n';
+      Indent(o, indent) << "<key>value</key>";
+      EmitString(o, Var.Value) << '\n';
+      Indent(o, indent) << "<key>kind</key>";
+      EmitString(o, toString(Var.Kind)) << '\n';
       --indent;
       Indent(o, indent) << "</dict>\n";
     }
     --indent;
     Indent(o, indent) << "</array>\n";
+    ReportSymbolRanges(o, "path_condition", Snapshot->PathCondition, indent);
     --indent;
     Indent(o, indent) << "</dict>\n";
   }

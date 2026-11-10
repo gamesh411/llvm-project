@@ -408,9 +408,28 @@ struct PathDiagnosticConstraintSnapshot {
     std::string Range;
   };
 
+  struct Variable {
+    enum class ValueKind { Symbol, Integer, Address };
+
+    std::string Name;
+    /// The symbol's dump for Symbol, so it matches SymbolRange::Symbol, and the
+    /// decimal integer or pointed-to region otherwise.
+    std::string Value;
+    ValueKind Kind;
+  };
+
   /// Symbols that have a known range at this point, sorted by name so output
   /// stays deterministic.
   std::vector<SymbolRange> SymbolRanges;
+
+  /// Variables of the current stack frame and the globals its function names,
+  /// sorted by name. Variables with no symbol or concrete value are left out.
+  std::vector<Variable> Variables;
+
+  /// Every constraint collected from the start of the path up to this point,
+  /// including those on symbols the analyzer has since dropped as dead. Sorted
+  /// by name.
+  std::vector<SymbolRange> PathCondition;
 };
 
 using PathDiagnosticConstraintSnapshotRef =

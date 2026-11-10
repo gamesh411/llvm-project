@@ -17,6 +17,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/DynamicRecursiveASTVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ParentMap.h"
@@ -50,6 +51,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -61,6 +63,7 @@
 #include <cassert>
 #include <cstddef>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -224,6 +227,14 @@ class PathDiagnosticBuilder : public BugReporterContext {
   /// The diagnostic pieces visitors emitted, which is expected to be collected
   /// by the time this builder is constructed.
   std::unique_ptr<const VisitorsDiagnosticsTy> VisitorsDiagnostics;
+  /// For each node of the bug path, the constraints accumulated from the start
+  /// of the path up to it and its distance from the start. Only filled when
+  /// constraint snapshots are requested.
+  llvm::DenseMap<const ExplodedNode *, std::pair<ConstraintMap, unsigned>>
+      PathHistory;
+  /// The first path position at which a parameter of the analyzed function has
+  /// a binding of its own, see recordPathHistory.
+  llvm::DenseMap<const MemRegion *, unsigned> FirstParameterWrite;
 
 public:
   /// Find a non-invalidated report for a given equivalence class,  and returns
@@ -255,6 +266,13 @@ private:
   /// \p Node's Constraint Snapshot, or null when snapshots are not requested.
   PathDiagnosticConstraintSnapshotRef
   makeConstraintSnapshot(const ExplodedNode *Node) const;
+
+  /// Walks the bug path from its start, because the snapshot of a step depends
+  /// on what came before it while diagnostics are built from the end.
+  void recordPathHistory();
+
+  void addVisibleVariables(PathDiagnosticConstraintSnapshot &Snapshot,
+                           const ExplodedNode *Node) const;
 
   void updateStackPiecesWithMessage(PathDiagnosticPieceRef P,
                                     const CallWithEntryStack &CallStack) const;
@@ -1151,25 +1169,171 @@ constexpr llvm::StringLiteral StrLoopCollectionEmpty =
 static std::unique_ptr<FilesToLineNumsMap>
 findExecutedLines(const SourceManager &SM, const ExplodedNode *N);
 
+static std::vector<PathDiagnosticConstraintSnapshot::SymbolRange>
+renderConstraints(ConstraintMap Constraints) {
+  std::vector<PathDiagnosticConstraintSnapshot::SymbolRange> Result;
+  for (const auto &[Sym, Range] : Constraints) {
+    PathDiagnosticConstraintSnapshot::SymbolRange Entry;
+    llvm::raw_string_ostream SymbolOS(Entry.Symbol);
+    Sym->dumpToStream(SymbolOS);
+    llvm::raw_string_ostream RangeOS(Entry.Range);
+    Range.dump(RangeOS);
+    Result.push_back(std::move(Entry));
+  }
+  llvm::sort(Result, [](const auto &LHS, const auto &RHS) {
+    return LHS.Symbol < RHS.Symbol;
+  });
+  return Result;
+}
+
+namespace {
+class DirectVarBindingCollector final : public StoreManager::BindingsHandler {
+public:
+  SmallVector<std::pair<const VarRegion *, SVal>, 16> Bindings;
+
+  bool HandleBinding(StoreManager &, Store, const MemRegion *Region,
+                     SVal Val) override {
+    if (const auto *VR = dyn_cast<VarRegion>(Region))
+      Bindings.emplace_back(VR, Val);
+    return true;
+  }
+};
+
+class ReferencedGlobalsCollector final
+    : public ConstDynamicRecursiveASTVisitor {
+public:
+  llvm::SetVector<const VarDecl *> Found;
+
+  bool VisitDeclRefExpr(const DeclRefExpr *Ref) override {
+    if (const auto *VD = dyn_cast<VarDecl>(Ref->getDecl()))
+      if (VD->hasGlobalStorage())
+        Found.insert(VD);
+    return true;
+  }
+};
+} // namespace
+
+static SmallVector<std::pair<const VarRegion *, SVal>, 16>
+collectDirectVarBindings(ProgramStateRef State) {
+  DirectVarBindingCollector Collector;
+  State->getStateManager().getStoreManager().iterBindings(State->getStore(),
+                                                          Collector);
+  return std::move(Collector.Bindings);
+}
+
 PathDiagnosticConstraintSnapshotRef
 PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
   if (!getAnalyzerOptions().ShouldEmitConstraintSnapshots)
     return nullptr;
 
   auto Snapshot = std::make_shared<PathDiagnosticConstraintSnapshot>();
-  for (const auto &[Sym, Range] :
-       getConstraintMapOfClassMembers(Node->getState())) {
-    PathDiagnosticConstraintSnapshot::SymbolRange Entry;
-    llvm::raw_string_ostream SymbolOS(Entry.Symbol);
-    Sym->dumpToStream(SymbolOS);
-    llvm::raw_string_ostream RangeOS(Entry.Range);
-    Range.dump(RangeOS);
-    Snapshot->SymbolRanges.push_back(std::move(Entry));
-  }
-  llvm::sort(Snapshot->SymbolRanges, [](const auto &LHS, const auto &RHS) {
-    return LHS.Symbol < RHS.Symbol;
-  });
+  Snapshot->SymbolRanges =
+      renderConstraints(getConstraintMapOfClassMembers(Node->getState()));
+  addVisibleVariables(*Snapshot, Node);
+  Snapshot->PathCondition =
+      renderConstraints(PathHistory.find(Node)->second.first);
   return Snapshot;
+}
+
+void PathDiagnosticBuilder::recordPathHistory() {
+  SmallVector<const ExplodedNode *, 0> Nodes;
+  for (const ExplodedNode *N = ErrorNode; N; N = N->getFirstPred())
+    Nodes.push_back(N);
+
+  ConstraintMap::Factory &F =
+      ErrorNode->getState()->get_context<ConstraintMap>();
+  ConstraintMap Accumulated = F.getEmptyMap();
+  ProgramStateRef PrevState;
+  unsigned Position = 0;
+  for (const ExplodedNode *N : llvm::reverse(Nodes)) {
+    ProgramStateRef State = N->getState();
+    if (State != PrevState) {
+      // Later ranges replace earlier ones on the same symbol, which is the
+      // same result the Z3 crosscheck visitor reaches walking backwards.
+      Accumulated = mergeConstraintMaps(Accumulated,
+                                        getConstraintMapOfClassMembers(State),
+                                        F, /*OverwriteExisting=*/true);
+      for (const auto &[Region, Val] : collectDirectVarBindings(State))
+        if (isa<ParmVarDecl>(Region->getDecl()))
+          FirstParameterWrite.try_emplace(Region, Position);
+      PrevState = State;
+    }
+    PathHistory.try_emplace(N, std::make_pair(Accumulated, Position));
+    ++Position;
+  }
+}
+
+void PathDiagnosticBuilder::addVisibleVariables(
+    PathDiagnosticConstraintSnapshot &Snapshot,
+    const ExplodedNode *Node) const {
+  const SourceManager &SM = getSourceManager();
+  ProgramStateRef State = Node->getState();
+  const auto *Frame = Node->getStackFrame();
+
+  // Keyed by name, which is also what makes the output sorted.
+  std::map<std::string, std::pair<const VarDecl *, SVal>> Visible;
+  for (const auto &[Region, Val] : collectDirectVarBindings(State)) {
+    if (Region->getStackFrame() != Frame)
+      continue;
+    const VarDecl *VD = Region->getDecl();
+    auto [It, Inserted] = Visible.try_emplace(VD->getName().str(), VD, Val);
+    // Two live variables with one name are nested scopes; the name means the
+    // inner one, which is declared later.
+    if (!Inserted && SM.isBeforeInTranslationUnit(
+                         It->second.first->getLocation(), VD->getLocation()))
+      It->second = {VD, Val};
+  }
+
+  // A parameter of the analyzed function has its initial value without any
+  // binding. Once a written parameter is dropped as dead, reading it would
+  // give that initial value back, so it is treated as gone instead.
+  if (Frame->inTopFrame()) {
+    if (const auto *FD = dyn_cast_or_null<FunctionDecl>(Frame->getDecl())) {
+      unsigned Position = PathHistory.find(Node)->second.second;
+      for (const ParmVarDecl *Param : FD->parameters()) {
+        const MemRegion *Region = State->getLValue(Param, Frame).getAsRegion();
+        auto Write = FirstParameterWrite.find(Region);
+        if (Write == FirstParameterWrite.end() || Write->second > Position)
+          Visible.try_emplace(Param->getName().str(), Param,
+                              State->getSVal(Region));
+      }
+    }
+  }
+
+  if (const Decl *D = Frame->getDecl()) {
+    ReferencedGlobalsCollector Globals;
+    if (D->hasBody())
+      Globals.TraverseStmt(D->getBody());
+    for (const VarDecl *Global : Globals.Found)
+      Visible.try_emplace(Global->getName().str(), Global,
+                          State->getSVal(State->getLValue(Global, Frame)));
+  }
+
+  for (const auto &[Name, DeclAndVal] : Visible) {
+    if (Name.empty())
+      continue;
+    std::string Value;
+    llvm::raw_string_ostream OS(Value);
+    using ValueKind = PathDiagnosticConstraintSnapshot::Variable::ValueKind;
+    ValueKind Kind;
+    SVal Val = DeclAndVal.second;
+    if (SymbolRef Sym = Val.getAsSymbol()) {
+      Sym->dumpToStream(OS);
+      Kind = ValueKind::Symbol;
+    } else if (auto LocInt = Val.getAs<loc::ConcreteInt>()) {
+      LocInt->getValue()->print(OS, /*isSigned=*/false);
+      Kind = ValueKind::Integer;
+    } else if (auto NonLocInt = Val.getAs<nonloc::ConcreteInt>()) {
+      NonLocInt->getValue()->print(OS, NonLocInt->getValue()->isSigned());
+      Kind = ValueKind::Integer;
+    } else if (auto Address = Val.getAs<loc::MemRegionVal>()) {
+      Address->dumpToStream(OS);
+      Kind = ValueKind::Address;
+    } else {
+      continue;
+    }
+    Snapshot.Variables.push_back({Name, std::move(Value), Kind});
+  }
 }
 
 void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
@@ -2047,7 +2211,10 @@ PathDiagnosticBuilder::PathDiagnosticBuilder(
     std::unique_ptr<VisitorsDiagnosticsTy> VisitorsDiagnostics)
     : BugReporterContext(BRC), BugPath(std::move(BugPath)), R(r),
       ErrorNode(ErrorNode),
-      VisitorsDiagnostics(std::move(VisitorsDiagnostics)) {}
+      VisitorsDiagnostics(std::move(VisitorsDiagnostics)) {
+  if (getAnalyzerOptions().ShouldEmitConstraintSnapshots)
+    recordPathHistory();
+}
 
 std::unique_ptr<PathDiagnostic>
 PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {

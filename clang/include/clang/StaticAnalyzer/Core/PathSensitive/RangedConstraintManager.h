@@ -406,6 +406,11 @@ ConstraintMap getConstraintMap(ProgramStateRef State);
 /// Like getConstraintMap, but gives every member of an equivalence class its
 /// own entry instead of only the class representative.
 ConstraintMap getConstraintMapOfClassMembers(ProgramStateRef State);
+/// Adds the entries of \p New to \p Accumulated. Symbols already in
+/// \p Accumulated keep their constraint unless \p OverwriteExisting is set.
+ConstraintMap mergeConstraintMaps(ConstraintMap Accumulated, ConstraintMap New,
+                                  ConstraintMap::Factory &F,
+                                  bool OverwriteExisting);
 
 class RangedConstraintManager : public SimpleConstraintManager {
 public:

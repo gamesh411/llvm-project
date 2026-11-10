@@ -120,21 +120,10 @@ void Z3CrosscheckVisitor::finalizeVisitor(const ExplodedNode *EndPathNode,
 
 void Z3CrosscheckVisitor::addConstraints(
     const ExplodedNode *N, bool OverwriteConstraintsOnExistingSyms) {
-  // Collect new constraints
-  ConstraintMap NewCs = getConstraintMap(N->getState());
-  ConstraintMap::Factory &CF = N->getState()->get_context<ConstraintMap>();
-
-  // Add constraints if we don't have them yet
-  for (auto const &[Sym, Range] : NewCs) {
-    if (!Constraints.contains(Sym)) {
-      // This symbol is new, just add the constraint.
-      Constraints = CF.add(Constraints, Sym, Range);
-    } else if (OverwriteConstraintsOnExistingSyms) {
-      // Overwrite the associated constraint of the Symbol.
-      Constraints = CF.remove(Constraints, Sym);
-      Constraints = CF.add(Constraints, Sym, Range);
-    }
-  }
+  Constraints =
+      mergeConstraintMaps(Constraints, getConstraintMap(N->getState()),
+                          N->getState()->get_context<ConstraintMap>(),
+                          OverwriteConstraintsOnExistingSyms);
 }
 
 PathDiagnosticPieceRef

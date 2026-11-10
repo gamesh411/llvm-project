@@ -2382,6 +2382,21 @@ ConstraintMap ento::getConstraintMapOfClassMembers(ProgramStateRef State) {
   return Result;
 }
 
+ConstraintMap ento::mergeConstraintMaps(ConstraintMap Accumulated,
+                                        ConstraintMap New,
+                                        ConstraintMap::Factory &F,
+                                        bool OverwriteExisting) {
+  for (auto const &[Sym, Range] : New) {
+    if (!Accumulated.contains(Sym)) {
+      Accumulated = F.add(Accumulated, Sym, Range);
+    } else if (OverwriteExisting) {
+      Accumulated = F.remove(Accumulated, Sym);
+      Accumulated = F.add(Accumulated, Sym, Range);
+    }
+  }
+  return Accumulated;
+}
+
 //===----------------------------------------------------------------------===//
 //                     EqualityClass implementation details
 //===----------------------------------------------------------------------===//
