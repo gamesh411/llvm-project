@@ -34,3 +34,9 @@ The worker traced those failures to macOS make 3.81 and a missing clang-tidy on 
 With that setup the worker reported `store` 7/7 and `report_viewer_api` 66/67, the remaining failure being expected line numbers 15 and 25 against reported 14 and 24.
 
 On 2026-11-10 the lead found that running the report-converter unit tests rewrites the tracked files `tools/report-converter/tests/unit/analyzers/pvs_studio_output_test_files/sample.json` and `sample.plist`, and restored them.
+
+## 2026-11-10: remaining report_viewer_api failure
+
+On 2026-11-10 the ticket 03 worker reported that `test_get_run_results_checker_id_and_file_path` encodes Clang 14 behavior, which `.github/workflows/install-deps.sh` pins for CI, so the one failure under newer Clangs (66/67) is a version mismatch and the expectations were left unchanged at `codechecker@adfc87b94`.
+The worker confirmed the expected lines and hashes by running Homebrew `llvm@14` directly on the two files, and did not get the whole suite to run under Clang 14 on macOS.
+This updates the earlier "stale" description in the test baseline entry above.

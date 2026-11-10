@@ -27,3 +27,7 @@ On 2026-11-10 the lead decided to check with the user before starting 09 and 10,
 As of `llvm-project@da4604b880b8`, `../demo/two-path.c` resets and reassigns `p` to force the spec's Bug Path `a == 0`, `b != 0`.
 The ticket 01 worker reported that the simpler `p = &x; if (a == 0) p = 0; if (b != 0) p = 0;` is reported along `a != 0`, `b != 0`, where `b == 0` also rules out this path while the bug remains through `a`.
 Ticket 08 should decide which version explains "this path" against "this bug" best in a one-minute demo.
+
+## 2026-11-10: progress
+
+On 2026-11-10 the lead accepted ticket 03 after viewing `/Users/efulop/colorful-day-env/screens/03-panel-1400-step2.png` and `03-panel-1400-last-step.png`, and started ticket 04.

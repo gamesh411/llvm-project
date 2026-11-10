@@ -10,3 +10,11 @@ As of the same commits, `CodeChecker store` rewrites plists through `convert()`,
 
 As of `llvm-project@b890c79d9a57`, emission is opt-in through `-analyzer-config emit-constraint-snapshots=true`.
 As of `codechecker@45840c305`, the API version carrying `constraintTrace` is 6.75.
+
+## 2026-11-10: ticket 03
+
+As of `llvm-project@320ae5fbf4ae`, each step also has `variables` and `path_condition`, `version` stays 1, and the schema is in the Comments of `../issues/03-complete-the-constraint-snapshot.md`.
+As of the same commit, `path_condition` follows the crosscheck visitor's merge rule through a shared `mergeConstraintMaps`, and the per-node `ConstraintMap` is available for ticket 05's SMT-LIB.
+
+As of the same commit, `Calling` and `Entered call` events share the CallEnter node's snapshot, so their variables are the caller's.
+On 2026-11-10 the lead accepted this limit for the prototype, since the callee's parameters appear from the first event inside the call.
