@@ -187,8 +187,9 @@ cmd_status() {
 
 # CodeChecker functional-test fixture: plists produced by the Colorful Day Clang
 # from demo/two-path.c, one with Constraint Snapshots, one without, and one with
-# snapshots but no SMT-LIB, as a Clang without Z3 writes them; and one from
-# demo/z3-refuted.c, whose Bug Path Z3 refutes. Output
+# snapshots but no SMT-LIB, as a Clang without Z3 writes them; one from
+# demo/z3-refuted.c, whose Bug Path Z3 refutes; and one from
+# demo/concrete-value.c, where a pointer holds a concrete address. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -233,19 +234,23 @@ PY
   ! grep -q '<key>smt' "$dir/two_path.plist" || die "SMT-LIB left in $dir"
   echo "fixture ok: $dir/two_path.plist"
 
-  # A Bug Path the range-based solver accepts and Z3 refutes, for a Baseline
-  # Verdict that is not Feasible. Analyzed without crosscheck, which would drop
-  # the report.
-  dir=$src/z3_refuted
-  mkdir -p "$dir"
-  cp "$LLVM/.scratch/colorful-day/demo/z3-refuted.c" "$dir/z3_refuted.c"
-  (cd "$dir" && clang --analyze --analyzer-output plist-multi-file \
-    -Xclang -analyzer-checker=core \
-    -Xclang -analyzer-config -Xclang emit-constraint-snapshots=true \
-    -o z3_refuted.plist "$dir/z3_refuted.c")
-  FIXTURE_DIR=$dir perl -pi -e 's/\Q$ENV{FIXTURE_DIR}\E/\$FILE_PATH\$/g' "$dir/z3_refuted.plist"
-  grep -q 'FILE_PATH' "$dir/z3_refuted.plist" || die "placeholder missing in $dir"
-  echo "fixture ok: $dir/z3_refuted.plist"
+  # z3_refuted: a Bug Path the range-based solver accepts and Z3 refutes, for a
+  # Baseline Verdict that is not Feasible. Analyzed without crosscheck, which
+  # would drop the report.
+  # concrete_value: a pointer holding the concrete address &x, then null.
+  local name
+  for name in z3_refuted concrete_value; do
+    dir=$src/$name
+    mkdir -p "$dir"
+    cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
+    (cd "$dir" && clang --analyze --analyzer-output plist-multi-file \
+      -Xclang -analyzer-checker=core \
+      -Xclang -analyzer-config -Xclang emit-constraint-snapshots=true \
+      -o "$name.plist" "$dir/$name.c")
+    FIXTURE_DIR=$dir perl -pi -e 's/\Q$ENV{FIXTURE_DIR}\E/\$FILE_PATH\$/g' "$dir/$name.plist"
+    grep -q 'FILE_PATH' "$dir/$name.plist" || die "placeholder missing in $dir"
+    echo "fixture ok: $dir/$name.plist"
+  done
 }
 
 # Clang lit tests of this feature, plus any extra lit paths passed as arguments.
