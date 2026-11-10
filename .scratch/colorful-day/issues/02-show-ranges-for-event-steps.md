@@ -61,9 +61,29 @@ Control steps need their own branch in both (see below), and index control steps
 - Fixture regeneration, `lit` and functional test runs are dev-loop subcommands: `dev-loop.sh fixture`, `lit`, `functest`. `fixture` writes `web/tests/projects/constraint_trace/{with_snapshots,no_snapshots}/` in the CodeChecker repo, with `$FILE_PATH$` for the test to rewrite. `functest` goes through `make test_web_feature`, which clears the test workspace and stops the global test server; a leftover server from a direct pytest run fails at `addProduct`.
 - `llvm-lit` needs `llvm-config`, added to `dev-loop.sh clang`. `split-file` and `clang-extdef-mapping` are needed only if you run all of `clang/test/Analysis`.
 - The dev requirements file pins `cryptography~=41`, which breaks the server's `joserfc`; `dev-loop.sh env` installs the test tools individually for that reason.
-- Toolbar layout: at a 1400 wide window the toolbar has no free space, so the toggle is a 16px icon button, the Blame column lost its left padding, and the row is `flex-nowrap` while no side panel is open. With a panel open it wraps, like with Comments open.
+- Toolbar layout: at a 1400 wide window the toolbar has no free space. "Show constraints" is a checkbox stacked under "Show arrows" in one column, with the labels at 14px and an 18px checkbox, which is what makes `Comments` fit on the row again (the row has about 9px to spare at 1400; at 1100 it wraps as it always did). The side panel is a column beside the editor only, below the file header, so opening it does not touch the toolbar or the header.
+- `Report.vue` draws arrows from CodeMirror's viewport-changed handler, which sees the marks only if the viewport changes after they are added. On first load it did not, so arrows were missing with "Show arrows" checked (not related to this ticket). `drawBugPath` now connects them itself after adding the marks.
+- The header showed `(None)` because the client stored `str(tracking_branch())` for a branch without upstream. It now falls back to the commit hash, as for a detached head. Blame lives per file content hash on the server, so a content already stored with blame keeps its old `None` until its `file_contents.blame_info` is cleared.
+- The long file path used to collapse to `...` beside the copy button; the path column is a flex box now so the ellipsis clips the left end of the path.
+- `dev-loop.sh web` rsyncs the rebuilt dist into the package's `www`, which is a copy, not a symlink. Without that the server keeps serving the old UI.
+
+### Test baseline
+
+At 2026-11-10, same counts at `codechecker@a343881a2` (throwaway worktree) and at the ticket head, with identical failing test lists, so ticket 02 broke nothing:
+
+| suite | env as first run | with `dev-loop.sh webtests` env |
+| --- | --- | --- |
+| `store` | 5 pass, 2 fail | 7 pass |
+| `report_viewer_api` | 18 pass, 49 fail | 66 pass, 1 fail |
+
+- Cause of the store failures: no `clang-tidy` on PATH (`test_same_headers`, `test_store_stats` analyse with clang-tidy). Homebrew's is `/opt/homebrew/opt/llvm/bin/clang-tidy`.
+- Cause of `clang++: error: no input files` and the 0 stored reports: macOS make 3.81 on the test projects' Makefiles. GNU make from `/opt/homebrew/opt/make/libexec/gnubin` fixes it. `dev-loop.sh functest` and `webtests` put both on PATH.
+- The one remaining failure, `report_viewer_api/test_get_run_results.py::test_get_run_results_checker_id_and_file_path`, expects `unix.Malloc` at `new_delete.cpp:31` and two `core.StackAddressEscape` at lines 15 and 25 of `stack_address_escape.cpp` with fixed report hashes. This Clang (24) reports those at lines 14 and 24, so the fixtures predate it. Not fixed: the expectations belong to the project fixtures, not to this work.
+- `dev-loop.sh baseline [rev]` reproduces the comparison in a worktree under `$CD_ENV`.
+- report-converter unit "9 errors" was the missing `REPO_ROOT`/`LAYOUT_DIR` env; `make -C tools/report-converter test_unit` gives 136 passed.
+- `pylint` on `report_server.py`: 10.00/10.
+- Clang `clang/test/Analysis`: after `dev-loop.sh clang` builds the ssaf tools, `Analysis/Scalable` is 111/111 and the whole directory 1260 of 1262. `func-mapping-test.cpp` failed only because `clang-extdef-mapping` was built after `clang` (AST files carry the build revision); it passes once `clang` is rebuilt. `bstring-UninitRead-partial-init.c` is the user's untracked file; its RUN line enables `alpha.unix.cstring`, but the checker is `unix.cstring.UninitializedRead` now (as in `bstring_UninitRead.c`), and the test passes with that checker name. The file was left alone.
 
 ### Verification
 
-Screens in `/Users/efulop/colorful-day-env/screens/`: `02-off-state-1400.png` (toggle off, compare with `01-two-path-report.png`), `02-panel-open.png`, `02-panel-empty.png` (dead-symbol step), `02-no-data-tooltip.png`.
-The file-path header showing `(None)` in the 02 shots differs from 01 because `two-path.c` is committed now and the unconfigured upstream branch is shown; it is unrelated to this ticket.
+Screens in `/Users/efulop/colorful-day-env/screens/`, reworked: `02b-off-1400.png` (toggle off, compare with `01-two-path-report.png`; arrows drawn on first load, header shows the commit hash and a readable path), `02b-panel-1400.png`, `02b-panel-1100.png` (narrower, toolbar wraps as it always did), `02b-no-data.png` (disabled checkbox with its explanation). `02b-before-1400.png` is the old build showing `(None)`, the elided path and no arrows. The older `02-*.png` shots show the rejected layout.

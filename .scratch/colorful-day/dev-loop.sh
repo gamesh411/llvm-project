@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Colorful Day dev loop: Clang build -> CodeChecker analyze -> store -> server -> browser.
 # Re-runnable; every step fails loudly. All generated state lives under $CD_ENV.
-# Usage: dev-loop.sh <env|thrift|web|package|clang|analyze|store|server|stop|status|all|fixture|lit|functest> [args]
+# Usage: dev-loop.sh <env|thrift|web|package|clang|analyze|store|server|stop|status|all|fixture|lit|functest|webtests|baseline> [args]
 set -euo pipefail
 
 LLVM=${LLVM:-/Users/efulop/llvm-project}
@@ -44,6 +44,16 @@ use_clang() {
   export PATH=$BUILD/bin:$PATH
 }
 
+# CodeChecker's functional tests need GNU make (macOS make 3.81 breaks the test
+# projects' Makefiles: "clang++: error: no input files") and a clang-tidy.
+use_test_tools() {
+  [ -x /opt/homebrew/opt/make/libexec/gnubin/make ] \
+    || die "GNU make missing: brew install make"
+  [ -x /opt/homebrew/opt/llvm/bin/clang-tidy ] \
+    || die "clang-tidy missing: brew install llvm"
+  export PATH=/opt/homebrew/opt/make/libexec/gnubin:$PATH:/opt/homebrew/opt/llvm/bin
+}
+
 cc_bin() { echo "$PKG/bin/CodeChecker"; }
 
 cmd_env() {
@@ -62,6 +72,12 @@ cmd_clang() {
   [ -d "$BUILD" ] || die "configure $BUILD first (see ticket 01 comments)"
   # llvm-config is only needed by llvm-lit, see `lit`.
   (cd "$BUILD" && ninja clang FileCheck not count llvm-config)
+  # Tools the rest of clang/test/Analysis needs: Scalable/ssaf-*, func-mapping.
+  # A stale clang-extdef-mapping or clang fails func-mapping-test.cpp with
+  # "unable to load precompiled file" (the AST embeds the build revision).
+  (cd "$BUILD" && ninja clang-ssaf-analyzer clang-ssaf-format clang-ssaf-linker \
+    clang-ssaf-src-edit-merge SSAFExamplePlugin SSAFTestTransformationPlugin \
+    split-file clang-extdef-mapping yaml2obj)
   grep -E '^LLVM_ENABLE_Z3_SOLVER:BOOL=ON' "$BUILD/CMakeCache.txt" >/dev/null \
     || die "Z3 is not enabled in $BUILD/CMakeCache.txt"
   "$BUILD/bin/clang" --version
@@ -84,6 +100,10 @@ cmd_web() {
   git -C "$CC" log -n 1 --pretty=format:%H web/server/vue-cli \
     >"$CC/web/server/vue-cli/dist/.build-commit"
   [ -f "$CC/web/server/vue-cli/dist/index.html" ] || die "web dist not built"
+  # A dev package copies www (only lib dirs are symlinks), so a rebuilt UI
+  # needs syncing into it.
+  [ -d "$PKG/www" ] && rsync -a --delete "$CC/web/server/vue-cli/dist/" "$PKG/www/"
+  return 0
 }
 
 # Dev package whose lib dirs are symlinks into the checkout, so Python edits
@@ -200,17 +220,45 @@ cmd_lit() {
 
 # CodeChecker functional tests of this feature. Needs `package` and `env`.
 cmd_functest() {
-  activate
+  activate; use_clang; use_test_tools
   # Through the Makefile target: it clears the test workspace and shuts down
   # the global test server, which otherwise goes stale between runs.
   make -C "$CC" test_web_feature TEST=tests/functional/constraint_trace \
     EXTRA_PYTEST_ARGS="$*"
 }
 
+# The store and report_viewer_api functional suites, which exercise the report
+# storage path ticket 02 touched. Run in $CC_REPO; see `baseline`.
+cmd_webtests() {
+  activate; use_clang; use_test_tools
+  local t rc=0
+  for t in store report_viewer_api; do
+    make -C "$CC" test_web_feature TEST=tests/functional/$t \
+      >"$CD_ENV/logs/webtests-$t.log" 2>&1 || rc=1
+    echo "$t: $(grep -E ' (passed|failed)' "$CD_ENV/logs/webtests-$t.log" | tail -1)"
+  done
+  return $rc
+}
+
+# Run webtests at another CodeChecker revision (default: the commit before the
+# Colorful Day UI work) in a throwaway worktree under $CD_ENV, for comparing
+# failures against a baseline. Needs docker (thrift stubs) and a built dist.
+cmd_baseline() {
+  local rev=${1:-a343881a2} wt=$CD_ENV/baseline-cc
+  git -C "$CC" worktree add --detach "$wt" "$rev"
+  mkdir -p "$wt/web/server/vue-cli"
+  cp -R "$CC/web/server/vue-cli/dist" "$wt/web/server/vue-cli/dist"
+  local rc=0
+  (CC_REPO=$wt "$0" thrift && CC_REPO=$wt "$0" package && CC_REPO=$wt "$0" webtests) || rc=$?
+  git -C "$CC" worktree remove --force "$wt"
+  git -C "$CC" worktree prune
+  return $rc
+}
+
 cmd_all() { cmd_env; cmd_thrift; cmd_web; cmd_package; cmd_analyze; cmd_server; cmd_store; }
 
 sub=${1:-}; shift || true
 case "$sub" in
-  env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest) "cmd_$sub" "$@" ;;
+  env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest|webtests|baseline) "cmd_$sub" "$@" ;;
   *) die "usage: $0 <env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest>" ;;
 esac
