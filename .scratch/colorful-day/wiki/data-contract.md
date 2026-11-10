@@ -33,3 +33,9 @@ The no-Z3 path was verified only by a CodeChecker fixture without SMT-LIB and by
 
 As of `codechecker@da8c060ca` (API 6.77), the request is still a list of `{pathStep, expression}`, and `WhatIfResult` gained an optional `syntaxError {constraintIndex, message, offset}` and an optional `reasonConstraintIndex`. Details are in the Comments of `../issues/06-full-what-if-input-and-unknown.md`.
 On 2026-11-10 the lead decided to keep the solver timeout covered by a unit test only, rejecting a test-only server hook, as recorded in that ticket's Comments.
+
+## 2026-11-10: ticket 07
+
+As of `codechecker@6325f9164` (API 6.78), What-If Constraints carry an optional "holds throughout" flag, and the server finds the first dead step by binary search over the steps. That is at most 2 + ceil(log2 N) solver calls of up to 2000 ms each plus a 4000 ms search budget, so about 8 s per check at worst. The rules are in the Comments of `../issues/07-holds-throughout-and-first-dead-step.md`.
+The binary search relies on the accumulated path condition only narrowing along a path. If the solver gives up mid-search, the named step is proven dead but may be later than the true first.
+On 2026-11-10 the lead accepted mapping the server's earliest `order`, often the edge into an "Assuming" line, to that line's event in the UI, consistent with line selection.

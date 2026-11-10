@@ -48,3 +48,7 @@ On 2026-11-10 the ticket 04 worker saw one `store` run fail `test_same_headers` 
 ## 2026-11-10: server stop hangs
 
 On 2026-11-10 the ticket 06 worker reported that, as of `llvm-project@0507cd96feb8`, `dev-loop.sh stop` leaves the server hanging in shutdown while a browser is connected, and killed it by port instead. The lead assigned a proper fix to the ticket 07 worker.
+
+## 2026-11-10: server stop fixed
+
+As of `codechecker@6325f9164`, the shutdown hang reported after ticket 06 is fixed in `server.py`. API workers sat in `accept()` while SIGINT landed on Z3's timer thread. `dev-loop.sh stop` now waits for shutdown and fails loudly, which supersedes the kill-by-port practice noted above.

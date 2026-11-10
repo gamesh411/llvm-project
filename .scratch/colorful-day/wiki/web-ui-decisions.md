@@ -31,3 +31,10 @@ In `/Users/efulop/colorful-day-env/screens/04-picker-1400.png` the lead saw the 
 As of `codechecker@0010a3dec`, the dotted line from ticket 04 turned out to be CodeMirror's focus outline around an editor only as wide as its code, and the outline was removed. Making the editor full width was rejected because it made the step bubbles' right edges uneven.
 On 2026-11-10 the lead viewed `/Users/efulop/colorful-day-env/screens/05-b-eq-0-infeasible-1400.png` and accepted ticket 05.
 In that screenshot the What-If section cuts the accumulated path condition off mid-line with no sign that it scrolls, so the lead assigned that to the ticket 06 worker.
+
+## 2026-11-10: open items for the ticket 08 visual pass
+
+- A verdict from a search the solver cut short still says "the first step", which the server cannot prove in that case, as of `codechecker@6325f9164`.
+- Pointer ranges read as `[1, 18446744073709551615]` in `/Users/efulop/colorful-day-env/screens/07-toggle-on-infeasible-1400.png` instead of something like non-null.
+- At 900px the file header's branch label truncates to `(`.
+- The tight gap between the file path and "Found in:" noted after ticket 02.
