@@ -23,3 +23,8 @@ On 2026-11-10 the lead accepted this limit for the prototype, since the callee's
 
 As of `codechecker@41f307f73`, CodeChecker steps can be `kind: "control"` with `index` into `executionPath`, every step has an `order` on the Bug Path, and `version` stays 1. Details are in the Comments of `../issues/04-branch-steps-and-line-selection.md`.
 As of `llvm-project@ffa40b68fbaf`, a control edge carries the snapshot of the node at its end, and a merged edge keeps its later node's snapshot.
+
+## 2026-11-10: ticket 05
+
+As of `llvm-project@2b6fae011b13`, each snapshot carries SMT-LIB built with the Z3 crosscheck's symbol encoding, and as of `codechecker@c8bb766cb` the server answers `checkWhatIf` (API 6.76) with Python Z3, using a 2000 ms timeout per solver call (`WHAT_IF_SOLVER_TIMEOUT_MS`) and two calls per check.
+The no-Z3 path was verified only by a CodeChecker fixture without SMT-LIB and by compiling `BugReporter.cpp` with Z3 off, since `constraint-snapshots-no-z3.c` is unsupported on the Z3 build. Details are in the Comments of `../issues/05-first-what-if-constraint-and-verdict.md`.

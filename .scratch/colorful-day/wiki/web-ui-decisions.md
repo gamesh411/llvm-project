@@ -25,3 +25,9 @@ Steps on one line with identical snapshots count as one picker choice, the event
 The worker also fixed a 2px per bubble drift between line numbers and source text, and let clicks pass through the arrow overlay while "Show constraints" is on.
 
 In `/Users/efulop/colorful-day-env/screens/04-picker-1400.png` the lead saw the source area end at a dotted vertical line about two thirds across, with blank space to its right while the panel is closed. This was assigned to the ticket 05 worker to fix.
+
+## 2026-11-10: ticket 05 What-If section
+
+As of `codechecker@0010a3dec`, the dotted line from ticket 04 turned out to be CodeMirror's focus outline around an editor only as wide as its code, and the outline was removed. Making the editor full width was rejected because it made the step bubbles' right edges uneven.
+On 2026-11-10 the lead viewed `/Users/efulop/colorful-day-env/screens/05-b-eq-0-infeasible-1400.png` and accepted ticket 05.
+In that screenshot the What-If section cuts the accumulated path condition off mid-line with no sign that it scrolls, so the lead assigned that to the ticket 06 worker.
