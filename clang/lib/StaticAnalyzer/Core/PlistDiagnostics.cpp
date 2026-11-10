@@ -118,6 +118,9 @@ private:
       ArrayRef<PathDiagnosticConstraintSnapshot::SymbolRange> Ranges,
       unsigned indent);
 
+  void ReportStrings(raw_ostream &o, StringRef Key,
+                     ArrayRef<std::string> Strings, unsigned indent);
+
   void ReportPiece(raw_ostream &o, const PathDiagnosticPiece &P,
                    unsigned indent, unsigned depth, bool includeControlFlow,
                    bool isKeyEvent = false) {
@@ -476,6 +479,18 @@ void PlistPrinter::ReportSymbolRanges(
   Indent(o, indent) << "</array>\n";
 }
 
+void PlistPrinter::ReportStrings(raw_ostream &o, StringRef Key,
+                                 ArrayRef<std::string> Strings,
+                                 unsigned indent) {
+  Indent(o, indent) << "<key>" << Key << "</key>\n";
+  Indent(o, indent) << "<array>\n";
+  for (const std::string &String : Strings) {
+    Indent(o, indent + 1);
+    EmitString(o, String) << '\n';
+  }
+  Indent(o, indent) << "</array>\n";
+}
+
 void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
   if (ConstraintSteps.empty())
     return;
@@ -507,12 +522,22 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
       EmitString(o, Var.Value) << '\n';
       Indent(o, indent) << "<key>kind</key>";
       EmitString(o, toString(Var.Kind)) << '\n';
+      if (!Var.SMTTerm.empty()) {
+        Indent(o, indent) << "<key>smt</key>";
+        EmitString(o, Var.SMTTerm) << '\n';
+        Indent(o, indent) << "<key>smt_signed</key>"
+                          << (Var.SMTSigned ? "<true/>" : "<false/>") << '\n';
+      }
       --indent;
       Indent(o, indent) << "</dict>\n";
     }
     --indent;
     Indent(o, indent) << "</array>\n";
     ReportSymbolRanges(o, "path_condition", Snapshot->PathCondition, indent);
+    if (Snapshot->HasSMTLIB) {
+      ReportStrings(o, "smt_declarations", Snapshot->SMTDeclarations, indent);
+      ReportStrings(o, "smt_assertions", Snapshot->SMTAssertions, indent);
+    }
     --indent;
     Indent(o, indent) << "</dict>\n";
   }

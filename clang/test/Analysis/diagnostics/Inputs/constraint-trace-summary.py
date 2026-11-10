@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Print one line per Path Step of each diagnostic in a plist file, with one
 list its Constraint Snapshot holds, so a test can FileCheck it. The list is
-named by the optional second argument: symbol_ranges (default), path_condition
-or variables. Only events are printed unless the third argument is "control",
+named by the optional second argument: symbol_ranges (default), path_condition,
+variables, smtlib (declarations, then assertions) or smt_variables (the SMT
+term of each variable that has one). Only events are printed unless the third argument is "control",
 which adds the control-flow pieces, labelled by their end position.
 Steps without a snapshot are printed as MISSING, and a snapshot that does not
 belong to an event or control piece in the path fails the script.
@@ -12,7 +13,25 @@ import plistlib
 import sys
 
 
+def entries_of(field, step):
+    if field == "smtlib":
+        if "smt_assertions" not in step:
+            return ["NO-SMTLIB"]
+        return step["smt_declarations"] + step["smt_assertions"]
+    if field == "smt_variables":
+        return [entry for entry in step["variables"] if "smt" in entry]
+    return step[field]
+
+
 def render(field, entry):
+    if field == "smtlib":
+        return entry
+    if field == "smt_variables":
+        return "%s = %s [%s]" % (
+            entry["name"],
+            entry["smt"],
+            "signed" if entry["smt_signed"] else "unsigned",
+        )
     if field == "variables":
         return "%s = %s [%s]" % (entry["name"], entry["value"], entry["kind"])
     return "%s = %s" % (entry["symbol"], entry["range"])
@@ -50,7 +69,7 @@ def main():
             entries = (
                 "MISSING"
                 if step is None
-                else "; ".join(render(field, entry) for entry in step[field])
+                else "; ".join(render(field, entry) for entry in entries_of(field, step))
             )
             label = (
                 control_label(piece)

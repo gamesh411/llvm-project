@@ -49,6 +49,25 @@ STAT_MAX(MaxTimeSpentSolvingZ3Queries,
 using namespace clang;
 using namespace ento;
 
+llvm::SMTExprRef ento::getCrosscheckRangeConstraint(llvm::SMTSolverRef &Solver,
+                                                    ASTContext &Ctx,
+                                                    SymbolRef Sym,
+                                                    const RangeSet &Ranges) {
+  auto RangeIt = Ranges.begin();
+  llvm::SMTExprRef SMTConstraints =
+      SMTConv::getRangeExpr(Solver, Ctx, Sym, RangeIt->From(), RangeIt->To(),
+                            /*InRange=*/true)
+          .value();
+  while ((++RangeIt) != Ranges.end()) {
+    SMTConstraints = Solver->mkOr(
+        SMTConstraints,
+        SMTConv::getRangeExpr(Solver, Ctx, Sym, RangeIt->From(), RangeIt->To(),
+                              /*InRange=*/true)
+            .value());
+  }
+  return SMTConstraints;
+}
+
 Z3CrosscheckVisitor::Z3CrosscheckVisitor(Z3CrosscheckVisitor::Z3Result &Result,
                                          const AnalyzerOptions &Opts)
     : Constraints(ConstraintMap::Factory().getEmptyMap()), Result(Result),
@@ -72,23 +91,9 @@ void Z3CrosscheckVisitor::finalizeVisitor(const ExplodedNode *EndPathNode,
   ASTContext &Ctx = BRC.getASTContext();
 
   // Add constraints to the solver
-  for (const auto &[Sym, Range] : Constraints) {
-    auto RangeIt = Range.begin();
-
-    llvm::SMTExprRef SMTConstraints =
-        SMTConv::getRangeExpr(RefutationSolver, Ctx, Sym, RangeIt->From(),
-                              RangeIt->To(),
-                              /*InRange=*/true)
-            .value();
-    while ((++RangeIt) != Range.end()) {
-      SMTConstraints = RefutationSolver->mkOr(
-          SMTConstraints, SMTConv::getRangeExpr(RefutationSolver, Ctx, Sym,
-                                                RangeIt->From(), RangeIt->To(),
-                                                /*InRange=*/true)
-                              .value());
-    }
-    RefutationSolver->addConstraint(SMTConstraints);
-  }
+  for (const auto &[Sym, Range] : Constraints)
+    RefutationSolver->addConstraint(
+        getCrosscheckRangeConstraint(RefutationSolver, Ctx, Sym, Range));
 
   auto GetUsedRLimit = [](const llvm::SMTSolverRef &Solver) {
     return Solver->getStatistics()->getUnsigned("rlimit count");

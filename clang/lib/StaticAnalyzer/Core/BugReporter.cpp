@@ -44,6 +44,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/RangedConstraintManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SMTConv.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -55,8 +56,10 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/SMTAPI.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
@@ -238,6 +241,8 @@ class PathDiagnosticBuilder : public BugReporterContext {
   /// The first path position at which a parameter of the analyzed function has
   /// a binding of its own, see recordPathHistory.
   llvm::DenseMap<const MemRegion *, unsigned> FirstParameterWrite;
+  /// Builds the SMT-LIB of Constraint Snapshots, created on first use.
+  mutable llvm::SMTSolverRef SMTSolver;
 
 public:
   /// Find a non-invalidated report for a given equivalence class,  and returns
@@ -274,8 +279,16 @@ private:
   /// on what came before it while diagnostics are built from the end.
   void recordPathHistory();
 
-  void addVisibleVariables(PathDiagnosticConstraintSnapshot &Snapshot,
-                           const ExplodedNode *Node) const;
+  /// Returns the symbol each added variable holds, null for a concrete value.
+  SmallVector<SymbolRef, 16>
+  addVisibleVariables(PathDiagnosticConstraintSnapshot &Snapshot,
+                      const ExplodedNode *Node) const;
+
+  /// Adds the path condition as SMT-LIB, and the SMT term of each variable
+  /// holding one of \p VariableSymbols. Does nothing without Z3.
+  void addSMTLIB(PathDiagnosticConstraintSnapshot &Snapshot,
+                 ConstraintMap PathCondition,
+                 ArrayRef<SymbolRef> VariableSymbols) const;
 
   void addEdgeToPath(PathDiagnosticConstruct &C,
                      PathDiagnosticLocation &PrevLoc,
@@ -1242,10 +1255,77 @@ PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
   auto Snapshot = std::make_shared<PathDiagnosticConstraintSnapshot>();
   Snapshot->SymbolRanges =
       renderConstraints(getConstraintMapOfClassMembers(Node->getState()));
-  addVisibleVariables(*Snapshot, Node);
-  Snapshot->PathCondition =
-      renderConstraints(PathHistory.find(Node)->second.first);
+  SmallVector<SymbolRef, 16> VariableSymbols =
+      addVisibleVariables(*Snapshot, Node);
+  ConstraintMap PathCondition = PathHistory.find(Node)->second.first;
+  Snapshot->PathCondition = renderConstraints(PathCondition);
+  addSMTLIB(*Snapshot, PathCondition, VariableSymbols);
   return Snapshot;
+}
+
+template <typename T> static std::string printToString(const T &Printable) {
+  std::string Result;
+  llvm::raw_string_ostream OS(Result);
+  Printable.print(OS);
+  return Result;
+}
+
+void PathDiagnosticBuilder::addSMTLIB(
+    PathDiagnosticConstraintSnapshot &Snapshot, ConstraintMap PathCondition,
+    ArrayRef<SymbolRef> VariableSymbols) const {
+#if LLVM_WITH_Z3
+  if (!SMTSolver)
+    SMTSolver = llvm::CreateZ3Solver();
+  ASTContext &Ctx = getASTContext();
+  Snapshot.HasSMTLIB = true;
+
+  // Keyed by ID, so declarations come out in a stable order.
+  std::map<SymbolID, const SymbolData *> Declared;
+  auto Declare = [&Declared](SymbolRef Sym) {
+    for (SymbolRef Part : Sym->symbols())
+      if (const auto *Data = dyn_cast<SymbolData>(Part))
+        Declared.try_emplace(Data->getSymbolID(), Data);
+  };
+
+  // In the order of PathCondition, which is sorted by the symbol's dump.
+  std::vector<std::pair<std::string, std::string>> Assertions;
+  for (const auto &[Sym, Range] : PathCondition) {
+    Declare(Sym);
+    std::string Dump;
+    llvm::raw_string_ostream DumpOS(Dump);
+    Sym->dumpToStream(DumpOS);
+    Assertions.emplace_back(std::move(Dump),
+                            "(assert " +
+                                printToString(*getCrosscheckRangeConstraint(
+                                    SMTSolver, Ctx, Sym, Range)) +
+                                ")");
+  }
+  llvm::sort(Assertions);
+  for (auto &Assertion : Assertions)
+    Snapshot.SMTAssertions.push_back(std::move(Assertion.second));
+
+  for (auto [Var, Sym] : llvm::zip_equal(Snapshot.Variables, VariableSymbols)) {
+    if (!Sym)
+      continue;
+    QualType Ty;
+    std::optional<llvm::SMTExprRef> Term =
+        SMTConv::getExpr(SMTSolver, Ctx, Sym, Ty);
+    // A comparison against an integer needs a bitvector.
+    if (!Term || Ty->isBooleanType() ||
+        !(Ty->isIntegralOrEnumerationType() || Ty->isAnyPointerType()))
+      continue;
+    Var.SMTTerm = printToString(**Term);
+    Var.SMTSigned = Ty->isSignedIntegerOrEnumerationType();
+    Declare(Sym);
+  }
+
+  for (const auto &[ID, Data] : Declared) {
+    llvm::SMTExprRef Symbol = SMTConv::fromData(SMTSolver, Ctx, Data);
+    Snapshot.SMTDeclarations.push_back(
+        "(declare-fun " + printToString(*Symbol) + " () " +
+        printToString(*SMTSolver->getSort(Symbol)) + ")");
+  }
+#endif
 }
 
 void PathDiagnosticBuilder::recordPathHistory() {
@@ -1276,7 +1356,7 @@ void PathDiagnosticBuilder::recordPathHistory() {
   }
 }
 
-void PathDiagnosticBuilder::addVisibleVariables(
+SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
     PathDiagnosticConstraintSnapshot &Snapshot,
     const ExplodedNode *Node) const {
   const SourceManager &SM = getSourceManager();
@@ -1322,6 +1402,7 @@ void PathDiagnosticBuilder::addVisibleVariables(
                           State->getSVal(State->getLValue(Global, Frame)));
   }
 
+  SmallVector<SymbolRef, 16> Symbols;
   for (const auto &[Name, DeclAndVal] : Visible) {
     if (Name.empty())
       continue;
@@ -1330,7 +1411,8 @@ void PathDiagnosticBuilder::addVisibleVariables(
     using ValueKind = PathDiagnosticConstraintSnapshot::Variable::ValueKind;
     ValueKind Kind;
     SVal Val = DeclAndVal.second;
-    if (SymbolRef Sym = Val.getAsSymbol()) {
+    SymbolRef Sym = Val.getAsSymbol();
+    if (Sym) {
       Sym->dumpToStream(OS);
       Kind = ValueKind::Symbol;
     } else if (auto LocInt = Val.getAs<loc::ConcreteInt>()) {
@@ -1345,8 +1427,11 @@ void PathDiagnosticBuilder::addVisibleVariables(
     } else {
       continue;
     }
-    Snapshot.Variables.push_back({Name, std::move(Value), Kind});
+    Snapshot.Variables.push_back(
+        {Name, std::move(Value), Kind, /*SMTTerm=*/{}, /*SMTSigned=*/false});
+    Symbols.push_back(Sym);
   }
+  return Symbols;
 }
 
 void PathDiagnosticBuilder::generatePathDiagnosticsForNode(

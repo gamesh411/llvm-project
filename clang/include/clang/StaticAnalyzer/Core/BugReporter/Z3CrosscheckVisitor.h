@@ -16,8 +16,15 @@
 
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporterVisitors.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/RangedConstraintManager.h"
+#include "llvm/Support/SMTAPI.h"
 
 namespace clang::ento {
+
+/// The constraint the Z3 crosscheck asserts for \p Sym taking a value in
+/// \p Ranges. Shared so that other SMT output encodes symbols the same way.
+llvm::SMTExprRef getCrosscheckRangeConstraint(llvm::SMTSolverRef &Solver,
+                                              ASTContext &Ctx, SymbolRef Sym,
+                                              const RangeSet &Ranges);
 
 /// The bug visitor will walk all the nodes in a path and collect all the
 /// constraints. When it reaches the root node, will create a refutation

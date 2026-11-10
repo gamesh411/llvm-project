@@ -416,6 +416,11 @@ struct PathDiagnosticConstraintSnapshot {
     /// decimal integer or pointed-to region otherwise.
     std::string Value;
     ValueKind Kind;
+    /// For a Symbol, the SMT-LIB term of the symbol in the encoding of
+    /// SMTDeclarations, or empty when it has no bitvector term.
+    std::string SMTTerm;
+    /// Whether comparisons on SMTTerm are signed.
+    bool SMTSigned = false;
   };
 
   /// Symbols that have a known range at this point, sorted by name so output
@@ -430,6 +435,14 @@ struct PathDiagnosticConstraintSnapshot {
   /// including those on symbols the analyzer has since dropped as dead. Sorted
   /// by name.
   std::vector<SymbolRange> PathCondition;
+
+  /// PathCondition as SMT-LIB, in the symbol encoding of the Z3 crosscheck:
+  /// a declaration of every symbol PathCondition or a Variable refers to, and
+  /// one assertion per PathCondition entry. Only built with Z3, so a path
+  /// with no constraints is told apart from a Clang without Z3.
+  bool HasSMTLIB = false;
+  std::vector<std::string> SMTDeclarations;
+  std::vector<std::string> SMTAssertions;
 };
 
 using PathDiagnosticConstraintSnapshotRef =

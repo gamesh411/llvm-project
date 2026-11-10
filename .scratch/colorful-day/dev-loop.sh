@@ -186,7 +186,9 @@ cmd_status() {
 }
 
 # CodeChecker functional-test fixture: plists produced by the Colorful Day Clang
-# from demo/two-path.c, one with Constraint Snapshots and one without. Output
+# from demo/two-path.c, one with Constraint Snapshots, one without, and one with
+# snapshots but no SMT-LIB, as a Clang without Z3 writes them; and one from
+# demo/z3-refuted.c, whose Bug Path Z3 refutes. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -207,6 +209,43 @@ cmd_fixture() {
     grep -q 'FILE_PATH' "$dir/two_path.plist" || die "placeholder missing in $dir"
     echo "fixture ok: $dir/two_path.plist"
   done
+  # What a Clang without Z3 writes: the same trace minus every SMT-LIB key.
+  # Derived instead of built, so the fixture needs no second Clang build.
+  grep -q '<key>smt_assertions</key>' "$src/with_snapshots/two_path.plist" \
+    || die "with_snapshots has no SMT-LIB; is $BUILD built with Z3?"
+  dir=$src/no_smtlib
+  mkdir -p "$dir"
+  cp "$DEMO" "$dir/two_path.c"
+  "$PYTHON" - "$src/with_snapshots/two_path.plist" "$dir/two_path.plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as f:
+    plist = plistlib.load(f)
+for diag in plist['diagnostics']:
+    for step in diag.get('constraint_trace', {}).get('steps', []):
+        step.pop('smt_declarations', None)
+        step.pop('smt_assertions', None)
+        for variable in step['variables']:
+            variable.pop('smt', None)
+            variable.pop('smt_signed', None)
+with open(sys.argv[2], 'wb') as f:
+    plistlib.dump(plist, f)
+PY
+  ! grep -q '<key>smt' "$dir/two_path.plist" || die "SMT-LIB left in $dir"
+  echo "fixture ok: $dir/two_path.plist"
+
+  # A Bug Path the range-based solver accepts and Z3 refutes, for a Baseline
+  # Verdict that is not Feasible. Analyzed without crosscheck, which would drop
+  # the report.
+  dir=$src/z3_refuted
+  mkdir -p "$dir"
+  cp "$LLVM/.scratch/colorful-day/demo/z3-refuted.c" "$dir/z3_refuted.c"
+  (cd "$dir" && clang --analyze --analyzer-output plist-multi-file \
+    -Xclang -analyzer-checker=core \
+    -Xclang -analyzer-config -Xclang emit-constraint-snapshots=true \
+    -o z3_refuted.plist "$dir/z3_refuted.c")
+  FIXTURE_DIR=$dir perl -pi -e 's/\Q$ENV{FIXTURE_DIR}\E/\$FILE_PATH\$/g' "$dir/z3_refuted.plist"
+  grep -q 'FILE_PATH' "$dir/z3_refuted.plist" || die "placeholder missing in $dir"
+  echo "fixture ok: $dir/z3_refuted.plist"
 }
 
 # Clang lit tests of this feature, plus any extra lit paths passed as arguments.
@@ -216,6 +255,8 @@ cmd_lit() {
   "$BUILD/bin/llvm-lit" -sv \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-control.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-smtlib.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-no-z3.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
