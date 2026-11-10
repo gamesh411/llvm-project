@@ -24,6 +24,10 @@ _Avoid_: Extra constraint, user constraint
 The result of checking a Bug Path against What-If Constraints: Feasible, Infeasible, or Unknown.
 _Avoid_: Reachability result
 
+**Baseline Verdict**:
+The Path Verdict of a Bug Path with no What-If Constraints.
+_Avoid_: Initial verdict, sanity check
+
 **Target Location**:
 A source position the user selects, which can correspond to several Path Steps.
 _Avoid_: Program point, which is reserved for the analyzer's internal notion
