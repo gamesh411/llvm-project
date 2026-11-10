@@ -1,7 +1,7 @@
 // RUN: rm -rf %t && mkdir %t
 // RUN: %clang_analyze_cc1 -analyzer-checker=core -analyzer-output=plist-multi-file \
 // RUN:   -analyzer-config emit-constraint-snapshots=true -o %t/on.plist -verify %s
-// RUN: %python %S/Inputs/constraint-trace-summary.py %t/on.plist | FileCheck %s
+// RUN: %python %S/Inputs/constraint-trace-summary.py %t/on.plist | FileCheck %s --implicit-check-not=MISSING
 // RUN: %python %S/Inputs/constraint-trace-summary.py %t/on.plist path_condition | FileCheck %s --check-prefix=PC
 // RUN: %python %S/Inputs/constraint-trace-summary.py %t/on.plist variables | FileCheck %s --check-prefix=VARS
 
@@ -22,7 +22,6 @@
 // OFF-NEXT: NO-TRACE
 
 // Every event carries a snapshot; a missing one would print MISSING.
-// CHECK-NOT: MISSING
 
 int two_step(int *p, int a) {
   if (a == 0)

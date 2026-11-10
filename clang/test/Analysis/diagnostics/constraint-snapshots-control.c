@@ -1,12 +1,12 @@
 // RUN: rm -rf %t && mkdir %t
 // RUN: %clang_analyze_cc1 -analyzer-checker=core -analyzer-output=plist-multi-file \
 // RUN:   -analyzer-config emit-constraint-snapshots=true -o %t/out.plist -verify %s
-// RUN: %python %S/Inputs/constraint-trace-summary.py %t/out.plist symbol_ranges control | FileCheck %s --check-prefix=RANGES
-// RUN: %python %S/Inputs/constraint-trace-summary.py %t/out.plist variables control | FileCheck %s --check-prefix=VARS
+// RUN: %python %S/Inputs/constraint-trace-summary.py %t/out.plist symbol_ranges control \
+// RUN:   | FileCheck %s --check-prefix=RANGES --implicit-check-not=MISSING
+// RUN: %python %S/Inputs/constraint-trace-summary.py %t/out.plist variables control \
+// RUN:   | FileCheck %s --check-prefix=VARS --implicit-check-not=MISSING
 
 // Every control-flow piece carries a snapshot too; a missing one prints MISSING.
-// RANGES-NOT: MISSING
-// VARS-NOT: MISSING
 
 int branch_step(int *p, int a) {
   if (a == 0)
