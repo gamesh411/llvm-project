@@ -1009,7 +1009,9 @@ PathDiagnosticCallPiece::getCallEnterEvent() const {
   describeCodeDecl(Out, Callee, /*ExtendedDescription=*/true);
 
   assert(callEnter.asLocation().isValid());
-  return std::make_shared<PathDiagnosticEventPiece>(callEnter, Out.str());
+  auto Event = std::make_shared<PathDiagnosticEventPiece>(callEnter, Out.str());
+  Event->setConstraintSnapshot(CallEnterConstraintSnapshot);
+  return Event;
 }
 
 std::shared_ptr<PathDiagnosticEventPiece>
@@ -1028,7 +1030,10 @@ PathDiagnosticCallPiece::getCallEnterWithinCallerEvent() const {
   Out << "Entered call";
   describeCodeDecl(Out, Caller, /*ExtendedDescription=*/false, " from ");
 
-  return std::make_shared<PathDiagnosticEventPiece>(callEnterWithin, Out.str());
+  auto Event =
+      std::make_shared<PathDiagnosticEventPiece>(callEnterWithin, Out.str());
+  Event->setConstraintSnapshot(CallEnterConstraintSnapshot);
+  return Event;
 }
 
 std::shared_ptr<PathDiagnosticEventPiece>
@@ -1054,7 +1059,10 @@ PathDiagnosticCallPiece::getCallExitEvent() const {
   }
 
   assert(callReturn.asLocation().isValid());
-  return std::make_shared<PathDiagnosticEventPiece>(callReturn, Out.str());
+  auto Event =
+      std::make_shared<PathDiagnosticEventPiece>(callReturn, Out.str());
+  Event->setConstraintSnapshot(getConstraintSnapshot());
+  return Event;
 }
 
 static void compute_path_size(const PathPieces &pieces, unsigned &size) {

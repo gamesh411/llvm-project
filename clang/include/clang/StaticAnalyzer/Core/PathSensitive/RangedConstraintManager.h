@@ -403,6 +403,9 @@ private:
 
 using ConstraintMap = llvm::ImmutableMap<SymbolRef, RangeSet>;
 ConstraintMap getConstraintMap(ProgramStateRef State);
+/// Like getConstraintMap, but gives every member of an equivalence class its
+/// own entry instead of only the class representative.
+ConstraintMap getConstraintMapOfClassMembers(ProgramStateRef State);
 
 class RangedConstraintManager : public SimpleConstraintManager {
 public:

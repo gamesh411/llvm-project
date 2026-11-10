@@ -399,6 +399,23 @@ public:
 // Path "pieces" for path-sensitive diagnostics.
 //===----------------------------------------------------------------------===//
 
+/// What the analyzer knew about values at one point on a bug path, already
+/// rendered to text. The exploded graph of the bug path is gone by the time
+/// consumers run, so this cannot stay a reference into it.
+struct PathDiagnosticConstraintSnapshot {
+  struct SymbolRange {
+    std::string Symbol;
+    std::string Range;
+  };
+
+  /// Symbols that have a known range at this point, sorted by name so output
+  /// stays deterministic.
+  std::vector<SymbolRange> SymbolRanges;
+};
+
+using PathDiagnosticConstraintSnapshotRef =
+    std::shared_ptr<const PathDiagnosticConstraintSnapshot>;
+
 class PathDiagnosticPiece: public llvm::FoldingSetNode {
 public:
   enum Kind { ControlFlow, Event, Macro, Call, Note, PopUp };
@@ -421,6 +438,8 @@ private:
 
   std::vector<SourceRange> ranges;
   std::vector<FixItHint> fixits;
+
+  PathDiagnosticConstraintSnapshotRef ConstraintSnapshot;
 
 protected:
   PathDiagnosticPiece(StringRef s, Kind k, DisplayHint hint = Below);
@@ -474,6 +493,15 @@ public:
 
   /// Return the fix-it hints associated with this PathDiagnosticPiece.
   ArrayRef<FixItHint> getFixits() const { return fixits; }
+
+  void setConstraintSnapshot(PathDiagnosticConstraintSnapshotRef Snapshot) {
+    ConstraintSnapshot = std::move(Snapshot);
+  }
+
+  /// Null unless constraint snapshots were requested for this diagnostic.
+  const PathDiagnosticConstraintSnapshotRef &getConstraintSnapshot() const {
+    return ConstraintSnapshot;
+  }
 
   virtual void Profile(llvm::FoldingSetNodeID &ID) const;
 
@@ -574,6 +602,9 @@ class PathDiagnosticCallPiece : public PathDiagnosticPiece {
   // TODO: Should we allow multiple diagnostics?
   std::string CallStackMessage;
 
+  // The piece's own snapshot describes the call exit; this one the call enter.
+  PathDiagnosticConstraintSnapshotRef CallEnterConstraintSnapshot;
+
   PathDiagnosticCallPiece(const Decl *callerD,
                           const PathDiagnosticLocation &callReturnPos)
       : PathDiagnosticPiece(Call), Caller(callerD), NoExit(false),
@@ -597,6 +628,11 @@ public:
 
   bool hasCallStackMessage() { return !CallStackMessage.empty(); }
   void setCallStackMessage(StringRef st) { CallStackMessage = std::string(st); }
+
+  void
+  setCallEnterConstraintSnapshot(PathDiagnosticConstraintSnapshotRef Snapshot) {
+    CallEnterConstraintSnapshot = std::move(Snapshot);
+  }
 
   PathDiagnosticLocation getLocation() const override { return callEnter; }
 

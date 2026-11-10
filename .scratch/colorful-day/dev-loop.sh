@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Colorful Day dev loop: Clang build -> CodeChecker analyze -> store -> server -> browser.
 # Re-runnable; every step fails loudly. All generated state lives under $CD_ENV.
-# Usage: dev-loop.sh <env|thrift|web|package|clang|analyze|store|server|stop|status|all> [args]
+# Usage: dev-loop.sh <env|thrift|web|package|clang|analyze|store|server|stop|status|all|fixture|lit|functest> [args]
 set -euo pipefail
 
 LLVM=${LLVM:-/Users/efulop/llvm-project}
@@ -52,12 +52,16 @@ cmd_env() {
   activate
   pip install -q -U pip
   pip install -q -r "$CC/analyzer/requirements.txt" -r "$CC/web/requirements.txt"
+  # pytest and linters for `functest` and lint runs. Not the dev requirements
+  # file: its cryptography~=41.0 pin is too old for joserfc in requirements.txt.
+  pip install -q 'pytest<=7.3.1' 'pylint<3.3' 'pycodestyle<=2.12.0' 'cryptography>=45'
   python -c 'import lxml, sqlalchemy, thrift' && echo 'env ok'
 }
 
 cmd_clang() {
   [ -d "$BUILD" ] || die "configure $BUILD first (see ticket 01 comments)"
-  (cd "$BUILD" && ninja clang FileCheck not count)
+  # llvm-config is only needed by llvm-lit, see `lit`.
+  (cd "$BUILD" && ninja clang FileCheck not count llvm-config)
   grep -E '^LLVM_ENABLE_Z3_SOLVER:BOOL=ON' "$BUILD/CMakeCache.txt" >/dev/null \
     || die "Z3 is not enabled in $BUILD/CMakeCache.txt"
   "$BUILD/bin/clang" --version
@@ -113,7 +117,8 @@ EOF
   # Crosscheck fails the run unless Clang really has Z3 linked.
   "$(cc_bin)" analyze "$CD_ENV/demo-cdb.json" -o "$REPORTS" \
     --analyzers clangsa --enable core.NullDereference \
-    --z3-refutation on
+    --z3-refutation on \
+    --analyzer-config clangsa:emit-constraint-snapshots=true
   # parse exits 2 when it finds defects, which is the expected outcome here.
   rc=0
   "$(cc_bin)" parse "$REPORTS" >"$CD_ENV/logs/parse.txt" 2>&1 || rc=$?
@@ -160,10 +165,52 @@ cmd_status() {
   echo "server:  $(lsof -ti tcp:"$PORT" >/dev/null 2>&1 && echo "up on $PORT" || echo down)"
 }
 
+# CodeChecker functional-test fixture: plists produced by the Colorful Day Clang
+# from demo/two-path.c, one with Constraint Snapshots and one without. Output
+# goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
+# functional tests expect, so re-running it is the only way to change them.
+cmd_fixture() {
+  use_clang
+  local src=$CC/web/tests/projects/constraint_trace
+  local variant dir flags
+  for variant in with_snapshots no_snapshots; do
+    dir=$src/$variant
+    mkdir -p "$dir"
+    cp "$DEMO" "$dir/two_path.c"
+    flags=()
+    [ "$variant" = with_snapshots ] \
+      && flags=(-Xclang -analyzer-config -Xclang emit-constraint-snapshots=true)
+    (cd "$dir" && clang --analyze --analyzer-output plist-multi-file \
+      -Xclang -analyzer-checker=core "${flags[@]+"${flags[@]}"}" \
+      -o two_path.plist "$dir/two_path.c")
+    FIXTURE_DIR=$dir perl -pi -e 's/\Q$ENV{FIXTURE_DIR}\E/\$FILE_PATH\$/g' "$dir/two_path.plist"
+    grep -q 'FILE_PATH' "$dir/two_path.plist" || die "placeholder missing in $dir"
+    echo "fixture ok: $dir/two_path.plist"
+  done
+}
+
+# Clang lit tests of this feature, plus any extra lit paths passed as arguments.
+cmd_lit() {
+  use_clang
+  (cd "$BUILD" && ninja clang FileCheck not count llvm-config >/dev/null)
+  "$BUILD/bin/llvm-lit" -sv \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots.c" \
+    "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
+}
+
+# CodeChecker functional tests of this feature. Needs `package` and `env`.
+cmd_functest() {
+  activate
+  # Through the Makefile target: it clears the test workspace and shuts down
+  # the global test server, which otherwise goes stale between runs.
+  make -C "$CC" test_web_feature TEST=tests/functional/constraint_trace \
+    EXTRA_PYTEST_ARGS="$*"
+}
+
 cmd_all() { cmd_env; cmd_thrift; cmd_web; cmd_package; cmd_analyze; cmd_server; cmd_store; }
 
 sub=${1:-}; shift || true
 case "$sub" in
-  env|clang|thrift|web|package|analyze|server|stop|store|status|all) "cmd_$sub" "$@" ;;
-  *) die "usage: $0 <env|clang|thrift|web|package|analyze|server|stop|store|status|all>" ;;
+  env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest) "cmd_$sub" "$@" ;;
+  *) die "usage: $0 <env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest>" ;;
 esac

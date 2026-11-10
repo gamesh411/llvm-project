@@ -42,6 +42,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/RangedConstraintManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -251,6 +252,10 @@ public:
   generate(const PathDiagnosticConsumer *PDC) const;
 
 private:
+  /// \p Node's Constraint Snapshot, or null when snapshots are not requested.
+  PathDiagnosticConstraintSnapshotRef
+  makeConstraintSnapshot(const ExplodedNode *Node) const;
+
   void updateStackPiecesWithMessage(PathDiagnosticPieceRef P,
                                     const CallWithEntryStack &CallStack) const;
   void generatePathDiagnosticsForNode(PathDiagnosticConstruct &C,
@@ -1146,6 +1151,27 @@ constexpr llvm::StringLiteral StrLoopCollectionEmpty =
 static std::unique_ptr<FilesToLineNumsMap>
 findExecutedLines(const SourceManager &SM, const ExplodedNode *N);
 
+PathDiagnosticConstraintSnapshotRef
+PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
+  if (!getAnalyzerOptions().ShouldEmitConstraintSnapshots)
+    return nullptr;
+
+  auto Snapshot = std::make_shared<PathDiagnosticConstraintSnapshot>();
+  for (const auto &[Sym, Range] :
+       getConstraintMapOfClassMembers(Node->getState())) {
+    PathDiagnosticConstraintSnapshot::SymbolRange Entry;
+    llvm::raw_string_ostream SymbolOS(Entry.Symbol);
+    Sym->dumpToStream(SymbolOS);
+    llvm::raw_string_ostream RangeOS(Entry.Range);
+    Range.dump(RangeOS);
+    Snapshot->SymbolRanges.push_back(std::move(Entry));
+  }
+  llvm::sort(Snapshot->SymbolRanges, [](const auto &LHS, const auto &RHS) {
+    return LHS.Symbol < RHS.Symbol;
+  });
+  return Snapshot;
+}
+
 void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
     PathDiagnosticConstruct &C, PathDiagnosticLocation &PrevLoc) const {
   ProgramPoint P = C.getCurrentNode()->getLocation();
@@ -1202,6 +1228,8 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
       C.updateStackFrameMap(&Call->path, CE->getCalleeStackFrame());
     }
     Call->setCallee(*CE, SM);
+    Call->setCallEnterConstraintSnapshot(
+        makeConstraintSnapshot(C.getCurrentNode()));
 
     // Update the previous location in the active path.
     PrevLoc = Call->getLocation();
@@ -1223,6 +1251,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
     // We are descending into a call (backwards).  Construct
     // a new call piece to contain the path pieces for that call.
     auto Call = PathDiagnosticCallPiece::construct(*CE, SM);
+    Call->setConstraintSnapshot(makeConstraintSnapshot(C.getCurrentNode()));
     // Record the mapping from call piece to StackFrame.
     assert(!C.isInStackFrameMap(&Call->path) &&
            "We just entered a call, this must've been the first time we "
@@ -1286,6 +1315,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
       auto p = std::make_shared<PathDiagnosticEventPiece>(
           L, "Looping back to the head of the loop");
       p->setPrunable(true);
+      p->setConstraintSnapshot(makeConstraintSnapshot(C.getCurrentNode()));
 
       addEdgeToPath(C.getActivePath(), PrevLoc, p->getLocation());
       // We might've added a very similar control node already
@@ -1331,6 +1361,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
                                    C.getCurrStackFrame());
           auto PE = std::make_shared<PathDiagnosticEventPiece>(L, str);
           PE->setPrunable(true);
+          PE->setConstraintSnapshot(makeConstraintSnapshot(C.getCurrentNode()));
           addEdgeToPath(C.getActivePath(), PrevLoc, PE->getLocation());
 
           // We might've added a very similar control node already
@@ -2039,6 +2070,7 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
     LastPiece = BugReporterVisitor::getDefaultEndPath(*this, ErrorNode,
                                                       *getBugReport());
   }
+  LastPiece->setConstraintSnapshot(makeConstraintSnapshot(ErrorNode));
   Construct.PD->setEndOfPath(LastPiece);
 
   PathDiagnosticLocation PrevLoc = Construct.PD->getLocation();
@@ -2061,6 +2093,10 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
       Note->Profile(ID);
       if (!DeduplicationSet.insert(ID).second)
         continue;
+
+      if (isa<PathDiagnosticEventPiece>(Note.get()))
+        Note->setConstraintSnapshot(
+            makeConstraintSnapshot(Construct.getCurrentNode()));
 
       if (PDC->shouldAddPathEdges())
         addEdgeToPath(Construct.getActivePath(), PrevLoc, Note->getLocation());

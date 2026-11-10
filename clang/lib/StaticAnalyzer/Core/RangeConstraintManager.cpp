@@ -2369,6 +2369,19 @@ ConstraintMap ento::getConstraintMap(ProgramStateRef State) {
   return Result;
 }
 
+ConstraintMap ento::getConstraintMapOfClassMembers(ProgramStateRef State) {
+  ConstraintMap::Factory &F = State->get_context<ConstraintMap>();
+  ConstraintMap Result = F.getEmptyMap();
+
+  ConstraintRangeTy Constraints = State->get<ConstraintRange>();
+  for (std::pair<EquivalenceClass, RangeSet> ClassConstraint : Constraints) {
+    for (SymbolRef ClassMember : ClassConstraint.first.getClassMembers(State))
+      Result = F.add(Result, ClassMember, ClassConstraint.second);
+  }
+
+  return Result;
+}
+
 //===----------------------------------------------------------------------===//
 //                     EqualityClass implementation details
 //===----------------------------------------------------------------------===//

@@ -85,6 +85,10 @@ class PlistPrinter {
   const cross_tu::CrossTranslationUnitContext &CTU;
   const MacroExpansionContext &MacroExpansions;
   llvm::SmallVector<const PathDiagnosticMacroPiece *, 0> MacroPieces;
+  /// Position of the next element in the path array.
+  unsigned NextPathIndex = 0;
+  llvm::SmallVector<std::pair<unsigned, PathDiagnosticConstraintSnapshotRef>, 0>
+      ConstraintSteps;
 
 public:
   PlistPrinter(const FIDMap &FM, const Preprocessor &PP,
@@ -103,6 +107,10 @@ public:
   /// piece itself is collected. Call this function after the entire bugpath
   /// was reported.
   void ReportMacroExpansions(raw_ostream &o, unsigned indent);
+
+  /// Print the constraint trace collected while the path was printed, which
+  /// does not exist unless constraint snapshots were requested.
+  void ReportConstraintTrace(raw_ostream &o, unsigned indent);
 
 private:
   void ReportPiece(raw_ostream &o, const PathDiagnosticPiece &P,
@@ -243,6 +251,7 @@ void PlistPrinter::ReportControlFlow(raw_ostream &o,
 
   const SourceManager &SM = PP.getSourceManager();
   const LangOptions &LangOpts = PP.getLangOpts();
+  ++NextPathIndex;
 
   Indent(o, indent) << "<dict>\n";
   ++indent;
@@ -299,6 +308,11 @@ void PlistPrinter::ReportEvent(raw_ostream &o, const PathDiagnosticEventPiece& P
                                bool isKeyEvent) {
 
   const SourceManager &SM = PP.getSourceManager();
+
+  if (const PathDiagnosticConstraintSnapshotRef &Snapshot =
+          P.getConstraintSnapshot())
+    ConstraintSteps.emplace_back(NextPathIndex, Snapshot);
+  ++NextPathIndex;
 
   Indent(o, indent) << "<dict>\n";
   ++indent;
@@ -418,6 +432,47 @@ void PlistPrinter::ReportMacroExpansions(raw_ostream &o, unsigned indent) {
   }
 }
 
+void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
+  if (ConstraintSteps.empty())
+    return;
+
+  Indent(o, indent) << "<key>constraint_trace</key>\n";
+  Indent(o, indent) << "<dict>\n";
+  ++indent;
+  Indent(o, indent) << "<key>version</key>";
+  EmitInteger(o, 1) << '\n';
+  Indent(o, indent) << "<key>steps</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (const auto &[PathIndex, Snapshot] : ConstraintSteps) {
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>path_index</key>";
+    EmitInteger(o, PathIndex) << '\n';
+    Indent(o, indent) << "<key>symbol_ranges</key>\n";
+    Indent(o, indent) << "<array>\n";
+    ++indent;
+    for (const auto &[Symbol, Range] : Snapshot->SymbolRanges) {
+      Indent(o, indent) << "<dict>\n";
+      ++indent;
+      Indent(o, indent) << "<key>symbol</key>";
+      EmitString(o, Symbol) << '\n';
+      Indent(o, indent) << "<key>range</key>";
+      EmitString(o, Range) << '\n';
+      --indent;
+      Indent(o, indent) << "</dict>\n";
+    }
+    --indent;
+    Indent(o, indent) << "</array>\n";
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+  --indent;
+  Indent(o, indent) << "</dict>\n";
+}
+
 void PlistPrinter::ReportNote(raw_ostream &o, const PathDiagnosticNotePiece& P,
                               unsigned indent) {
 
@@ -451,6 +506,8 @@ void PlistPrinter::ReportPopUp(raw_ostream &o,
                                const PathDiagnosticPopUpPiece &P,
                                unsigned indent) {
   const SourceManager &SM = PP.getSourceManager();
+
+  ++NextPathIndex;
 
   Indent(o, indent) << "<dict>\n";
   ++indent;
@@ -607,6 +664,8 @@ void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
     Printer.ReportDiag(o, *Piece);
 
   o << "   </array>\n";
+
+  Printer.ReportConstraintTrace(o, /* indent */ 3);
 
   if (!DiagOpts.ShouldDisplayMacroExpansions)
     return;

@@ -84,6 +84,7 @@
 // CHECK-NEXT: dump-entry-point-stats-to-csv = ""
 // CHECK-NEXT: eagerly-assume = true
 // CHECK-NEXT: elide-constructors = true
+// CHECK-NEXT: emit-constraint-snapshots = false
 // CHECK-NEXT: expand-macros = false
 // CHECK-NEXT: experimental-enable-naive-ctu-analysis = false
 // CHECK-NEXT: exploration_strategy = unexplored_first_queue
