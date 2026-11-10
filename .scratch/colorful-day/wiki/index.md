@@ -12,3 +12,8 @@ Sources such as the spec and tickets are cited here, never copied.
 ## Environment
 
 - [Dev environment](dev-environment.md): where the Clang build, venv and server state live, and why.
+
+## Design
+
+- [Data contract](data-contract.md): how constraint data travels from Clang to the web UI.
+- [Web UI decisions](web-ui-decisions.md): toggle and panel placement.

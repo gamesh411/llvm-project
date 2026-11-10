@@ -13,3 +13,7 @@ Related: [execution plan](execution-plan.md).
 ## 2026-11-10: model routing
 
 On 2026-11-10 the session-start capacity probe showed Codex at 16% with a 15% reserve heuristic, so the lead chose native Claude subagents over Codex workers.
+
+## 2026-11-10: tracked files after test runs
+
+On 2026-11-10 the lead added a rule after a test run left tracked fixtures modified: workers check `git status` in both repositories before finishing, and report or restore any tracked file their test runs changed.

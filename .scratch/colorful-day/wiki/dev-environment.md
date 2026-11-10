@@ -20,3 +20,17 @@ Traps found are listed in the Comments of `../issues/01-codechecker-dev-loop.md`
 On 2026-11-10 the lead accepted ticket 01 after viewing `/Users/efulop/colorful-day-env/screens/01-two-path-report.png`, which shows one report with Bug Path `a == 0`, `b != 0`, and after checking the `Pool` callers against the macOS wrapper added in `codechecker@a343881a2`.
 
 The claim above that all generated state lives under `/Users/efulop/colorful-day-env/` is superseded in one respect: the CodeChecker Makefiles hardcode `tools/*/build`, so the dev package stays at the gitignored `/Users/efulop/codechecker/build/CodeChecker`.
+
+## 2026-11-10: wiki lint corrections
+
+The list of `dev-loop.sh` subcommands in the ticket 01 outcome above is superseded: as of `llvm-project@b890c79d9a57`, the script also offers `fixture`, `lit` and `functest`.
+
+The "all generated state" claim that the ticket 01 outcome calls superseded is in the Comments of `../issues/01-codechecker-dev-loop.md`, not on this page.
+
+## 2026-11-10: test baseline after ticket 02
+
+On 2026-11-10 the ticket 02 rework worker reported identical failing lists at `codechecker@a343881a2` and at the rework head for `store` and `report_viewer_api`, so ticket 02 caused no regression there.
+The worker traced those failures to macOS make 3.81 and a missing clang-tidy on `PATH`, and as of `llvm-project@16929a93154e` `dev-loop.sh` `functest` and `webtests` set up both.
+With that setup the worker reported `store` 7/7 and `report_viewer_api` 66/67, the remaining failure being expected line numbers 15 and 25 against reported 14 and 24.
+
+On 2026-11-10 the lead found that running the report-converter unit tests rewrites the tracked files `tools/report-converter/tests/unit/analyzers/pvs_studio_output_test_files/sample.json` and `sample.plist`, and restored them.
