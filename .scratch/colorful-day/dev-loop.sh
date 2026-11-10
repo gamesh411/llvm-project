@@ -215,6 +215,7 @@ cmd_lit() {
   (cd "$BUILD" && ninja clang FileCheck not count llvm-config >/dev/null)
   "$BUILD/bin/llvm-lit" -sv \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-control.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 

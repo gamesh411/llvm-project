@@ -135,6 +135,9 @@ public:
   /// TODO: PathDiagnostic has a stack doing the same thing, shouldn't we use
   /// that instead?
   CallWithEntryStack CallStack;
+  /// The node at which the next edge to be added (walking the bug path
+  /// backwards) ends, whose Constraint Snapshot that edge carries.
+  const ExplodedNode *EdgeEndNode = nullptr;
   /// The bug report we're constructing. For ease of use, this field is kept
   /// public, though some "shortcut" getters are provided for commonly used
   /// methods of PathDiagnostic.
@@ -273,6 +276,10 @@ private:
 
   void addVisibleVariables(PathDiagnosticConstraintSnapshot &Snapshot,
                            const ExplodedNode *Node) const;
+
+  void addEdgeToPath(PathDiagnosticConstruct &C,
+                     PathDiagnosticLocation &PrevLoc,
+                     PathDiagnosticLocation NewLoc) const;
 
   void updateStackPiecesWithMessage(PathDiagnosticPieceRef P,
                                     const CallWithEntryStack &CallStack) const;
@@ -1124,10 +1131,13 @@ static bool isInLoopBody(const ParentMap &PM, const Stmt *S, const Stmt *Term) {
   return isContainedByStmt(PM, LoopBody, S);
 }
 
-/// Adds a sanitized control-flow diagnostic edge to a path.
-static void addEdgeToPath(PathPieces &path,
-                          PathDiagnosticLocation &PrevLoc,
-                          PathDiagnosticLocation NewLoc) {
+/// Adds a sanitized control-flow diagnostic edge to the active path.
+///
+/// The edge carries the Constraint Snapshot of the node at its end, so it shows
+/// what held on arrival, as a reader following the arrow to that line expects.
+void PathDiagnosticBuilder::addEdgeToPath(PathDiagnosticConstruct &C,
+                                          PathDiagnosticLocation &PrevLoc,
+                                          PathDiagnosticLocation NewLoc) const {
   if (!NewLoc.isValid())
     return;
 
@@ -1137,6 +1147,7 @@ static void addEdgeToPath(PathPieces &path,
 
   if (!PrevLoc.isValid() || !PrevLoc.asLocation().isValid()) {
     PrevLoc = NewLoc;
+    C.EdgeEndNode = C.getCurrentNode();
     return;
   }
 
@@ -1145,9 +1156,11 @@ static void addEdgeToPath(PathPieces &path,
   if (NewLoc.asStmt() && NewLoc.asStmt() == PrevLoc.asStmt())
     return;
 
-  path.push_front(
-      std::make_shared<PathDiagnosticControlFlowPiece>(NewLoc, PrevLoc));
+  auto Edge = std::make_shared<PathDiagnosticControlFlowPiece>(NewLoc, PrevLoc);
+  Edge->setConstraintSnapshot(makeConstraintSnapshot(C.EdgeEndNode));
+  C.getActivePath().push_front(std::move(Edge));
   PrevLoc = NewLoc;
+  C.EdgeEndNode = C.getCurrentNode();
 }
 
 /// A customized wrapper for CFGBlock::getTerminatorCondition()
@@ -1358,8 +1371,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
       // because the exit edge comes from a statement (i.e. return),
       // not from declaration.
       if (D->hasBody())
-        addEdgeToPath(C.getActivePath(), PrevLoc,
-                      PathDiagnosticLocation::createBegin(D, SM));
+        addEdgeToPath(C, PrevLoc, PathDiagnosticLocation::createBegin(D, SM));
     }
 
     // Did we visit an entire call?
@@ -1397,6 +1409,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
 
     // Update the previous location in the active path.
     PrevLoc = Call->getLocation();
+    C.EdgeEndNode = C.getCurrentNode();
 
     if (!C.CallStack.empty()) {
       assert(C.CallStack.back().first == Call);
@@ -1424,7 +1437,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
 
     if (C.shouldAddPathEdges()) {
       // Add the edge to the return site.
-      addEdgeToPath(C.getActivePath(), PrevLoc, Call->callReturn);
+      addEdgeToPath(C, PrevLoc, Call->callReturn);
       PrevLoc.invalidate();
     }
 
@@ -1447,7 +1460,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
     if (!isa<ObjCForCollectionStmt>(PS->getStmt())) {
       PathDiagnosticLocation L =
           PathDiagnosticLocation(PS->getStmt(), SM, C.getCurrStackFrame());
-      addEdgeToPath(C.getActivePath(), PrevLoc, L);
+      addEdgeToPath(C, PrevLoc, L);
     }
 
   } else if (auto BE = P.getAs<BlockEdge>()) {
@@ -1481,14 +1494,14 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
       p->setPrunable(true);
       p->setConstraintSnapshot(makeConstraintSnapshot(C.getCurrentNode()));
 
-      addEdgeToPath(C.getActivePath(), PrevLoc, p->getLocation());
+      addEdgeToPath(C, PrevLoc, p->getLocation());
       // We might've added a very similar control node already
       if (!C.shouldAddControlNotes()) {
         C.getActivePath().push_front(std::move(p));
       }
 
       if (const auto *CS = dyn_cast_or_null<CompoundStmt>(Body)) {
-        addEdgeToPath(C.getActivePath(), PrevLoc,
+        addEdgeToPath(C, PrevLoc,
                       PathDiagnosticLocation::createEndBrace(CS, SM));
       }
     }
@@ -1526,7 +1539,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
           auto PE = std::make_shared<PathDiagnosticEventPiece>(L, str);
           PE->setPrunable(true);
           PE->setConstraintSnapshot(makeConstraintSnapshot(C.getCurrentNode()));
-          addEdgeToPath(C.getActivePath(), PrevLoc, PE->getLocation());
+          addEdgeToPath(C, PrevLoc, PE->getLocation());
 
           // We might've added a very similar control node already
           if (!C.shouldAddControlNotes()) {
@@ -1535,7 +1548,7 @@ void PathDiagnosticBuilder::generatePathDiagnosticsForNode(
         }
       } else if (isa<BreakStmt, ContinueStmt, GotoStmt>(Term)) {
         PathDiagnosticLocation L(Term, SM, C.getCurrStackFrame());
-        addEdgeToPath(C.getActivePath(), PrevLoc, L);
+        addEdgeToPath(C, PrevLoc, L);
       }
     }
   }
@@ -1694,6 +1707,7 @@ static void addContextEdges(PathPieces &pieces, const StackFrame *SF) {
             if (PrevSrcParent ==
                 getStmtParent(DstContext.getStmtOrNull(), PM)) {
               PrevPiece->setEndLocation(DstContext);
+              PrevPiece->setConstraintSnapshot(Piece->getConstraintSnapshot());
               break;
             }
           }
@@ -1705,6 +1719,7 @@ static void addContextEdges(PathPieces &pieces, const StackFrame *SF) {
       // context.
       auto P =
           std::make_shared<PathDiagnosticControlFlowPiece>(SrcLoc, DstContext);
+      P->setConstraintSnapshot(Piece->getConstraintSnapshot());
       Piece = P.get();
       I = pieces.insert(I, std::move(P));
     }
@@ -1982,6 +1997,14 @@ static void removeIdenticalEvents(PathPieces &path) {
   }
 }
 
+/// Merges an edge into its predecessor. The surviving piece ends where \p Next
+/// did, so it takes the snapshot of that later node.
+static void mergeNextEdgeInto(PathDiagnosticControlFlowPiece &Piece,
+                              const PathDiagnosticControlFlowPiece &Next) {
+  Piece.setEndLocation(Next.getEndLocation());
+  Piece.setConstraintSnapshot(Next.getConstraintSnapshot());
+}
+
 static bool optimizeEdges(const PathDiagnosticConstruct &C, PathPieces &path,
                           OptimizedCallsSet &OCS) {
   bool hasChanges = false;
@@ -2048,7 +2071,7 @@ static bool optimizeEdges(const PathDiagnosticConstruct &C, PathPieces &path,
     // NOTE: this will be limited later in cases where we add barriers
     // to prevent this optimization.
     if (level1 && level1 == level2 && level1 == level3 && level1 == level4) {
-      PieceI->setEndLocation(PieceNextI->getEndLocation());
+      mergeNextEdgeInto(*PieceI, *PieceNextI);
       path.erase(NextI);
       hasChanges = true;
       continue;
@@ -2111,7 +2134,7 @@ static bool optimizeEdges(const PathDiagnosticConstruct &C, PathPieces &path,
       }
 
       if (removeEdge) {
-        PieceI->setEndLocation(PieceNextI->getEndLocation());
+        mergeNextEdgeInto(*PieceI, *PieceNextI);
         path.erase(NextI);
         hasChanges = true;
         continue;
@@ -2129,7 +2152,7 @@ static bool optimizeEdges(const PathDiagnosticConstruct &C, PathPieces &path,
       const auto *FS = dyn_cast_or_null<ObjCForCollectionStmt>(level3);
       if (FS && FS->getCollection()->IgnoreParens() == s2Start &&
           s2End == FS->getElement()) {
-        PieceI->setEndLocation(PieceNextI->getEndLocation());
+        mergeNextEdgeInto(*PieceI, *PieceNextI);
         path.erase(NextI);
         hasChanges = true;
         continue;
@@ -2241,6 +2264,7 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
   Construct.PD->setEndOfPath(LastPiece);
 
   PathDiagnosticLocation PrevLoc = Construct.PD->getLocation();
+  Construct.EdgeEndNode = ErrorNode;
   // From the error node to the root, ascend the bug path and construct the bug
   // report.
   while (Construct.ascendToPrevNode()) {
@@ -2266,7 +2290,7 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
             makeConstraintSnapshot(Construct.getCurrentNode()));
 
       if (PDC->shouldAddPathEdges())
-        addEdgeToPath(Construct.getActivePath(), PrevLoc, Note->getLocation());
+        addEdgeToPath(Construct, PrevLoc, Note->getLocation());
       updateStackPiecesWithMessage(Note, Construct.CallStack);
       Construct.getActivePath().push_front(Note);
     }
@@ -2277,7 +2301,7 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
     // We'll prune it out later, but it helps make diagnostics more uniform.
     const StackFrame *CalleeSF = Construct.getStackFrameForActivePath();
     const Decl *D = CalleeSF->getDecl();
-    addEdgeToPath(Construct.getActivePath(), PrevLoc,
+    addEdgeToPath(Construct, PrevLoc,
                   PathDiagnosticLocation::createBegin(D, SM));
   }
 

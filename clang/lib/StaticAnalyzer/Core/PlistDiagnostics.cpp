@@ -256,6 +256,10 @@ void PlistPrinter::ReportControlFlow(raw_ostream &o,
 
   const SourceManager &SM = PP.getSourceManager();
   const LangOptions &LangOpts = PP.getLangOpts();
+
+  if (const PathDiagnosticConstraintSnapshotRef &Snapshot =
+          P.getConstraintSnapshot())
+    ConstraintSteps.emplace_back(NextPathIndex, Snapshot);
   ++NextPathIndex;
 
   Indent(o, indent) << "<dict>\n";
