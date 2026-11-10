@@ -163,9 +163,25 @@ cmd_server() {
   tail -20 "$CD_ENV/logs/server.log" >&2; die "server did not start"
 }
 
+# Waits for the server's graceful shutdown (several seconds: it stops every API
+# and task worker in turn), so that `server` right after does not find the old
+# one still listening. The pid is the CodeChecker wrapper, which forwards the
+# signal and exits once the server has.
 cmd_stop() {
-  [ -f "$CD_ENV/server.pid" ] && kill "$(cat "$CD_ENV/server.pid")" 2>/dev/null || true
+  [ -f "$CD_ENV/server.pid" ] || { echo "no server.pid, nothing to stop"; return 0; }
+  local pid; pid=$(cat "$CD_ENV/server.pid")
+  if kill "$pid" 2>/dev/null; then
+    for _ in $(seq 60); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.5
+    done
+    ! kill -0 "$pid" 2>/dev/null \
+      || die "server $pid still shutting down after 30 s, see $CD_ENV/logs/server.log"
+  fi
   rm -f "$CD_ENV/server.pid"
+  ! lsof -ti tcp:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+    || die "port $PORT is still taken by another process"
+  echo "server stopped"
 }
 
 cmd_store() {
@@ -189,7 +205,8 @@ cmd_status() {
 # from demo/two-path.c, one with Constraint Snapshots, one without, and one with
 # snapshots but no SMT-LIB, as a Clang without Z3 writes them; one from
 # demo/z3-refuted.c, whose Bug Path Z3 refutes; and one from
-# demo/concrete-value.c, where a pointer holds a concrete address. Output
+# demo/concrete-value.c, where a pointer holds a concrete address; and one
+# from demo/opaque-call.c, where an opaque call replaces a global. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -238,8 +255,10 @@ PY
   # Baseline Verdict that is not Feasible. Analyzed without crosscheck, which
   # would drop the report.
   # concrete_value: a pointer holding the concrete address &x, then null.
+  # opaque_call: a global checked non-null, replaced by an opaque call, then
+  # assumed null, so it holds two symbols along the Bug Path.
   local name
-  for name in z3_refuted concrete_value; do
+  for name in z3_refuted concrete_value opaque_call; do
     dir=$src/$name
     mkdir -p "$dir"
     cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
