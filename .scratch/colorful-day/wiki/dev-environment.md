@@ -44,3 +44,7 @@ This updates the earlier "stale" description in the test baseline entry above.
 ## 2026-11-10: possible store flake
 
 On 2026-11-10 the ticket 04 worker saw one `store` run fail `test_same_headers` and `test_store_stats` with 3 clang-tidy reports instead of 6, then 7/7 on two reruns, with the failing log lost. Unexplained as of `codechecker@41f307f73`.
+
+## 2026-11-10: server stop hangs
+
+On 2026-11-10 the ticket 06 worker reported that, as of `llvm-project@0507cd96feb8`, `dev-loop.sh stop` leaves the server hanging in shutdown while a browser is connected, and killed it by port instead. The lead assigned a proper fix to the ticket 07 worker.

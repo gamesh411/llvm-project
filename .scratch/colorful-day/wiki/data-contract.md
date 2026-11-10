@@ -28,3 +28,8 @@ As of `llvm-project@ffa40b68fbaf`, a control edge carries the snapshot of the no
 
 As of `llvm-project@2b6fae011b13`, each snapshot carries SMT-LIB built with the Z3 crosscheck's symbol encoding, and as of `codechecker@c8bb766cb` the server answers `checkWhatIf` (API 6.76) with Python Z3, using a 2000 ms timeout per solver call (`WHAT_IF_SOLVER_TIMEOUT_MS`) and two calls per check.
 The no-Z3 path was verified only by a CodeChecker fixture without SMT-LIB and by compiling `BugReporter.cpp` with Z3 off, since `constraint-snapshots-no-z3.c` is unsupported on the Z3 build. Details are in the Comments of `../issues/05-first-what-if-constraint-and-verdict.md`.
+
+## 2026-11-10: ticket 06
+
+As of `codechecker@da8c060ca` (API 6.77), the request is still a list of `{pathStep, expression}`, and `WhatIfResult` gained an optional `syntaxError {constraintIndex, message, offset}` and an optional `reasonConstraintIndex`. Details are in the Comments of `../issues/06-full-what-if-input-and-unknown.md`.
+On 2026-11-10 the lead decided to keep the solver timeout covered by a unit test only, rejecting a test-only server hook, as recorded in that ticket's Comments.

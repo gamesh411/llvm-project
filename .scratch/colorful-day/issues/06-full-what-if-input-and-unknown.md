@@ -75,3 +75,9 @@ Screens in `/Users/efulop/colorful-day-env/screens/`, driven with `chrome-devtoo
 `06-syntax-error-1400.png` (`b = 0` at Step 2, error under the input, text kept, earlier verdict still shown), `06-two-steps-feasible-1400.png`, `06-three-infeasible-1400.png`, `06-multi-unknown-{1400,1100,900}.png` (the row `q` is about is marked, the snapshot shadow shows it scrolls), `06-many-900.png` (five rows, both areas scroll with shadows), `06-suggestions-1400.png`, `06-concrete-address-infeasible-1400.png` (`p == 0` while `p` holds `&x`), `06-baseline-infeasible-1400.png`, `06-no-smtlib-1400.png`.
 Not seen in the browser: a solver timeout, which cannot be forced there.
 
+
+### Lead decision on the timeout checkbox (2026-11-10)
+
+The timeout is covered by a deterministic unit test in `web/server/tests/unit/test_what_if.py`, not through the API.
+Adding a test-only hook to the server to force a timeout through the API was rejected, because it would put test code into a production path for a case that the unit seam already covers fully.
+The checkbox stays unticked so the gap remains visible.

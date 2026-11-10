@@ -35,3 +35,5 @@ On 2026-11-10 the lead accepted ticket 03 after viewing `/Users/efulop/colorful-
 On 2026-11-10 the lead accepted ticket 04 after viewing `04-picker-1400.png` and `04-offpath-hint-1400.png`, and started ticket 05.
 
 On 2026-11-10 the lead accepted ticket 05 and started ticket 06, with 07 to follow once 06 is in, since both extend `what_if.py` and the panel.
+
+On 2026-11-10 the lead accepted ticket 06 after viewing `06-multi-unknown-1400.png` and `06-syntax-error-1400.png`, and started ticket 07.
