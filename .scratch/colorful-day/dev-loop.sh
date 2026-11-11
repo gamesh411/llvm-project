@@ -234,78 +234,74 @@ cmd_fixture() {
     grep -q 'FILE_PATH' "$dir/two_path.plist" || die "placeholder missing in $dir"
     echo "fixture ok: $dir/two_path.plist"
   done
-  # What a Clang without Z3 writes: the same trace minus every SMT-LIB key.
+  # What a Clang without Z3 writes: the same trace minus its SMT-LIB.
   # Derived instead of built, so the fixture needs no second Clang build.
-  grep -q '<key>smt_assertions</key>' "$src/with_snapshots/two_path.plist" \
+  grep -q '<key>smtlib</key><true/>' "$src/with_snapshots/two_path.plist" \
     || die "with_snapshots has no SMT-LIB; is $BUILD built with Z3?"
   dir=$src/no_smtlib
   mkdir -p "$dir"
   cp "$DEMO" "$dir/two_path.c"
-  "$PYTHON" - "$src/with_snapshots/two_path.plist" "$dir/two_path.plist" <<'PY'
+  "$PYTHON" -I - "$CC/tools/report-converter" "$src/with_snapshots/two_path.plist" \
+    "$dir/two_path.plist" <<'PY'
 import plistlib, sys
-with open(sys.argv[1], 'rb') as f:
+sys.path.insert(0, sys.argv[1])
+from codechecker_report_converter.report import constraint_trace
+with open(sys.argv[2], 'rb') as f:
     plist = plistlib.load(f)
 for diag in plist['diagnostics']:
-    for step in diag.get('constraint_trace', {}).get('steps', []):
-        step.pop('smt_declarations', None)
-        step.pop('smt_assertions', None)
-        for variable in step['variables']:
+    if 'constraint_trace' not in diag:
+        continue
+    trace = constraint_trace.ConstraintTrace(diag['constraint_trace'])
+    nodes = []
+    for index, node in enumerate(trace.nodes):
+        snapshot = trace.snapshot(index)
+        del snapshot['smt_declarations'], snapshot['smt_assertions']
+        for variable in snapshot['variables']:
             variable.pop('smt', None)
             variable.pop('smt_signed', None)
-with open(sys.argv[2], 'wb') as f:
+        nodes.append({**{key: value for key, value in node.items()
+                         if key not in constraint_trace.LISTS}, **snapshot})
+    diag['constraint_trace'] = {
+        **{key: value for key, value in trace.trace.items()
+           if key not in ('smtlib', 'strings', 'exploded_nodes')},
+        **constraint_trace.encode(nodes, trace.steps)}
+with open(sys.argv[3], 'wb') as f:
     plistlib.dump(plist, f)
 PY
-  ! grep -q '<key>smt' "$dir/two_path.plist" || die "SMT-LIB left in $dir"
+  ! grep -qE '<key>smt|declare-fun|assert' "$dir/two_path.plist" || die "SMT-LIB left in $dir"
   echo "fixture ok: $dir/two_path.plist"
 
-  # What a Clang from before the CFG side view writes: no `cfgs`, and no
-  # step positions in them.
-  grep -q '<key>cfgs</key>' "$src/with_snapshots/two_path.plist" \
-    || die "with_snapshots has no CFGs; is $BUILD up to date?"
-  dir=$src/no_cfgs
+  # What a Clang from before trace format version 2 writes, and what reports
+  # stored before it hold: every step with its whole snapshot, and the CFGs
+  # as dicts.
+  dir=$src/v1_trace
   mkdir -p "$dir"
   cp "$DEMO" "$dir/two_path.c"
-  "$PYTHON" - "$src/with_snapshots/two_path.plist" "$dir/two_path.plist" <<'PY'
+  "$PYTHON" -I - "$CC/tools/report-converter" "$src/with_snapshots/two_path.plist" \
+    "$dir/two_path.plist" <<'PY'
 import plistlib, sys
-with open(sys.argv[1], 'rb') as f:
+sys.path.insert(0, sys.argv[1])
+from codechecker_report_converter.report import constraint_trace
+with open(sys.argv[2], 'rb') as f:
     plist = plistlib.load(f)
 for diag in plist['diagnostics']:
-    trace = diag.get('constraint_trace', {})
-    for key in ('cfgs', 'exploded_nodes', 'stack_frames'):
-        trace.pop(key, None)
-    for step in trace.get('steps', []):
-        step.pop('cfg_position', None)
-        step.pop('exploded_node', None)
-with open(sys.argv[2], 'wb') as f:
+    if 'constraint_trace' not in diag:
+        continue
+    trace = constraint_trace.ConstraintTrace(diag['constraint_trace'])
+    diag['constraint_trace'] = {
+        'version': 1,
+        'steps': [{**step, **trace.snapshot(step['exploded_node'])}
+                  for step in trace.steps],
+        'cfgs': trace.cfgs(),
+        'exploded_nodes': [{key: value for key, value in node.items()
+                            if key not in constraint_trace.LISTS
+                            and key != 'cfg_position'}
+                           for node in trace.nodes],
+        'stack_frames': trace.trace['stack_frames']}
+with open(sys.argv[3], 'wb') as f:
     plistlib.dump(plist, f)
 PY
-  ! grep -qE 'cfg|exploded|stack_frames' "$dir/two_path.plist" \
-    || die "CFG or exploded graph data left in $dir"
-  echo "fixture ok: $dir/two_path.plist"
-
-  # What a Clang from before the exploded graph view writes: CFGs, but no
-  # analyzer nodes.
-  grep -q '<key>exploded_nodes</key>' "$src/with_snapshots/two_path.plist" \
-    || die "with_snapshots has no exploded nodes; is $BUILD up to date?"
-  dir=$src/no_exploded_nodes
-  mkdir -p "$dir"
-  cp "$DEMO" "$dir/two_path.c"
-  "$PYTHON" - "$src/with_snapshots/two_path.plist" "$dir/two_path.plist" <<'PY'
-import plistlib, sys
-with open(sys.argv[1], 'rb') as f:
-    plist = plistlib.load(f)
-for diag in plist['diagnostics']:
-    trace = diag.get('constraint_trace', {})
-    trace.pop('exploded_nodes', None)
-    trace.pop('stack_frames', None)
-    for step in trace.get('steps', []):
-        step.pop('exploded_node', None)
-with open(sys.argv[2], 'wb') as f:
-    plistlib.dump(plist, f)
-PY
-  ! grep -qE 'exploded|stack_frames' "$dir/two_path.plist" \
-    || die "exploded graph data left in $dir"
-  grep -q '<key>cfgs</key>' "$dir/two_path.plist" || die "CFGs lost in $dir"
+  grep -q '<key>symbol_ranges</key>' "$dir/two_path.plist" || die "no v1 steps in $dir"
   echo "fixture ok: $dir/two_path.plist"
 
   # z3_refuted: a Bug Path the range-based solver accepts and Z3 refutes, for a
@@ -341,6 +337,7 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-no-z3.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-cfg.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-egraph.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-delta.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
