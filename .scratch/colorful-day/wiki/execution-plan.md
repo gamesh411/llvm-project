@@ -54,3 +54,5 @@ The demo uses tmux 3.5a, `grid.c:1073`, with `flags == 0` at Step 1 dying at Ste
 The ticket 08 worker measured plist output on the whole of tmux growing 11.6 times (about 520 KB per path-sensitive report), with analysis time up about 1.4%.
 Small wording issue left: when the dead step equals the anchor, the verdict repeats the step ("at Step 1. It dies at Step 1").
 Tickets 09 and 10 wait for the user's go-ahead, per the 2026-11-10 decision above.
+
+On 2026-11-11 the user approved the stretch tickets. The lead started 09, with 10 to follow once 09 is accepted, since 10 is blocked by 09.
