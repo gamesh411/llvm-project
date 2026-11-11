@@ -63,3 +63,15 @@ The What-If cut-off noted in the ticket 05 entry above is fixed as of `codecheck
 The pointer ranges, the 900px `(` and the file header gap in the open items list above were seen as of `codechecker@6325f9164`, the head when ticket 07 was accepted.
 
 On 2026-11-11 the lead queued three UI problems, seen as of `codechecker@46a0137a3`, for a polish worker after trace format v2: three-digit step numbers overflow their round badges, variables sort as a0, a1, a10, a100, and the report tree keeps its old selection after a line click.
+These are superseded by the polish pass entry below.
+
+## 2026-11-11: polish pass accepted
+
+On 2026-11-11 the lead accepted the polish pass after viewing `/Users/efulop/colorful-day-env/screens/polish-after-r1205-step251-1400.png` and `polish-after-r3005-step1001-1400.png`.
+As of `codechecker@66910a255`, three-digit step numbers take 10px inside the 24px badge, and from four digits the badge becomes a pill.
+As of `codechecker@0e8bbba35`, the panel's variables and the line picker's values use a natural sort.
+As of `codechecker@1c7c3bd4c`, the report tree follows a step selected anywhere else, after the next paint, because activating a tree item re-renders every item (about 200 ms at 400 steps).
+As of `codechecker@8693c4955`, panel rows use `content-visibility: auto`.
+The worker found that the slow step clicks noted in the v2 entry of [execution plan](execution-plan.md) were not the panel's doing: a 1205-step tree click spends about 190 ms in Vuetify's tree and about 100 ms in jsPlumb arrows, 285 ms with constraints off too, and the panel took about 10 ms.
+A first click on the already-active tree item only deactivates it, which is Vuetify's toggle and upstream behavior, left as is.
+Left open as of `codechecker@8693c4955`: the accumulated path condition still lists symbols in symbol order (a98, a99, a100 ... a8), and at 900px the tree pane clips labels to "L23", as it did before.
