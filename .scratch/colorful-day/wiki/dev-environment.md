@@ -60,3 +60,15 @@ Every later test then failed with "Failed to add the product to the test server!
 The setup now removes the product and workspace itself before re-raising, so each test shows the real error.
 The trigger seen in the reproduction was a sporadic `CodeChecker store` failure ("No such file or directory" on the store zip in `<report dir>/tmp*-store/`), roughly one run in five, cause not found.
 `dev-loop.sh functest` also stops a leftover global test server first: the Makefile deletes the workspace and its `serverport` file, so an orphan could never be stopped afterwards.
+
+## 2026-11-11: store zip failure explained and fixed
+
+As of `codechecker@63ec865ce`, the sporadic `CodeChecker store` failure noted in the functest poisoning entry above is fixed, and its cause is known.
+`multiprocess` forks on macOS, so pool workers inherit the SIGTERM handler of `codechecker_common/cli.py`, which raises SystemExit.
+The `Pool` wrapper added in `codechecker@a343881a2` kept the base `__exit__`, which terminates the workers.
+A SIGTERM that lands while a worker runs its atexit hooks raises past `os._exit`, so the forked child unwinds into the parent's copied stack and runs the `finally` of `store.main`, deleting `<report dir>/tmp*-store/` while the parent still writes the zip.
+The wrapper's `__exit__` now closes and joins, as `ProcessPoolExecutor` does on Linux.
+Before `a343881a2`, `store` on macOS failed every time with a `TypeError` on `Pool(max_workers=...)`, so the race was latent there in the one `with Pool()` that store reached only after parsing.
+Measured with detached stores of the `with_snapshots` fixture, 4 in parallel: 8 failures in 1200 before, 0 in 1200 after; `functest` 1 failure in 20 before, 0 in 20 after.
+`web/client/tests/unit/test_pool.py` fails deterministically on the old wrapper by slowing worker exit.
+The ticket 04 `store` suite failure (3 clang-tidy reports instead of 6) was not reproduced and is not shown to share this cause.
