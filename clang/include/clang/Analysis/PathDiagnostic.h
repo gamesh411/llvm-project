@@ -456,6 +456,31 @@ struct PathDiagnosticConstraintSnapshot {
   };
   /// Empty when the point has no place in a CFG the diagnostic carries.
   std::optional<CFGPosition> Position;
+
+  /// The exploded graph node this point was built from. It tells apart
+  /// points a CFG position cannot, such as one statement reached through
+  /// several calls.
+  struct ExplodedNodeInfo {
+    struct Frame {
+      /// The stack frame's LocationContext ID, unique within the analysis.
+      int64_t ID;
+      std::string Function;
+      /// The call that entered this frame; invalid for the top frame.
+      SourceLocation CallSite;
+    };
+
+    int64_t NodeID;
+    int64_t StateID;
+    /// Position of the node on the bug path, counting every node from the
+    /// root, so a gap between two points is the nodes between them.
+    unsigned PathPosition;
+    StringRef Kind;
+    /// Invalid when the node has no statement to point at.
+    SourceLocation Location;
+    /// Innermost frame first.
+    std::vector<Frame> Stack;
+  };
+  std::optional<ExplodedNodeInfo> Node;
 };
 
 /// The control flow graph of one function on a bug path, rendered to text,

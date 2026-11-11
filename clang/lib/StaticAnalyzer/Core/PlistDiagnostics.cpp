@@ -125,6 +125,23 @@ private:
   void ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
                   unsigned indent);
 
+  using ExplodedNodeInfo = PathDiagnosticConstraintSnapshot::ExplodedNodeInfo;
+  /// Lists each node the collected steps came from once, in path order, and
+  /// each stack frame of those nodes once, after its parent.
+  void collectExplodedNodes();
+  void ReportExplodedNodes(raw_ostream &o, unsigned indent);
+
+  llvm::SmallVector<const ExplodedNodeInfo *, 0> ExplodedNodes;
+  llvm::DenseMap<int64_t, unsigned> ExplodedNodeIndex;
+  struct StackFrameEntry {
+    const ExplodedNodeInfo::Frame *Frame;
+    std::optional<unsigned> Parent;
+  };
+  llvm::SmallVector<StackFrameEntry, 0> StackFrames;
+  llvm::DenseMap<int64_t, unsigned> StackFrameIndex;
+  /// Index into StackFrames of each node's innermost frame.
+  llvm::SmallVector<unsigned, 0> ExplodedNodeFrames;
+
   void ReportPiece(raw_ostream &o, const PathDiagnosticPiece &P,
                    unsigned indent, unsigned depth, bool includeControlFlow,
                    bool isKeyEvent = false) {
@@ -577,12 +594,90 @@ void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
   Indent(o, indent) << "</array>\n";
 }
 
+void PlistPrinter::collectExplodedNodes() {
+  for (const auto &[PathIndex, Snapshot] : ConstraintSteps)
+    if (Snapshot->Node &&
+        ExplodedNodeIndex.try_emplace(Snapshot->Node->NodeID, 0).second)
+      ExplodedNodes.push_back(&*Snapshot->Node);
+  llvm::sort(ExplodedNodes,
+             [](const ExplodedNodeInfo *L, const ExplodedNodeInfo *R) {
+               return L->PathPosition < R->PathPosition;
+             });
+
+  for (auto [I, Node] : llvm::enumerate(ExplodedNodes)) {
+    ExplodedNodeIndex[Node->NodeID] = I;
+    std::optional<unsigned> Parent;
+    for (const ExplodedNodeInfo::Frame &Frame : llvm::reverse(Node->Stack)) {
+      auto [It, Inserted] =
+          StackFrameIndex.try_emplace(Frame.ID, StackFrames.size());
+      if (Inserted)
+        StackFrames.push_back({&Frame, Parent});
+      Parent = It->second;
+    }
+    ExplodedNodeFrames.push_back(*Parent);
+  }
+}
+
+void PlistPrinter::ReportExplodedNodes(raw_ostream &o, unsigned indent) {
+  const SourceManager &SM = PP.getSourceManager();
+
+  Indent(o, indent) << "<key>exploded_nodes</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (auto [Node, Frame] :
+       llvm::zip_equal(ExplodedNodes, ExplodedNodeFrames)) {
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>id</key>";
+    EmitInteger(o, Node->NodeID) << '\n';
+    Indent(o, indent) << "<key>state_id</key>";
+    EmitInteger(o, Node->StateID) << '\n';
+    Indent(o, indent) << "<key>path_position</key>";
+    EmitInteger(o, Node->PathPosition) << '\n';
+    Indent(o, indent) << "<key>kind</key>";
+    EmitString(o, Node->Kind) << '\n';
+    if (Node->Location.isValid()) {
+      Indent(o, indent) << "<key>location</key>\n";
+      EmitLocation(o, SM, Node->Location, FM, indent);
+    }
+    Indent(o, indent) << "<key>frame</key>";
+    EmitInteger(o, Frame) << '\n';
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+
+  Indent(o, indent) << "<key>stack_frames</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (const StackFrameEntry &Entry : StackFrames) {
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>function</key>";
+    EmitString(o, Entry.Frame->Function) << '\n';
+    if (Entry.Parent) {
+      Indent(o, indent) << "<key>parent</key>";
+      EmitInteger(o, *Entry.Parent) << '\n';
+    }
+    if (Entry.Frame->CallSite.isValid()) {
+      Indent(o, indent) << "<key>call_site</key>\n";
+      EmitLocation(o, SM, Entry.Frame->CallSite, FM, indent);
+    }
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+}
+
 void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
                                          ArrayRef<PathDiagnosticCFG> CFGs,
                                          unsigned indent) {
   if (ConstraintSteps.empty())
     return;
 
+  collectExplodedNodes();
   Indent(o, indent) << "<key>constraint_trace</key>\n";
   Indent(o, indent) << "<dict>\n";
   ++indent;
@@ -641,6 +736,11 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
       }
       Indent(o, indent) << "</dict>\n";
     }
+    if (Snapshot->Node) {
+      Indent(o, indent) << "<key>exploded_node</key>";
+      EmitInteger(o, ExplodedNodeIndex.find(Snapshot->Node->NodeID)->second)
+          << '\n';
+    }
     --indent;
     Indent(o, indent) << "</dict>\n";
   }
@@ -650,6 +750,8 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
   // every step in its function.
   if (!CFGs.empty())
     ReportCFGs(o, CFGs, indent);
+  if (!ExplodedNodes.empty())
+    ReportExplodedNodes(o, indent);
   --indent;
   Indent(o, indent) << "</dict>\n";
 }
@@ -874,6 +976,16 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
     for (const SourceRange &Range : Ranges) {
       AddFID(FM, Fids, SM, Range.getBegin());
       AddFID(FM, Fids, SM, Range.getEnd());
+    }
+    // A call site of a frame the path is in can be in a file no piece is.
+    if (const PathDiagnosticConstraintSnapshotRef &Snapshot =
+            Piece.getConstraintSnapshot();
+        Snapshot && Snapshot->Node) {
+      if (Snapshot->Node->Location.isValid())
+        AddFID(FM, Fids, SM, Snapshot->Node->Location);
+      for (const auto &Frame : Snapshot->Node->Stack)
+        if (Frame.CallSite.isValid())
+          AddFID(FM, Fids, SM, Frame.CallSite);
     }
   };
 

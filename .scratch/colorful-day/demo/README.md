@@ -12,7 +12,8 @@ It stops the running dev server and wipes `$CD_ENV/demo-workspace`.
 It then starts the server on that clean workspace, on port 8002.
 It analyzes and stores `two-path-short.c` as run `colorful-day-two-path`.
 On first use it clones tmux 3.5a into `$CD_ENV/projects/tmux` and builds a compile database with `bear`.
-It analyzes all of tmux with Z3 refutation and constraint emission, stores it as `colorful-day-tmux`, and prints the two report URLs.
+It analyzes all of tmux with Z3 refutation and constraint emission, stores it as `colorful-day-tmux`.
+It then stores `several-contexts.c` as `colorful-day-contexts`, and prints the three report URLs.
 It takes about 50 seconds once tmux is built.
 The dev workspace of earlier tickets is not touched.
 Afterwards the server runs on the demo workspace, so `dev-loop.sh stop` and `server` bring back the dev one.
@@ -23,6 +24,7 @@ On a clean server the URLs are:
 
 - two-path: `http://localhost:8002/Default/report-detail?report-id=1`
 - tmux: `http://localhost:8002/Default/report-detail?report-id=5`
+- several contexts: `http://localhost:8002/Default/report-detail?report-id=33`
 
 Use a window at least 1280 pixels wide, so the menu keeps its labels and the panel leaves room for the code.
 
@@ -56,6 +58,19 @@ Ticket 08 explains why the demo uses the short one.
    The view jumps to line 1072 and the panel marks the step "Path dies here".
    Say: "My knowledge about the callers rules out this path exactly where the code tests the flag. The analyzer's path needed `flags` to have the sequences bit while `lastgc` is null, and no caller does that."
 6. Close with the limits: Infeasible is about this path, not a proof that the bug is gone. The check uses Z3 over what the analyzer recorded, not a new analysis run.
+
+## Part 3, optional: one line, two calls (one minute)
+
+1. Open the several-contexts URL.
+   `take` is called twice, on lines 13 and 14, and the Bug Path runs through `if (flag)` on line 5 in both calls.
+2. Tick "Show constraints" and click line 5.
+   The picker offers Step 3 and Step 8, told apart only by the range of `flag`.
+   Say: "The source line, and the control flow graph too, are the same for both. What differs is the calling context."
+3. Choose "Choose by analyzer state" at the foot of the picker.
+   The view lists the analyzer states the Path Steps come from, grouped by stack frame: `take` called at line 13, then `take` called at line 14.
+   It also counts the analyzer nodes between them that have no Path Step.
+4. Click the `BlockEdge` state in the second `take` frame.
+   The panel shows Step 8, "Assuming 'flag' is 0".
 
 ## If something goes wrong
 

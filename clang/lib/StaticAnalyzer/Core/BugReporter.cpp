@@ -297,6 +297,9 @@ private:
   std::optional<PathDiagnosticConstraintSnapshot::CFGPosition>
   findCFGPosition(const ExplodedNode *N) const;
 
+  PathDiagnosticConstraintSnapshot::ExplodedNodeInfo
+  describeExplodedNode(const ExplodedNode *N) const;
+
   std::vector<PathDiagnosticCFG> renderPathCFGs() const;
 
   /// Returns the symbol each added variable holds, null for a concrete value.
@@ -1281,6 +1284,7 @@ PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
   Snapshot->PathCondition = renderConstraints(PathCondition);
   addSMTLIB(*Snapshot, PathCondition, VariableSymbols);
   Snapshot->Position = findCFGPosition(Node);
+  Snapshot->Node = describeExplodedNode(Node);
   return Snapshot;
 }
 
@@ -1452,6 +1456,39 @@ static std::string describeCFGFunction(const Decl *D) {
   if (isa_and_nonnull<BlockDecl>(D))
     return "block";
   return "function";
+}
+
+PathDiagnosticConstraintSnapshot::ExplodedNodeInfo
+PathDiagnosticBuilder::describeExplodedNode(const ExplodedNode *N) const {
+  const SourceManager &SM = getSourceManager();
+  PathDiagnosticConstraintSnapshot::ExplodedNodeInfo Info;
+  Info.NodeID = N->getID();
+  Info.StateID = N->getState()->getID();
+  Info.PathPosition = PathHistory.find(N)->second.second;
+  Info.Kind = ProgramPoint::getProgramPointKindName(N->getLocation().getKind());
+  const Stmt *S = N->getStmtForDiagnostics();
+  // A fall-through edge has no statement of its own; it is where the next
+  // block starts.
+  if (auto BE = N->getLocation().getAs<BlockEdge>(); BE && !S) {
+    for (const CFGElement &Elem : *BE->getDst())
+      if (auto CS = Elem.getAs<CFGStmt>()) {
+        S = CS->getStmt();
+        break;
+      }
+    if (!S)
+      S = BE->getDst()->getTerminatorStmt();
+  }
+  if (S)
+    Info.Location = SM.getExpansionLoc(S->getBeginLoc());
+  for (const StackFrame *Frame = N->getStackFrame(); Frame;
+       Frame = Frame->getParent()) {
+    SourceLocation CallSite;
+    if (const Expr *Call = Frame->getCallSite())
+      CallSite = SM.getExpansionLoc(Call->getBeginLoc());
+    Info.Stack.push_back(
+        {Frame->getID(), describeCFGFunction(Frame->getDecl()), CallSite});
+  }
+  return Info;
 }
 
 static PathDiagnosticCFG::Block renderCFGBlock(const CFGBlock &Block,

@@ -205,10 +205,13 @@ cmd_status() {
 # CodeChecker functional-test fixture: plists produced by the Colorful Day Clang
 # from demo/two-path.c, one with Constraint Snapshots, one without, and one with
 # snapshots but no SMT-LIB, as a Clang without Z3 writes them, and one with
-# snapshots but no CFGs, as a Clang before the CFG side view wrote them; one from
+# snapshots but no CFGs, as a Clang before the CFG side view wrote them, and
+# one with CFGs but no exploded graph nodes, as the Clang of that view wrote
+# them; one from
 # demo/z3-refuted.c, whose Bug Path Z3 refutes; and one from
 # demo/concrete-value.c, where a pointer holds a concrete address; and one
-# from demo/opaque-call.c, where an opaque call replaces a global. Output
+# from demo/opaque-call.c, where an opaque call replaces a global; and one
+# from demo/several-contexts.c, one statement reached through two calls. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -266,13 +269,41 @@ with open(sys.argv[1], 'rb') as f:
     plist = plistlib.load(f)
 for diag in plist['diagnostics']:
     trace = diag.get('constraint_trace', {})
-    trace.pop('cfgs', None)
+    for key in ('cfgs', 'exploded_nodes', 'stack_frames'):
+        trace.pop(key, None)
     for step in trace.get('steps', []):
         step.pop('cfg_position', None)
+        step.pop('exploded_node', None)
 with open(sys.argv[2], 'wb') as f:
     plistlib.dump(plist, f)
 PY
-  ! grep -q 'cfg' "$dir/two_path.plist" || die "CFG data left in $dir"
+  ! grep -qE 'cfg|exploded|stack_frames' "$dir/two_path.plist" \
+    || die "CFG or exploded graph data left in $dir"
+  echo "fixture ok: $dir/two_path.plist"
+
+  # What a Clang from before the exploded graph view writes: CFGs, but no
+  # analyzer nodes.
+  grep -q '<key>exploded_nodes</key>' "$src/with_snapshots/two_path.plist" \
+    || die "with_snapshots has no exploded nodes; is $BUILD up to date?"
+  dir=$src/no_exploded_nodes
+  mkdir -p "$dir"
+  cp "$DEMO" "$dir/two_path.c"
+  "$PYTHON" - "$src/with_snapshots/two_path.plist" "$dir/two_path.plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as f:
+    plist = plistlib.load(f)
+for diag in plist['diagnostics']:
+    trace = diag.get('constraint_trace', {})
+    trace.pop('exploded_nodes', None)
+    trace.pop('stack_frames', None)
+    for step in trace.get('steps', []):
+        step.pop('exploded_node', None)
+with open(sys.argv[2], 'wb') as f:
+    plistlib.dump(plist, f)
+PY
+  ! grep -qE 'exploded|stack_frames' "$dir/two_path.plist" \
+    || die "exploded graph data left in $dir"
+  grep -q '<key>cfgs</key>' "$dir/two_path.plist" || die "CFGs lost in $dir"
   echo "fixture ok: $dir/two_path.plist"
 
   # z3_refuted: a Bug Path the range-based solver accepts and Z3 refutes, for a
@@ -281,8 +312,9 @@ PY
   # concrete_value: a pointer holding the concrete address &x, then null.
   # opaque_call: a global checked non-null, replaced by an opaque call, then
   # assumed null, so it holds two symbols along the Bug Path.
+  # several_contexts: one statement reached through two calls.
   local name
-  for name in z3_refuted concrete_value opaque_call; do
+  for name in z3_refuted concrete_value opaque_call several_contexts; do
     dir=$src/$name
     mkdir -p "$dir"
     cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
@@ -306,6 +338,7 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-smtlib.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-no-z3.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-cfg.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-egraph.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
@@ -382,8 +415,8 @@ print(hits[0])' "$2" "$3"
 
 # The demo data from a clean server: its own workspace, wiped every time, so
 # the dev workspace of earlier tickets is left alone. Stores the short
-# two-path example and all of tmux, and prints the two report URLs the
-# script in demo/README.md opens.
+# two-path example, all of tmux and the several-contexts example, and prints
+# the three report URLs the script in demo/README.md opens.
 cmd_demo() {
   activate; use_clang
   cmd_stop
@@ -406,8 +439,14 @@ cmd_demo() {
     || { tail -20 "$CD_ENV/logs/tmux-analyze.log" >&2; die "tmux analysis failed"; }
   "$(cc_bin)" store "$out" -n colorful-day-tmux --url "$URL" >/dev/null
 
+  # After tmux, so the report IDs of the first two stay as demo/README.md
+  # gives them.
+  DEMO=$LLVM/.scratch/colorful-day/demo/several-contexts.c cmd_analyze
+  RUN_NAME=colorful-day-contexts cmd_store >/dev/null
+
   echo "two-path: $URL/report-detail?report-id=$(report_id colorful-day-two-path two-path-short.c 10)"
   echo "tmux:     $URL/report-detail?report-id=$(report_id colorful-day-tmux grid.c 1073)"
+  echo "contexts: $URL/report-detail?report-id=$(report_id colorful-day-contexts several-contexts.c 9)"
 }
 
 sub=${1:-}; shift || true
