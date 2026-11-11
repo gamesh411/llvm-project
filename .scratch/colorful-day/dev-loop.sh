@@ -66,7 +66,9 @@ cmd_env() {
   # pytest and linters for `functest` and lint runs. Not the dev requirements
   # file: its cryptography~=41.0 pin is too old for joserfc in requirements.txt.
   pip install -q 'pytest<=7.3.1' 'pylint<3.3' 'pycodestyle<=2.12.0' 'cryptography>=45'
-  python -c 'import lxml, sqlalchemy, thrift' && echo 'env ok'
+  # python-ldap for the server unit tests (test_ccldap.py imports it).
+  pip install -q -r "$CC/web/requirements_py/auth/requirements.txt"
+  python -c 'import lxml, sqlalchemy, thrift, ldap' && echo 'env ok'
 }
 
 cmd_clang() {
