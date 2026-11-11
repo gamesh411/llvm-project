@@ -93,3 +93,13 @@ As of `llvm-project@385184e2a529`, snapshots are built once per node, only for p
 The worker showed NFC on 163 plists (tmux 3.5a, the bench TUs and `../demo/*.c`), which all match the old binary once the run-to-run noise in symbol and node IDs is normalized.
 `cmd-find.c` went from 1.44-1.55 s to 0.99-1.04 s, about the same as with emission off.
 Variables are still read eagerly, because `getSVal` creates symbols the first time it reads a parameter or global, and reading fewer of them renumbered later symbols.
+
+On 2026-11-11 the lead accepted lane B after viewing `/Users/efulop/colorful-day-env/screens/scale-m14-r440-stored-1400.png` and `scale-m4-grid-cfg-1400.png`.
+As of `codechecker@0afb4de34`, the page fetches report details once per open, and as of `codechecker@faebe8d23` the trace sits outside deep reactivity, so at 605 steps CFG open went from about 670 to about 100 ms and States open from about 630 to about 35 ms.
+As of `codechecker@2d2fb1b74`, each API worker keeps prepared Bug Paths in an LRU of 8, keyed by a sha256 of the stored path data, because SQLite here reuses a deleted report's ID; a repeated 1205-step check takes 13-62 ms instead of about 0.9 s.
+As of `codechecker@46a0137a3`, the thrift string limit is explicitly none on the server and Python clients, and `web/requirements.txt` requires `thrift~=0.25`, the first version with that argument.
+UI problems seen and queued for a later polish worker: three-digit step numbers overflow their round badges, variables sort as a0, a1, a10, a100, and the report tree keeps its old selection after a line click.
+`dev-loop.sh env` does not install `python-ldap`, which the server unit tests need.
+
+On 2026-11-11 the lead decided that trace format v2 replaces v1 everywhere instead of both being read, so there is one reconstruction path in each consumer.
+A stored v1 trace gets the disabled toggle with an explanation, as a report without constraint data does, and `dev-loop.sh demo` rebuilds the demo from a clean server.
