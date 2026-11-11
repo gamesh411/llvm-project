@@ -132,7 +132,10 @@ private:
   void ReportExplodedNodes(raw_ostream &o, unsigned indent);
 
   llvm::SmallVector<const ExplodedNodeInfo *, 0> ExplodedNodes;
-  llvm::DenseMap<int64_t, unsigned> ExplodedNodeIndex;
+  /// Keyed by the node's description, which is one per node. Not by the
+  /// node's ID: the exploded graph hands out the ID of the newest node again
+  /// after it reclaims one, so two nodes on a long path can share it.
+  llvm::DenseMap<const ExplodedNodeInfo *, unsigned> ExplodedNodeIndex;
   struct StackFrameEntry {
     const ExplodedNodeInfo::Frame *Frame;
     std::optional<unsigned> Parent;
@@ -597,7 +600,7 @@ void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
 void PlistPrinter::collectExplodedNodes() {
   for (const auto &[PathIndex, Snapshot] : ConstraintSteps)
     if (Snapshot->Node &&
-        ExplodedNodeIndex.try_emplace(Snapshot->Node->NodeID, 0).second)
+        ExplodedNodeIndex.try_emplace(&*Snapshot->Node, 0).second)
       ExplodedNodes.push_back(&*Snapshot->Node);
   llvm::sort(ExplodedNodes,
              [](const ExplodedNodeInfo *L, const ExplodedNodeInfo *R) {
@@ -605,7 +608,7 @@ void PlistPrinter::collectExplodedNodes() {
              });
 
   for (auto [I, Node] : llvm::enumerate(ExplodedNodes)) {
-    ExplodedNodeIndex[Node->NodeID] = I;
+    ExplodedNodeIndex[Node] = I;
     std::optional<unsigned> Parent;
     for (const ExplodedNodeInfo::Frame &Frame : llvm::reverse(Node->Stack)) {
       auto [It, Inserted] =
@@ -738,8 +741,7 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
     }
     if (Snapshot->Node) {
       Indent(o, indent) << "<key>exploded_node</key>";
-      EmitInteger(o, ExplodedNodeIndex.find(Snapshot->Node->NodeID)->second)
-          << '\n';
+      EmitInteger(o, ExplodedNodeIndex.find(&*Snapshot->Node)->second) << '\n';
     }
     --indent;
     Indent(o, indent) << "</dict>\n";

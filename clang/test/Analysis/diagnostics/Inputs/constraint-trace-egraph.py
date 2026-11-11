@@ -6,7 +6,8 @@ A step prints as `<label>: N<index> <kind> @<line>:<col> in <stack>`, where
 index points into `exploded_nodes`, and the stack reads innermost first as
 `callee <- caller@<line>:<col>`, the location being the call site in the
 caller. A step without a node prints NO-NODE. Before the steps, every node is
-checked against the table invariants, which print BAD-TABLE when broken.
+checked against the table invariants, which print BAD-TABLE when broken, and
+the trace prints how many of its nodes share an ID with an earlier one.
 """
 
 import plistlib
@@ -43,8 +44,6 @@ def check_tables(nodes, frames):
     positions = [node["path_position"] for node in nodes]
     if positions != sorted(set(positions)):
         print("BAD-TABLE nodes not in path order: %s" % positions)
-    if len({node["id"] for node in nodes}) != len(nodes):
-        print("BAD-TABLE duplicate node")
     for index, frame in enumerate(frames):
         parent = frame.get("parent")
         if (parent is None) != ("call_site" not in frame):
@@ -69,7 +68,9 @@ def main():
         nodes = trace["exploded_nodes"]
         frames = trace["stack_frames"]
         check_tables(nodes, frames)
-        print("NODES %d FRAMES %d" % (len(nodes), len(frames)))
+        ids = [node["id"] for node in nodes]
+        print("NODES %d FRAMES %d SHARED-IDS %d"
+              % (len(nodes), len(frames), len(ids) - len(set(ids))))
 
         steps = {step["path_index"]: step for step in trace["steps"]}
         for index, piece in enumerate(diag["path"]):
