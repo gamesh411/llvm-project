@@ -74,3 +74,10 @@ Before `a343881a2`, `store` on macOS failed every time with a `TypeError` on `Po
 Measured with detached stores of the `with_snapshots` fixture, 4 in parallel: 8 failures in 1200 before, 0 in 1200 after; `functest` 1 failure in 20 before, 0 in 20 after.
 `web/client/tests/unit/test_pool.py` fails deterministically on the old wrapper by slowing worker exit.
 The ticket 04 `store` suite failure (3 clang-tidy reports instead of 6) was not reproduced and is not shown to share this cause.
+
+## 2026-11-11: performance evaluation and two traps it found
+
+On 2026-11-11 a worker measured the prototype's bottlenecks at `llvm-project@91621edfefb9` and `codechecker@63ec865ce`, and wrote them to `../perf-evaluation.md`, with data under `/Users/efulop/colorful-day-env/perf/`.
+On 2026-11-11 a Homebrew upgrade moved z3 from 5.3.3 to 5.4.0, and `build-colorful/bin/clang` stopped starting because it links `libz3.5.3.dylib` by its versioned name.
+The worker ran Clang with `DYLD_LIBRARY_PATH=/opt/homebrew/Cellar/z3/5.3.3/lib` as a stopgap, which works only until `brew cleanup` removes 5.3.3.
+With thrift 0.25.0 in the venv, `massStoreRun` fails once the base64 zip passes the default 16,384,000-character string limit, which is about 12.3 MiB of compressed zip, and constraint traces make tmux's zip 2.5 times larger.

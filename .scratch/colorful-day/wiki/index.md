@@ -11,7 +11,7 @@ Sources such as the spec and tickets are cited here, never copied.
 
 ## Environment
 
-- [Dev environment](dev-environment.md): where the Clang build, venv and server state live, and why.
+- [Dev environment](dev-environment.md): where the Clang build, venv and server state live, and why, plus environment traps and the performance evaluation.
 
 ## Design
 
