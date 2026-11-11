@@ -31,6 +31,7 @@ In `/Users/efulop/colorful-day-env/screens/04-picker-1400.png` the lead saw the 
 As of `codechecker@0010a3dec`, the dotted line from ticket 04 turned out to be CodeMirror's focus outline around an editor only as wide as its code, and the outline was removed. Making the editor full width was rejected because it made the step bubbles' right edges uneven.
 On 2026-11-10 the lead viewed `/Users/efulop/colorful-day-env/screens/05-b-eq-0-infeasible-1400.png` and accepted ticket 05.
 In that screenshot the What-If section cuts the accumulated path condition off mid-line with no sign that it scrolls, so the lead assigned that to the ticket 06 worker.
+That cut-off is superseded by the 2026-11-11 wiki lint entry below.
 
 ## 2026-11-10: open items for the ticket 08 visual pass
 
@@ -54,3 +55,11 @@ Other defects fixed in the same pass are in the Comments of `../issues/08-demo-o
 
 As of `codechecker@b31cdd260`, the graph view is HTML block cards with SVG edges in a gutter, with no new npm dependency and the Content Security Policy unchanged. It floats over the right part of the source column, covering it entirely when the column is under 600px.
 On 2026-11-11 the lead accepted that layout after viewing `/Users/efulop/colorful-day-env/screens/09-tmux-cfg-dead-step-1400.png` and `09-loop-cfg-picker-900.png`.
+
+## 2026-11-11: wiki lint corrections
+
+The What-If cut-off noted in the ticket 05 entry above is fixed as of `codechecker@da8c060ca`: the snapshot and the What-If section share the panel height, with at least 120px for the snapshot and at most 55% for What-If, and each scrolls with an edge shadow. The source is the Comments of `../issues/06-full-what-if-input-and-unknown.md`.
+
+The pointer ranges, the 900px `(` and the file header gap in the open items list above were seen as of `codechecker@6325f9164`, the head when ticket 07 was accepted.
+
+On 2026-11-11 the lead queued three UI problems, seen as of `codechecker@46a0137a3`, for a polish worker after trace format v2: three-digit step numbers overflow their round badges, variables sort as a0, a1, a10, a100, and the report tree keeps its old selection after a line click.

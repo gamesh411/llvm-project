@@ -36,6 +36,7 @@ The worker traced those failures to macOS make 3.81 and a missing clang-tidy on 
 With that setup the worker reported `store` 7/7 and `report_viewer_api` 66/67, the remaining failure being expected line numbers 15 and 25 against reported 14 and 24.
 
 On 2026-11-10 the lead found that running the report-converter unit tests rewrites the tracked files `tools/report-converter/tests/unit/analyzers/pvs_studio_output_test_files/sample.json` and `sample.plist`, and restored them.
+This is superseded by the 2026-11-11 wiki lint entry below, as of `codechecker@eef4541e0`.
 
 ## 2026-11-10: remaining report_viewer_api failure
 
@@ -54,6 +55,7 @@ On 2026-11-10 the ticket 06 worker reported that, as of `llvm-project@0507cd96fe
 ## 2026-11-10: server stop fixed
 
 As of `codechecker@6325f9164`, the shutdown hang reported after ticket 06 is fixed in `server.py`. API workers sat in `accept()` while SIGINT landed on Z3's timer thread. `dev-loop.sh stop` now waits for shutdown and fails loudly, which supersedes the kill-by-port practice noted above.
+The citation for the `dev-loop.sh` part is corrected in the 2026-11-11 wiki lint entry below.
 
 ## 2026-11-11: functest poisoning and trace path trimming
 
@@ -62,6 +64,7 @@ Every later test then failed with "Failed to add the product to the test server!
 The setup now removes the product and workspace itself before re-raising, so each test shows the real error.
 The trigger seen in the reproduction was a sporadic `CodeChecker store` failure ("No such file or directory" on the store zip in `<report dir>/tmp*-store/`), roughly one run in five, cause not found.
 `dev-loop.sh functest` also stops a leftover global test server first: the Makefile deletes the workspace and its `serverport` file, so an orphan could never be stopped afterwards.
+The citation for this `dev-loop.sh` part is corrected in the 2026-11-11 wiki lint entry below.
 
 ## 2026-11-11: store zip failure explained and fixed
 
@@ -81,3 +84,15 @@ On 2026-11-11 a worker measured the prototype's bottlenecks at `llvm-project@916
 On 2026-11-11 a Homebrew upgrade moved z3 from 5.3.3 to 5.4.0, and `build-colorful/bin/clang` stopped starting because it links `libz3.5.3.dylib` by its versioned name.
 The worker ran Clang with `DYLD_LIBRARY_PATH=/opt/homebrew/Cellar/z3/5.3.3/lib` as a stopgap, which works only until `brew cleanup` removes 5.3.3.
 With thrift 0.25.0 in the venv, `massStoreRun` fails once the base64 zip passes the default 16,384,000-character string limit, which is about 12.3 MiB of compressed zip, and constraint traces make tmux's zip 2.5 times larger.
+The z3 break and the thrift limit above are superseded by the 2026-11-11 wiki lint entry below.
+
+## 2026-11-11: wiki lint corrections
+
+The z3 stopgap in the performance evaluation entry above no longer applies: on 2026-11-11 lane A relinked `build-colorful` against z3 5.4.0 with a plain ninja build, as recorded in the scaling pass entry of [execution plan](execution-plan.md) and accepted in `llvm-project@6fe31e7a0177`.
+The thrift limit in the same entry is lifted as of `codechecker@46a0137a3`, which sets no string limit on the server and Python clients and requires `thrift~=0.25`.
+
+The report-converter rewrite of the PVS-Studio sample files noted in the test baseline entry above is fixed as of `codechecker@eef4541e0`, where the test works on a temporary copy of its samples.
+
+The citation in the server stop fixed entry above covers only the `server.py` fix: the `dev-loop.sh stop` change that waits for shutdown is in `llvm-project@014428369df9`.
+
+The citation in the functest poisoning entry above covers only the CodeChecker side: the `dev-loop.sh functest` change that stops a leftover global test server is in `llvm-project@2872a9cbe8f3`.

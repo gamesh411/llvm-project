@@ -27,6 +27,7 @@ On 2026-11-10 the lead decided to check with the user before starting 09 and 10,
 As of `llvm-project@da4604b880b8`, `../demo/two-path.c` resets and reassigns `p` to force the spec's Bug Path `a == 0`, `b != 0`.
 The ticket 01 worker reported that the simpler `p = &x; if (a == 0) p = 0; if (b != 0) p = 0;` is reported along `a != 0`, `b != 0`, where `b == 0` also rules out this path while the bug remains through `a`.
 Ticket 08 should decide which version explains "this path" against "this bug" best in a one-minute demo.
+This open point is settled by the 2026-11-11 two-path entry below.
 
 ## 2026-11-10: progress
 
@@ -55,6 +56,7 @@ The ticket 08 worker measured plist output on the whole of tmux growing 11.6 tim
 Small wording issue left: when the dead step equals the anchor, the verdict repeats the step ("at Step 1. It dies at Step 1").
 The wording issue is superseded by the cleanup entry below, which records its fix in `codechecker@4be03b7d7`.
 Tickets 09 and 10 wait for the user's go-ahead, per the 2026-11-10 decision above.
+The wait is superseded by the user's approval in the next paragraph.
 
 On 2026-11-11 the user approved the stretch tickets. The lead started 09, with 10 to follow once 09 is accepted, since 10 is blocked by 09.
 
@@ -103,3 +105,31 @@ UI problems seen and queued for a later polish worker: three-digit step numbers 
 
 On 2026-11-11 the lead decided that trace format v2 replaces v1 everywhere instead of both being read, so there is one reconstruction path in each consumer.
 A stored v1 trace gets the disabled toggle with an explanation, as a report without constraint data does, and `dev-loop.sh demo` rebuilds the demo from a clean server.
+
+## 2026-11-11: wiki lint corrections
+
+The UI problems in the lane B entry above were seen as of `codechecker@46a0137a3`, and the missing `python-ldap` as of `llvm-project@385184e2a529`.
+
+## 2026-11-11: trace format v2 accepted
+
+On 2026-11-11 the lead accepted trace format v2 after viewing `/Users/efulop/colorful-day-env/screens/v2-r1205-cfg-1400.png`, `v2-tmux-flags-eq-0-1400.png` and `v2-stored-v1-disabled-1400.png`.
+The commits are `llvm-project@2ea8cfaee13f..b431273aaad1` and `codechecker@701a97292..54e8c88b7`, and the schema is in `../trace-format-v2.md`.
+The equivalence check found a v1 bug, fixed on its own in `llvm-project@2ea8cfaee13f`: the node table was keyed by the analyzer's node ID, which the exploded graph reuses after reclaiming nodes, so at 1205 steps 68 entries each stood for two nodes.
+Apart from those node entries, all 3491 steps rebuilt from v2 by the Python, JS and lit readers match the v1 output of `llvm-project@385184e2a529`, and 1754 What-If checks give identical verdicts.
+The worker's measurements, before and after:
+
+| Measure | 605 steps | 1205 steps |
+|---|---|---|
+| plist size | 54.7 MB -> 1.18 MB | 215 MB -> 2.36 MB |
+| store time | 14.3 s -> 6.6 s | 45.2 s -> 6.7 s |
+| store client memory | 536 MB -> 57 MB | 1.98 GB -> 62 MB |
+| getReportDetails | 27 MB in 0.86 s -> 314 KB in 0.02 s | 107 MB in 3.43 s -> 632 KB in 0.03 s |
+| page ready | 3.1 s -> 0.88 s | 10.4 s -> 1.34 s |
+
+Size now grows about 2.0 times per path doubling, against 3.9 before, and tmux plists went from 23.5 to 6.9 MB.
+Step clicks stayed at about 180-350 ms, which the worker traced to rendering 400-800 panel rows, not to reading the trace.
+As of `codechecker@44129629f`, edges into one graph block share a gutter lane, because at 1205 steps a 3200 px gutter pushed the graph out of view.
+
+On 2026-11-11 the lead decided to defer mitigation 7 (lazy trace fetching) and mitigation 8 (gzip), because report details at 1205 steps are 632 KB fetched in 0.03 s, so neither has a measured need.
+The LLVM run comes next instead, and its measurements decide whether 7, 8 or 11 is needed.
+In parallel, a UI polish worker takes the queued problems, the slow step clicks, and the report tree not scrolling the source to a clicked step, which the v2 worker saw on the old build as well.

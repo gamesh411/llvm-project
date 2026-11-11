@@ -6,7 +6,7 @@ Sources such as the spec and tickets are cited here, never copied.
 
 ## Process
 
-- [Execution plan](execution-plan.md): ticket order, what runs in parallel, and when to stop for the user.
+- [Execution plan](execution-plan.md): ticket order, what runs in parallel, when to stop for the user, and the scaling pass with its lane results.
 - [Worker rules](worker-rules.md): constraints every ticket worker is given.
 
 ## Environment
@@ -16,4 +16,4 @@ Sources such as the spec and tickets are cited here, never copied.
 ## Design
 
 - [Data contract](data-contract.md): how constraint data travels from Clang to the web UI.
-- [Web UI decisions](web-ui-decisions.md): toggle and panel placement.
+- [Web UI decisions](web-ui-decisions.md): toggle and panel placement, line picker, What-If section, the ticket 08 visual pass, the graph view and queued UI problems.
