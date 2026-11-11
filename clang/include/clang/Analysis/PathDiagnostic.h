@@ -739,6 +739,11 @@ public:
     CallEnterConstraintSnapshot = std::move(Snapshot);
   }
 
+  const PathDiagnosticConstraintSnapshotRef &
+  getCallEnterConstraintSnapshot() const {
+    return CallEnterConstraintSnapshot;
+  }
+
   PathDiagnosticLocation getLocation() const override { return callEnter; }
 
   std::shared_ptr<PathDiagnosticEventPiece> getCallEnterEvent() const;

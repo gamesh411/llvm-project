@@ -244,6 +244,37 @@ class PathDiagnosticBuilder : public BugReporterContext {
   llvm::DenseMap<const MemRegion *, unsigned> FirstParameterWrite;
   /// Builds the SMT-LIB of Constraint Snapshots, created on first use.
   mutable llvm::SMTSolverRef SMTSolver;
+  /// One Constraint Snapshot per node, shared by every piece at that node and
+  /// by every consumer. Most pieces are pruned, so a snapshot is only built
+  /// once a diagnostic is complete and still refers to it.
+  mutable llvm::DenseMap<const ExplodedNode *,
+                         std::shared_ptr<PathDiagnosticConstraintSnapshot>>
+      ConstraintSnapshots;
+  /// A variable a snapshot shows, by name, before it is printed.
+  using VisibleVariable = std::pair<std::string, SVal>;
+  struct UnbuiltSnapshot {
+    const ExplodedNode *Node;
+    SmallVector<VisibleVariable, 16> Variables;
+  };
+  /// The snapshots in ConstraintSnapshots that are not built yet.
+  mutable llvm::DenseMap<const PathDiagnosticConstraintSnapshot *,
+                         UnbuiltSnapshot>
+      UnbuiltSnapshots;
+  /// Text that consecutive snapshots repeat, printed once per report. These are
+  /// std::maps, so that references into them stay valid as they grow.
+  mutable std::map<SymbolRef, std::string> SymbolDumps;
+  struct PrintedConstraint {
+    std::string Range;
+    std::optional<std::string> SMTAssertion;
+  };
+  /// Keyed by the symbol and its RangeSet.
+  mutable std::map<llvm::FoldingSetNodeID, PrintedConstraint>
+      PrintedConstraints;
+  /// The SMT-LIB term of a symbol and whether it is signed, or nothing when
+  /// it has no bitvector term.
+  mutable std::map<SymbolRef, std::optional<std::pair<std::string, bool>>>
+      SMTTerms;
+  mutable std::map<const SymbolData *, std::string> SMTDeclarations;
   /// The part of a function's control flow graph the bug path took.
   struct PathCFG {
     AnalysisDeclContext *ADC;
@@ -283,8 +314,22 @@ public:
 
 private:
   /// \p Node's Constraint Snapshot, or null when snapshots are not requested.
+  /// It stays empty until buildConstraintSnapshots reaches a piece holding it.
   PathDiagnosticConstraintSnapshotRef
   makeConstraintSnapshot(const ExplodedNode *Node) const;
+
+  /// Builds the snapshots that \p Pieces and the pieces nested in them hold.
+  void buildConstraintSnapshots(const PathPieces &Pieces) const;
+  void
+  buildConstraintSnapshot(const PathDiagnosticConstraintSnapshotRef &Ref) const;
+  void fillConstraintSnapshot(PathDiagnosticConstraintSnapshot &Snapshot,
+                              const UnbuiltSnapshot &Unbuilt) const;
+
+  std::vector<PathDiagnosticConstraintSnapshot::SymbolRange>
+  renderConstraints(ConstraintMap Constraints) const;
+  const std::string &getSymbolDump(SymbolRef Sym) const;
+  PrintedConstraint &getPrintedConstraint(SymbolRef Sym,
+                                          const RangeSet &Range) const;
 
   /// Walks the bug path from its start, because the snapshot of a step depends
   /// on what came before it while diagnostics are built from the end.
@@ -302,10 +347,15 @@ private:
 
   std::vector<PathDiagnosticCFG> renderPathCFGs() const;
 
+  /// The variables of \p Node's stack frame and the globals its function
+  /// names, sorted by name.
+  SmallVector<VisibleVariable, 16>
+  collectVisibleVariables(const ExplodedNode *Node) const;
+
   /// Returns the symbol each added variable holds, null for a concrete value.
   SmallVector<SymbolRef, 16>
   addVisibleVariables(PathDiagnosticConstraintSnapshot &Snapshot,
-                      const ExplodedNode *Node) const;
+                      ArrayRef<VisibleVariable> Variables) const;
 
   /// Adds the path condition as SMT-LIB, and the SMT term of each variable
   /// holding one of \p VariableSymbols. Does nothing without Z3.
@@ -1218,17 +1268,35 @@ constexpr llvm::StringLiteral StrLoopCollectionEmpty =
 static std::unique_ptr<FilesToLineNumsMap>
 findExecutedLines(const SourceManager &SM, const ExplodedNode *N);
 
-static std::vector<PathDiagnosticConstraintSnapshot::SymbolRange>
-renderConstraints(ConstraintMap Constraints) {
-  std::vector<PathDiagnosticConstraintSnapshot::SymbolRange> Result;
-  for (const auto &[Sym, Range] : Constraints) {
-    PathDiagnosticConstraintSnapshot::SymbolRange Entry;
-    llvm::raw_string_ostream SymbolOS(Entry.Symbol);
-    Sym->dumpToStream(SymbolOS);
-    llvm::raw_string_ostream RangeOS(Entry.Range);
-    Range.dump(RangeOS);
-    Result.push_back(std::move(Entry));
+const std::string &PathDiagnosticBuilder::getSymbolDump(SymbolRef Sym) const {
+  auto [It, Inserted] = SymbolDumps.try_emplace(Sym);
+  if (Inserted) {
+    llvm::raw_string_ostream OS(It->second);
+    Sym->dumpToStream(OS);
   }
+  return It->second;
+}
+
+PathDiagnosticBuilder::PrintedConstraint &
+PathDiagnosticBuilder::getPrintedConstraint(SymbolRef Sym,
+                                            const RangeSet &Range) const {
+  llvm::FoldingSetNodeID ID;
+  ID.AddPointer(Sym);
+  Range.Profile(ID);
+  auto [It, Inserted] = PrintedConstraints.try_emplace(std::move(ID));
+  if (Inserted) {
+    llvm::raw_string_ostream OS(It->second.Range);
+    Range.dump(OS);
+  }
+  return It->second;
+}
+
+std::vector<PathDiagnosticConstraintSnapshot::SymbolRange>
+PathDiagnosticBuilder::renderConstraints(ConstraintMap Constraints) const {
+  std::vector<PathDiagnosticConstraintSnapshot::SymbolRange> Result;
+  for (const auto &[Sym, Range] : Constraints)
+    Result.push_back(
+        {getSymbolDump(Sym), getPrintedConstraint(Sym, Range).Range});
   llvm::sort(Result, [](const auto &LHS, const auto &RHS) {
     return LHS.Symbol < RHS.Symbol;
   });
@@ -1275,17 +1343,59 @@ PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
   if (!getAnalyzerOptions().ShouldEmitConstraintSnapshots)
     return nullptr;
 
-  auto Snapshot = std::make_shared<PathDiagnosticConstraintSnapshot>();
-  Snapshot->SymbolRanges =
+  auto [It, Inserted] = ConstraintSnapshots.try_emplace(Node);
+  if (Inserted) {
+    It->second = std::make_shared<PathDiagnosticConstraintSnapshot>();
+    // Reading a variable may create the symbol of its initial value, which
+    // numbers every symbol created after it. So variables are read for every
+    // snapshot asked for, pruned or not, in the order the path is walked,
+    // which keeps symbol IDs independent of which snapshots are built.
+    UnbuiltSnapshots.try_emplace(
+        It->second.get(), UnbuiltSnapshot{Node, collectVisibleVariables(Node)});
+  }
+  return It->second;
+}
+
+void PathDiagnosticBuilder::buildConstraintSnapshots(
+    const PathPieces &Pieces) const {
+  for (const PathDiagnosticPieceRef &Piece : Pieces) {
+    buildConstraintSnapshot(Piece->getConstraintSnapshot());
+    if (const auto *Call = dyn_cast<PathDiagnosticCallPiece>(Piece.get())) {
+      buildConstraintSnapshot(Call->getCallEnterConstraintSnapshot());
+      buildConstraintSnapshots(Call->path);
+    } else if (const auto *Macro =
+                   dyn_cast<PathDiagnosticMacroPiece>(Piece.get())) {
+      buildConstraintSnapshots(Macro->subPieces);
+    }
+  }
+}
+
+void PathDiagnosticBuilder::buildConstraintSnapshot(
+    const PathDiagnosticConstraintSnapshotRef &Ref) const {
+  if (!Ref)
+    return;
+  auto It = UnbuiltSnapshots.find(Ref.get());
+  if (It == UnbuiltSnapshots.end())
+    return;
+  UnbuiltSnapshot Unbuilt = std::move(It->second);
+  UnbuiltSnapshots.erase(It);
+  fillConstraintSnapshot(*ConstraintSnapshots.find(Unbuilt.Node)->second,
+                         Unbuilt);
+}
+
+void PathDiagnosticBuilder::fillConstraintSnapshot(
+    PathDiagnosticConstraintSnapshot &Snapshot,
+    const UnbuiltSnapshot &Unbuilt) const {
+  const ExplodedNode *Node = Unbuilt.Node;
+  Snapshot.SymbolRanges =
       renderConstraints(getConstraintMapOfClassMembers(Node->getState()));
   SmallVector<SymbolRef, 16> VariableSymbols =
-      addVisibleVariables(*Snapshot, Node);
+      addVisibleVariables(Snapshot, Unbuilt.Variables);
   ConstraintMap PathCondition = PathHistory.find(Node)->second.first;
-  Snapshot->PathCondition = renderConstraints(PathCondition);
-  addSMTLIB(*Snapshot, PathCondition, VariableSymbols);
-  Snapshot->Position = findCFGPosition(Node);
-  Snapshot->Node = describeExplodedNode(Node);
-  return Snapshot;
+  Snapshot.PathCondition = renderConstraints(PathCondition);
+  addSMTLIB(Snapshot, PathCondition, VariableSymbols);
+  Snapshot.Position = findCFGPosition(Node);
+  Snapshot.Node = describeExplodedNode(Node);
 }
 
 template <typename T> static std::string printToString(const T &Printable) {
@@ -1313,42 +1423,50 @@ void PathDiagnosticBuilder::addSMTLIB(
   };
 
   // In the order of PathCondition, which is sorted by the symbol's dump.
-  std::vector<std::pair<std::string, std::string>> Assertions;
+  std::vector<std::pair<StringRef, StringRef>> Assertions;
   for (const auto &[Sym, Range] : PathCondition) {
     Declare(Sym);
-    std::string Dump;
-    llvm::raw_string_ostream DumpOS(Dump);
-    Sym->dumpToStream(DumpOS);
-    Assertions.emplace_back(std::move(Dump),
-                            "(assert " +
-                                printToString(*getCrosscheckRangeConstraint(
-                                    SMTSolver, Ctx, Sym, Range)) +
-                                ")");
+    std::optional<std::string> &Assertion =
+        getPrintedConstraint(Sym, Range).SMTAssertion;
+    if (!Assertion)
+      Assertion = "(assert " +
+                  printToString(*getCrosscheckRangeConstraint(SMTSolver, Ctx,
+                                                              Sym, Range)) +
+                  ")";
+    Assertions.emplace_back(getSymbolDump(Sym), *Assertion);
   }
   llvm::sort(Assertions);
-  for (auto &Assertion : Assertions)
-    Snapshot.SMTAssertions.push_back(std::move(Assertion.second));
+  for (const auto &Assertion : Assertions)
+    Snapshot.SMTAssertions.push_back(Assertion.second.str());
 
   for (auto [Var, Sym] : llvm::zip_equal(Snapshot.Variables, VariableSymbols)) {
     if (!Sym)
       continue;
-    QualType Ty;
-    std::optional<llvm::SMTExprRef> Term =
-        SMTConv::getExpr(SMTSolver, Ctx, Sym, Ty);
-    // A comparison against an integer needs a bitvector.
-    if (!Term || Ty->isBooleanType() ||
-        !(Ty->isIntegralOrEnumerationType() || Ty->isAnyPointerType()))
+    auto [It, Inserted] = SMTTerms.try_emplace(Sym);
+    if (Inserted) {
+      QualType Ty;
+      std::optional<llvm::SMTExprRef> Term =
+          SMTConv::getExpr(SMTSolver, Ctx, Sym, Ty);
+      // A comparison against an integer needs a bitvector.
+      if (Term && !Ty->isBooleanType() &&
+          (Ty->isIntegralOrEnumerationType() || Ty->isAnyPointerType()))
+        It->second.emplace(printToString(**Term),
+                           Ty->isSignedIntegerOrEnumerationType());
+    }
+    if (!It->second)
       continue;
-    Var.SMTTerm = printToString(**Term);
-    Var.SMTSigned = Ty->isSignedIntegerOrEnumerationType();
+    std::tie(Var.SMTTerm, Var.SMTSigned) = *It->second;
     Declare(Sym);
   }
 
   for (const auto &[ID, Data] : Declared) {
-    llvm::SMTExprRef Symbol = SMTConv::fromData(SMTSolver, Ctx, Data);
-    Snapshot.SMTDeclarations.push_back(
-        "(declare-fun " + printToString(*Symbol) + " () " +
-        printToString(*SMTSolver->getSort(Symbol)) + ")");
+    auto [It, Inserted] = SMTDeclarations.try_emplace(Data);
+    if (Inserted) {
+      llvm::SMTExprRef Symbol = SMTConv::fromData(SMTSolver, Ctx, Data);
+      It->second = "(declare-fun " + printToString(*Symbol) + " () " +
+                   printToString(*SMTSolver->getSort(Symbol)) + ")";
+    }
+    Snapshot.SMTDeclarations.push_back(It->second);
   }
 #endif
 }
@@ -1558,9 +1676,8 @@ std::vector<PathDiagnosticCFG> PathDiagnosticBuilder::renderPathCFGs() const {
   return Result;
 }
 
-SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
-    PathDiagnosticConstraintSnapshot &Snapshot,
-    const ExplodedNode *Node) const {
+SmallVector<PathDiagnosticBuilder::VisibleVariable, 16>
+PathDiagnosticBuilder::collectVisibleVariables(const ExplodedNode *Node) const {
   const SourceManager &SM = getSourceManager();
   ProgramStateRef State = Node->getState();
   const auto *Frame = Node->getStackFrame();
@@ -1604,18 +1721,25 @@ SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
                           State->getSVal(State->getLValue(Global, Frame)));
   }
 
+  SmallVector<VisibleVariable, 16> Result;
+  for (const auto &[Name, DeclAndVal] : Visible)
+    if (!Name.empty())
+      Result.emplace_back(Name, DeclAndVal.second);
+  return Result;
+}
+
+SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
+    PathDiagnosticConstraintSnapshot &Snapshot,
+    ArrayRef<VisibleVariable> Variables) const {
   SmallVector<SymbolRef, 16> Symbols;
-  for (const auto &[Name, DeclAndVal] : Visible) {
-    if (Name.empty())
-      continue;
+  for (const auto &[Name, Val] : Variables) {
     std::string Value;
     llvm::raw_string_ostream OS(Value);
     using ValueKind = PathDiagnosticConstraintSnapshot::Variable::ValueKind;
     ValueKind Kind;
-    SVal Val = DeclAndVal.second;
     SymbolRef Sym = Val.getAsSymbol();
     if (Sym) {
-      Sym->dumpToStream(OS);
+      OS << getSymbolDump(Sym);
       Kind = ValueKind::Symbol;
     } else if (auto LocInt = Val.getAs<loc::ConcreteInt>()) {
       LocInt->getValue()->print(OS, /*isSigned=*/false);
@@ -2635,6 +2759,9 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
 
   if (Opts.ShouldDisplayMacroExpansions)
     CompactMacroExpandedPieces(Construct.getMutablePieces(), SM);
+
+  if (Opts.ShouldEmitConstraintSnapshots)
+    buildConstraintSnapshots(Construct.getMutablePieces());
 
   return std::move(Construct.PD);
 }
