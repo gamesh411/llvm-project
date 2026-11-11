@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Colorful Day dev loop: Clang build -> CodeChecker analyze -> store -> server -> browser.
 # Re-runnable; every step fails loudly. All generated state lives under $CD_ENV.
-# Usage: dev-loop.sh <env|thrift|web|package|clang|analyze|store|server|stop|status|all|fixture|lit|functest|webtests|baseline> [args]
+# Usage: dev-loop.sh <env|thrift|web|package|clang|analyze|store|server|stop|status|all|fixture|lit|functest|webtests|baseline|demo> [args]
 set -euo pipefail
 
 LLVM=${LLVM:-/Users/efulop/llvm-project}
@@ -19,6 +19,7 @@ VENV=$CD_ENV/venv
 # redirected into $CD_ENV; the (gitignored) default $CC/build is used.
 PKG=$CC/build/CodeChecker
 WORKSPACE=$CD_ENV/workspace
+DEMO_WORKSPACE=$CD_ENV/demo-workspace
 REPORTS=$CD_ENV/reports
 URL=http://localhost:$PORT/Default
 
@@ -323,8 +324,70 @@ cmd_baseline() {
 
 cmd_all() { cmd_env; cmd_thrift; cmd_web; cmd_package; cmd_analyze; cmd_server; cmd_store; }
 
+TMUX_SRC=$CD_ENV/projects/tmux
+TMUX_TAG=3.5a
+
+# tmux with a compile database from bear. Configure needs Homebrew's libevent
+# and ncurses through pkg-config, and an explicit utf8proc choice on macOS.
+tmux_cdb() {
+  [ -d "$TMUX_SRC/.git" ] || git clone -q --depth 1 --branch "$TMUX_TAG" \
+    https://github.com/tmux/tmux.git "$TMUX_SRC"
+  [ -f "$TMUX_SRC/compile_commands.json" ] && return 0
+  command -v bear >/dev/null || die "bear missing: brew install bear"
+  (cd "$TMUX_SRC" \
+    && sh autogen.sh \
+    && PKG_CONFIG_PATH=/opt/homebrew/opt/libevent/lib/pkgconfig:/opt/homebrew/opt/ncurses/lib/pkgconfig \
+       ./configure --disable-utf8proc \
+    && bear --output compile_commands.json -- make -j"$(sysctl -n hw.ncpu)") \
+    >"$CD_ENV/logs/tmux-build.log" 2>&1 \
+    || { tail -20 "$CD_ENV/logs/tmux-build.log" >&2; die "tmux build failed"; }
+}
+
+# reportId of the one report of a run at file:line, from `cmd results`.
+report_id() {
+  "$(cc_bin)" cmd results "$1" --url "$URL" -o json 2>/dev/null \
+    | "$PYTHON" -I -c '
+import json, os, sys
+hits = [r["reportId"] for r in json.load(sys.stdin)
+        if os.path.basename(r["checkedFile"]) == sys.argv[1]
+        and r["line"] == int(sys.argv[2])]
+if len(hits) != 1:
+    sys.exit(f"expected one report at {sys.argv[1]}:{sys.argv[2]}, got {hits}")
+print(hits[0])' "$2" "$3"
+}
+
+# The demo data from a clean server: its own workspace, wiped every time, so
+# the dev workspace of earlier tickets is left alone. Stores the short
+# two-path example and all of tmux, and prints the two report URLs the
+# script in demo/README.md opens.
+cmd_demo() {
+  activate; use_clang
+  cmd_stop
+  rm -rf "$DEMO_WORKSPACE"
+  WORKSPACE=$DEMO_WORKSPACE cmd_server
+
+  DEMO=$LLVM/.scratch/colorful-day/demo/two-path-short.c cmd_analyze
+  RUN_NAME=colorful-day-two-path cmd_store >/dev/null
+
+  tmux_cdb
+  # cmd_store re-sources the venv, whose activate restores the PATH saved at
+  # the first activation, so the Colorful Day Clang is gone again.
+  use_clang
+  local out=$CD_ENV/reports-tmux
+  rm -rf "$out"
+  "$(cc_bin)" analyze "$TMUX_SRC/compile_commands.json" -o "$out" \
+    --analyzers clangsa -j"$(sysctl -n hw.ncpu)" --z3-refutation on \
+    --analyzer-config clangsa:emit-constraint-snapshots=true \
+    >"$CD_ENV/logs/tmux-analyze.log" 2>&1 \
+    || { tail -20 "$CD_ENV/logs/tmux-analyze.log" >&2; die "tmux analysis failed"; }
+  "$(cc_bin)" store "$out" -n colorful-day-tmux --url "$URL" >/dev/null
+
+  echo "two-path: $URL/report-detail?report-id=$(report_id colorful-day-two-path two-path-short.c 10)"
+  echo "tmux:     $URL/report-detail?report-id=$(report_id colorful-day-tmux grid.c 1073)"
+}
+
 sub=${1:-}; shift || true
 case "$sub" in
-  env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest|webtests|baseline) "cmd_$sub" "$@" ;;
-  *) die "usage: $0 <env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest>" ;;
+  env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest|webtests|baseline|demo) "cmd_$sub" "$@" ;;
+  *) die "usage: $0 <env|clang|thrift|web|package|analyze|server|stop|store|status|all|fixture|lit|functest|webtests|baseline|demo>" ;;
 esac

@@ -38,3 +38,14 @@ In that screenshot the What-If section cuts the accumulated path condition off m
 - Pointer ranges read as `[1, 18446744073709551615]` in `/Users/efulop/colorful-day-env/screens/07-toggle-on-infeasible-1400.png` instead of something like non-null.
 - At 900px the file header's branch label truncates to `(`.
 - The tight gap between the file path and "Found in:" noted after ticket 02.
+
+## 2026-11-11: ticket 08 visual pass
+
+As of `codechecker@e78323748` the four open items above are resolved:
+
+- A search the solver cut short now says "It is dead by Step N. The solver gave up before it could tell whether an earlier step is dead too.", and the panel mark reads "Path dead here". This needed `WhatIfResult.firstDeadStepIsEarliest` (API 6.79).
+- A pointer symbol's `{ [0, 0] }` and `{ [1, 18446744073709551615] }` read `null` and `non-null`, with the range in the tooltip. Pointers are recognized from the type at the start of a `reg_` or `conj_` dump, so a `derived_` pointer still shows its interval.
+- The 900px `(` was the app bar title clipped to its first letter, not the file header. Below 1280px the menu now shows icons with tooltips, and the title no longer shares free space with the spacer.
+- The file header has a 12px gap between its parts, and below a 16rem path "Found in:" wraps to its own line, where before the path shrank to its copy icon.
+
+Other defects fixed in the same pass are in the Comments of `../issues/08-demo-on-a-real-report.md`.

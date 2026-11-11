@@ -39,3 +39,7 @@ On 2026-11-10 the lead decided to keep the solver timeout covered by a unit test
 As of `codechecker@6325f9164` (API 6.78), What-If Constraints carry an optional "holds throughout" flag, and the server finds the first dead step by binary search over the steps. That is at most 2 + ceil(log2 N) solver calls of up to 2000 ms each plus a 4000 ms search budget, so about 8 s per check at worst. The rules are in the Comments of `../issues/07-holds-throughout-and-first-dead-step.md`.
 The binary search relies on the accumulated path condition only narrowing along a path. If the solver gives up mid-search, the named step is proven dead but may be later than the true first.
 On 2026-11-10 the lead accepted mapping the server's earliest `order`, often the edge into an "Assuming" line, to that line's event in the UI, consistent with line selection.
+
+## 2026-11-11: ticket 08
+
+As of `codechecker@e78323748` (API 6.79), `WhatIfResult` also has `8: optional bool firstDeadStepIsEarliest`, set with `firstDeadStep`, false when the search ran out of budget or the solver gave up on a step. A missing flag reads as earliest in the UI.

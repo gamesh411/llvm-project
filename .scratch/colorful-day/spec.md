@@ -160,3 +160,10 @@ Adding `b == 0` makes that Bug Path Infeasible while the bug still exists throug
 
 Real-report candidates are FFmpeg, tmux and Vim.
 If none gives a clear example, choose another project during the demo work.
+
+2026-11-11, after the ticket 08 demo: the solver mismatch did not show up as a usability problem on the demo reports.
+All 30 path-sensitive tmux 3.5a reports, analyzed with Z3 refutation on, have a Feasible Baseline Verdict when their last step's SMT-LIB goes to Z3, and none took more than 10 ms.
+Both demo checks, `a == 0` on the two-path example and `flags == 0` on `grid.c:1073`, are Infeasible at a step where a forward run with the same assumption would also have stopped: there `flags` would be the constant 0 and `flags & GRID_STRING_WITH_SEQUENCES` would fold to false.
+So on these examples the two solvers agree, and the Baseline Verdict box never appeared.
+The demo did not test a case where Z3 refutes what the range-based solver accepted, apart from the `z3-refuted.c` fixture, so the concern stays open for paths with nonlinear arithmetic or bit tricks.
+Details are in the Comments of `issues/08-demo-on-a-real-report.md`.

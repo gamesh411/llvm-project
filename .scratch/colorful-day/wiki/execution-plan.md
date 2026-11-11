@@ -39,3 +39,10 @@ On 2026-11-10 the lead accepted ticket 05 and started ticket 06, with 07 to foll
 On 2026-11-10 the lead accepted ticket 06 after viewing `06-multi-unknown-1400.png` and `06-syntax-error-1400.png`, and started ticket 07.
 
 On 2026-11-10 the lead accepted ticket 07 after viewing `07-dies-before-anchor-1400.png` and `07-toggle-on-infeasible-1400.png`, and started ticket 08.
+
+## 2026-11-11: two-path example settled by ticket 08
+
+On 2026-11-11 the ticket 08 worker chose the simpler version for the demo, as `../demo/two-path-short.c`, and kept `../demo/two-path.c` as the fixture source so the functional tests need no new fixture.
+The simpler version is reported along `a != 0`, `b != 0` (checked with the Colorful Day Clang at `llvm-project@8c98b9a644c8`), so the `a == 0` route to the same bug is visible in the source but not on the Bug Path.
+Checking `a == 0` then makes this path Infeasible while that same assumption is exactly the other route to the bug, which explains "this path" against "this bug" in one step.
+The forced version needs two extra resets that a viewer has to read first, and its `b == 0` story needs the viewer to trace four branches.
