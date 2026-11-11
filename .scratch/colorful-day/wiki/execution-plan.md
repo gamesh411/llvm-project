@@ -53,6 +53,7 @@ On 2026-11-11 the lead accepted ticket 08 after viewing `/Users/efulop/colorful-
 The demo uses tmux 3.5a, `grid.c:1073`, with `flags == 0` at Step 1 dying at Step 7. The rejected candidates are in the Comments of `../issues/08-demo-on-a-real-report.md`.
 The ticket 08 worker measured plist output on the whole of tmux growing 11.6 times (about 520 KB per path-sensitive report), with analysis time up about 1.4%.
 Small wording issue left: when the dead step equals the anchor, the verdict repeats the step ("at Step 1. It dies at Step 1").
+The wording issue is superseded by the cleanup entry below, which records its fix in `codechecker@4be03b7d7`.
 Tickets 09 and 10 wait for the user's go-ahead, per the 2026-11-10 decision above.
 
 On 2026-11-11 the user approved the stretch tickets. The lead started 09, with 10 to follow once 09 is accepted, since 10 is blocked by 09.
@@ -60,3 +61,11 @@ On 2026-11-11 the user approved the stretch tickets. The lead started 09, with 1
 On 2026-11-11 the lead accepted ticket 09 and started ticket 10.
 
 On 2026-11-11 the lead accepted ticket 10 after viewing `/Users/efulop/colorful-day-env/screens/10-contexts-states-1400.png`, and started a cleanup pass. The pass covers the trim-path gap, the outdated option description, an unexplained `functest` setup failure ("Failed to add the product to the test server!"), a final `clang/test/Analysis` run on the final Clang, and setting ticket `Status` lines to `resolved`, the term the tracker's wayfinding section uses.
+
+## 2026-11-11: cleanup pass done
+
+On 2026-11-11 the lead accepted the cleanup pass.
+The verdict no longer repeats the step when the path dies at the anchor, as of `codechecker@4be03b7d7`.
+Trace paths are trimmed and a failed `functest` setup cleans up after itself, as of `codechecker@333e8467d`.
+The option description and ticket `Status` lines were updated in `llvm-project@2872a9cbe8f3`.
+The store zip race behind the `functest` setup failure was fixed in `codechecker@63ec865ce`, as recorded in [dev environment](dev-environment.md).

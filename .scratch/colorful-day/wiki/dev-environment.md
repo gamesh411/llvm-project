@@ -25,6 +25,8 @@ The claim above that all generated state lives under `/Users/efulop/colorful-day
 
 The list of `dev-loop.sh` subcommands in the ticket 01 outcome above is superseded: as of `llvm-project@b890c79d9a57`, the script also offers `fixture`, `lit` and `functest`.
 
+On 2026-11-11 a wiki lint found that list incomplete as well: as of `llvm-project@2872a9cbe8f3`, `dev-loop.sh` also offers `webtests`, `baseline` and `demo`.
+
 The "all generated state" claim that the ticket 01 outcome calls superseded is in the Comments of `../issues/01-codechecker-dev-loop.md`, not on this page.
 
 ## 2026-11-10: test baseline after ticket 02
@@ -55,7 +57,7 @@ As of `codechecker@6325f9164`, the shutdown hang reported after ticket 06 is fix
 
 ## 2026-11-11: functest poisoning and trace path trimming
 
-As of `codechecker@HEAD` of this change, a failing `setup_class` in `constraint_trace` used to leave its product on the global test server, because pytest skips `teardown_class` after a failed setup and runs `setup_class` again for the next test.
+As of `codechecker@333e8467d`, a failing `setup_class` in `constraint_trace` used to leave its product on the global test server, because pytest skips `teardown_class` after a failed setup and runs `setup_class` again for the next test.
 Every later test then failed with "Failed to add the product to the test server!" ("product endpoint is already configured"), which hid the first real error.
 The setup now removes the product and workspace itself before re-raising, so each test shows the real error.
 The trigger seen in the reproduction was a sporadic `CodeChecker store` failure ("No such file or directory" on the store zip in `<report dir>/tmp*-store/`), roughly one run in five, cause not found.

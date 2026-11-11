@@ -27,6 +27,7 @@ As of `llvm-project@ffa40b68fbaf`, a control edge carries the snapshot of the no
 ## 2026-11-10: ticket 05
 
 As of `llvm-project@2b6fae011b13`, each snapshot carries SMT-LIB built with the Z3 crosscheck's symbol encoding, and as of `codechecker@c8bb766cb` the server answers `checkWhatIf` (API 6.76) with Python Z3, using a 2000 ms timeout per solver call (`WHAT_IF_SOLVER_TIMEOUT_MS`) and two calls per check.
+The "two calls per check" part is superseded by the ticket 07 entry below, as of `codechecker@6325f9164`.
 The no-Z3 path was verified only by a CodeChecker fixture without SMT-LIB and by compiling `BugReporter.cpp` with Z3 off, since `constraint-snapshots-no-z3.c` is unsupported on the Z3 build. Details are in the Comments of `../issues/05-first-what-if-constraint-and-verdict.md`.
 
 ## 2026-11-10: ticket 06
@@ -53,7 +54,13 @@ The ticket 09 worker measured tmux demo plists at 23,053,531 bytes, against 17,1
 
 As of `llvm-project@11efdf0713b6` and `codechecker@06fde7aaa`, the trace also carries the analyzer nodes that Path Steps came from, with their calling context and location, and there is no API change. The ticket 10 worker measured tmux plists growing by 437,861 bytes over ticket 09, to 15.9 times the off size.
 As of the same commits, trace `location.file` and `call_site.file` are plist file indices in Clang's output and full paths in `ReportDetails.constraintTrace`, and `--trim-path-prefix` does not apply to them. On 2026-11-11 the lead assigned that to a cleanup worker.
+The `--trim-path-prefix` part is superseded by the trace paths entry below, as of `codechecker@333e8467d`.
 
 ## 2026-11-11: trace paths and `--trim-path-prefix`
 
-`Report.trim_path_prefixes` also trims the `location.file` and `call_site.file` paths in the constraint trace, so they match the stored `filePath` of the report's events.
+As of `codechecker@333e8467d`, `Report.trim_path_prefixes` also trims the `location.file` and `call_site.file` paths in the constraint trace, so they match the stored `filePath` of the report's events.
+
+## 2026-11-11: wiki lint corrections
+
+The worst-case figure in the ticket 07 entry above is superseded in its wording: as of `codechecker@6325f9164`, the Baseline and verdict calls take up to 2000 ms each, and the first dead step search is capped by its 4000 ms budget, so a check takes at most 8 s.
+The source is the Comments of `../issues/07-holds-throughout-and-first-dead-step.md`.
