@@ -204,7 +204,8 @@ cmd_status() {
 
 # CodeChecker functional-test fixture: plists produced by the Colorful Day Clang
 # from demo/two-path.c, one with Constraint Snapshots, one without, and one with
-# snapshots but no SMT-LIB, as a Clang without Z3 writes them; one from
+# snapshots but no SMT-LIB, as a Clang without Z3 writes them, and one with
+# snapshots but no CFGs, as a Clang before the CFG side view wrote them; one from
 # demo/z3-refuted.c, whose Bug Path Z3 refutes; and one from
 # demo/concrete-value.c, where a pointer holds a concrete address; and one
 # from demo/opaque-call.c, where an opaque call replaces a global. Output
@@ -252,6 +253,28 @@ PY
   ! grep -q '<key>smt' "$dir/two_path.plist" || die "SMT-LIB left in $dir"
   echo "fixture ok: $dir/two_path.plist"
 
+  # What a Clang from before the CFG side view writes: no `cfgs`, and no
+  # step positions in them.
+  grep -q '<key>cfgs</key>' "$src/with_snapshots/two_path.plist" \
+    || die "with_snapshots has no CFGs; is $BUILD up to date?"
+  dir=$src/no_cfgs
+  mkdir -p "$dir"
+  cp "$DEMO" "$dir/two_path.c"
+  "$PYTHON" - "$src/with_snapshots/two_path.plist" "$dir/two_path.plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as f:
+    plist = plistlib.load(f)
+for diag in plist['diagnostics']:
+    trace = diag.get('constraint_trace', {})
+    trace.pop('cfgs', None)
+    for step in trace.get('steps', []):
+        step.pop('cfg_position', None)
+with open(sys.argv[2], 'wb') as f:
+    plistlib.dump(plist, f)
+PY
+  ! grep -q 'cfg' "$dir/two_path.plist" || die "CFG data left in $dir"
+  echo "fixture ok: $dir/two_path.plist"
+
   # z3_refuted: a Bug Path the range-based solver accepts and Z3 refutes, for a
   # Baseline Verdict that is not Feasible. Analyzed without crosscheck, which
   # would drop the report.
@@ -282,6 +305,7 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-control.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-smtlib.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-no-z3.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-cfg.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 

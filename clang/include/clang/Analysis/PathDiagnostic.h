@@ -443,6 +443,54 @@ struct PathDiagnosticConstraintSnapshot {
   bool HasSMTLIB = false;
   std::vector<std::string> SMTDeclarations;
   std::vector<std::string> SMTAssertions;
+
+  /// Where this point is in the control flow graph of its function, which is
+  /// the PathDiagnostic's CFG at index CFGIndex.
+  struct CFGPosition {
+    unsigned CFGIndex;
+    unsigned BlockID;
+    /// Index into the block's elements; empty at the block's terminator or,
+    /// when AtTerminator is false too, on entering the block.
+    std::optional<unsigned> Element;
+    bool AtTerminator = false;
+  };
+  /// Empty when the point has no place in a CFG the diagnostic carries.
+  std::optional<CFGPosition> Position;
+};
+
+/// The control flow graph of one function on a bug path, rendered to text,
+/// with the part of it the bug path took.
+struct PathDiagnosticCFG {
+  struct Element {
+    std::string Text;
+    /// Expansion line of the element's statement, 0 when it has none.
+    unsigned Line = 0;
+    /// The element of the same block whose statement most closely encloses
+    /// this one's. Statements without one are what a reader sees in the
+    /// source; the others are their linearized subexpressions.
+    std::optional<unsigned> Parent;
+  };
+
+  struct Block {
+    unsigned ID;
+    std::vector<Element> Elements;
+    /// Empty when the block has no terminator.
+    std::string Terminator;
+    /// In the CFG's order, so the first two of a branch are its true and
+    /// false targets. Empty for a successor the CFG proved unreachable.
+    std::vector<std::optional<unsigned>> Successors;
+  };
+
+  std::string Function;
+  unsigned EntryID;
+  unsigned ExitID;
+  /// Sorted by descending ID, which puts the entry first and otherwise
+  /// roughly follows the source.
+  std::vector<Block> Blocks;
+  /// IDs of the blocks the bug path entered, ascending.
+  std::vector<unsigned> PathBlocks;
+  /// The block edges the bug path took, as (source, destination) IDs, sorted.
+  std::vector<std::pair<unsigned, unsigned>> PathEdges;
 };
 
 using PathDiagnosticConstraintSnapshotRef =
@@ -853,6 +901,10 @@ class PathDiagnostic : public llvm::FoldingSetNode {
   /// Lines executed in the path.
   std::unique_ptr<FilesToLineNumsMap> ExecutedLines;
 
+  /// Control flow graphs of the functions on the path, which Constraint
+  /// Snapshot positions refer to by index. Empty unless snapshots are on.
+  std::vector<PathDiagnosticCFG> CFGs;
+
 public:
   PathDiagnostic() = delete;
   PathDiagnostic(StringRef CheckerName, const Decl *DeclWithIssue,
@@ -920,6 +972,11 @@ public:
 
   FilesToLineNumsMap &getExecutedLines() {
     return *ExecutedLines;
+  }
+
+  ArrayRef<PathDiagnosticCFG> getCFGs() const { return CFGs; }
+  void setCFGs(std::vector<PathDiagnosticCFG> NewCFGs) {
+    CFGs = std::move(NewCFGs);
   }
 
   /// Get the top-level entry point from which this issue was discovered.

@@ -48,7 +48,7 @@ namespace {
     const bool SupportsCrossFileDiagnostics;
 
     void printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
-                      const PathPieces &Path);
+                      const PathPieces &Path, ArrayRef<PathDiagnosticCFG> CFGs);
 
   public:
     PlistDiagnostics(PathDiagnosticConsumerOptions DiagOpts,
@@ -110,7 +110,8 @@ public:
 
   /// Print the constraint trace collected while the path was printed, which
   /// does not exist unless constraint snapshots were requested.
-  void ReportConstraintTrace(raw_ostream &o, unsigned indent);
+  void ReportConstraintTrace(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
+                             unsigned indent);
 
 private:
   void ReportSymbolRanges(
@@ -120,6 +121,9 @@ private:
 
   void ReportStrings(raw_ostream &o, StringRef Key,
                      ArrayRef<std::string> Strings, unsigned indent);
+
+  void ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
+                  unsigned indent);
 
   void ReportPiece(raw_ostream &o, const PathDiagnosticPiece &P,
                    unsigned indent, unsigned depth, bool includeControlFlow,
@@ -491,7 +495,91 @@ void PlistPrinter::ReportStrings(raw_ostream &o, StringRef Key,
   Indent(o, indent) << "</array>\n";
 }
 
-void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
+void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
+                              unsigned indent) {
+  auto ReportInteger = [&o](unsigned indent, StringRef Key, int64_t Value) {
+    Indent(o, indent) << "<key>" << Key << "</key>";
+    EmitInteger(o, Value) << '\n';
+  };
+
+  Indent(o, indent) << "<key>cfgs</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (const PathDiagnosticCFG &CFG : CFGs) {
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>function</key>";
+    EmitString(o, CFG.Function) << '\n';
+    ReportInteger(indent, "entry", CFG.EntryID);
+    ReportInteger(indent, "exit", CFG.ExitID);
+    Indent(o, indent) << "<key>blocks</key>\n";
+    Indent(o, indent) << "<array>\n";
+    ++indent;
+    for (const PathDiagnosticCFG::Block &Block : CFG.Blocks) {
+      Indent(o, indent) << "<dict>\n";
+      ++indent;
+      ReportInteger(indent, "id", Block.ID);
+      Indent(o, indent) << "<key>elements</key>\n";
+      Indent(o, indent) << "<array>\n";
+      ++indent;
+      for (const PathDiagnosticCFG::Element &Elem : Block.Elements) {
+        Indent(o, indent) << "<dict>\n";
+        ++indent;
+        Indent(o, indent) << "<key>text</key>";
+        EmitString(o, Elem.Text) << '\n';
+        if (Elem.Line)
+          ReportInteger(indent, "line", Elem.Line);
+        if (Elem.Parent)
+          ReportInteger(indent, "parent", *Elem.Parent);
+        --indent;
+        Indent(o, indent) << "</dict>\n";
+      }
+      --indent;
+      Indent(o, indent) << "</array>\n";
+      if (!Block.Terminator.empty()) {
+        Indent(o, indent) << "<key>terminator</key>";
+        EmitString(o, Block.Terminator) << '\n';
+      }
+      Indent(o, indent) << "<key>successors</key>\n";
+      Indent(o, indent) << "<array>\n";
+      for (std::optional<unsigned> Succ : Block.Successors) {
+        Indent(o, indent + 1);
+        EmitInteger(o, Succ ? int64_t(*Succ) : -1) << '\n';
+      }
+      Indent(o, indent) << "</array>\n";
+      --indent;
+      Indent(o, indent) << "</dict>\n";
+    }
+    --indent;
+    Indent(o, indent) << "</array>\n";
+    Indent(o, indent) << "<key>path_blocks</key>\n";
+    Indent(o, indent) << "<array>\n";
+    for (unsigned ID : CFG.PathBlocks) {
+      Indent(o, indent + 1);
+      EmitInteger(o, ID) << '\n';
+    }
+    Indent(o, indent) << "</array>\n";
+    Indent(o, indent) << "<key>path_edges</key>\n";
+    Indent(o, indent) << "<array>\n";
+    ++indent;
+    for (auto [From, To] : CFG.PathEdges) {
+      Indent(o, indent) << "<dict>\n";
+      ReportInteger(indent + 1, "from", From);
+      ReportInteger(indent + 1, "to", To);
+      Indent(o, indent) << "</dict>\n";
+    }
+    --indent;
+    Indent(o, indent) << "</array>\n";
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+}
+
+void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
+                                         ArrayRef<PathDiagnosticCFG> CFGs,
+                                         unsigned indent) {
   if (ConstraintSteps.empty())
     return;
 
@@ -538,11 +626,30 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o, unsigned indent) {
       ReportStrings(o, "smt_declarations", Snapshot->SMTDeclarations, indent);
       ReportStrings(o, "smt_assertions", Snapshot->SMTAssertions, indent);
     }
+    if (const auto &Position = Snapshot->Position) {
+      Indent(o, indent) << "<key>cfg_position</key>\n";
+      Indent(o, indent) << "<dict>\n";
+      Indent(o, indent + 1) << "<key>cfg</key>";
+      EmitInteger(o, Position->CFGIndex) << '\n';
+      Indent(o, indent + 1) << "<key>block</key>";
+      EmitInteger(o, Position->BlockID) << '\n';
+      if (Position->Element) {
+        Indent(o, indent + 1) << "<key>element</key>";
+        EmitInteger(o, *Position->Element) << '\n';
+      } else if (Position->AtTerminator) {
+        Indent(o, indent + 1) << "<key>terminator</key><true/>\n";
+      }
+      Indent(o, indent) << "</dict>\n";
+    }
     --indent;
     Indent(o, indent) << "</dict>\n";
   }
   --indent;
   Indent(o, indent) << "</array>\n";
+  // Once per diagnostic rather than per step, because a CFG is shared by
+  // every step in its function.
+  if (!CFGs.empty())
+    ReportCFGs(o, CFGs, indent);
   --indent;
   Indent(o, indent) << "</dict>\n";
 }
@@ -705,7 +812,8 @@ void ento::createPlistMultiFileDiagnosticConsumer(
 }
 
 void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
-                                    const PathPieces &Path) {
+                                    const PathPieces &Path,
+                                    ArrayRef<PathDiagnosticCFG> CFGs) {
   PlistPrinter Printer(FM, PP, CTU, MacroExpansions);
   assert(std::is_partitioned(Path.begin(), Path.end(),
                              [](const PathDiagnosticPieceRef &E) {
@@ -739,7 +847,7 @@ void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
 
   o << "   </array>\n";
 
-  Printer.ReportConstraintTrace(o, /* indent */ 3);
+  Printer.ReportConstraintTrace(o, CFGs, /* indent */ 3);
 
   if (!DiagOpts.ShouldDisplayMacroExpansions)
     return;
@@ -824,7 +932,7 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
     o << "  <dict>\n";
 
     const PathDiagnostic *D = *DI;
-    printBugPath(o, FM, D->path);
+    printBugPath(o, FM, D->path, D->getCFGs());
 
     // Output the bug type and bug category.
     o << "   <key>description</key>";

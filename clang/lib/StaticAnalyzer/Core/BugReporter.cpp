@@ -70,6 +70,7 @@
 #include <memory>
 #include <optional>
 #include <queue>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -243,6 +244,16 @@ class PathDiagnosticBuilder : public BugReporterContext {
   llvm::DenseMap<const MemRegion *, unsigned> FirstParameterWrite;
   /// Builds the SMT-LIB of Constraint Snapshots, created on first use.
   mutable llvm::SMTSolverRef SMTSolver;
+  /// The part of a function's control flow graph the bug path took.
+  struct PathCFG {
+    AnalysisDeclContext *ADC;
+    std::set<unsigned> Blocks;
+    std::set<std::pair<unsigned, unsigned>> Edges;
+  };
+  /// One per function the bug path runs through, in the order the path first
+  /// enters them, which is the order the diagnostic lists their CFGs in.
+  SmallVector<PathCFG, 4> PathCFGs;
+  llvm::DenseMap<const AnalysisDeclContext *, unsigned> PathCFGIndex;
 
 public:
   /// Find a non-invalidated report for a given equivalence class,  and returns
@@ -278,6 +289,15 @@ private:
   /// Walks the bug path from its start, because the snapshot of a step depends
   /// on what came before it while diagnostics are built from the end.
   void recordPathHistory();
+
+  /// Adds the blocks and the edge \p N is at to the path's CFGs.
+  void recordCFGVisit(const ExplodedNode *N);
+
+  /// Where \p N is in the CFGs the diagnostic carries, if anywhere.
+  std::optional<PathDiagnosticConstraintSnapshot::CFGPosition>
+  findCFGPosition(const ExplodedNode *N) const;
+
+  std::vector<PathDiagnosticCFG> renderPathCFGs() const;
 
   /// Returns the symbol each added variable holds, null for a concrete value.
   SmallVector<SymbolRef, 16>
@@ -1260,6 +1280,7 @@ PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
   ConstraintMap PathCondition = PathHistory.find(Node)->second.first;
   Snapshot->PathCondition = renderConstraints(PathCondition);
   addSMTLIB(*Snapshot, PathCondition, VariableSymbols);
+  Snapshot->Position = findCFGPosition(Node);
   return Snapshot;
 }
 
@@ -1352,8 +1373,152 @@ void PathDiagnosticBuilder::recordPathHistory() {
       PrevState = State;
     }
     PathHistory.try_emplace(N, std::make_pair(Accumulated, Position));
+    recordCFGVisit(N);
     ++Position;
   }
+}
+
+void PathDiagnosticBuilder::recordCFGVisit(const ExplodedNode *N) {
+  AnalysisDeclContext *ADC = N->getStackFrame()->getAnalysisDeclContext();
+  // A synthesized body has no source for a reader to match the graph to.
+  if (ADC->isBodyAutosynthesized() || !ADC->getCFG())
+    return;
+  auto [It, Inserted] = PathCFGIndex.try_emplace(ADC, PathCFGs.size());
+  if (Inserted)
+    PathCFGs.push_back({ADC, {}, {}});
+  PathCFG &Visit = PathCFGs[It->second];
+
+  if (auto BE = N->getLocation().getAs<BlockEdge>()) {
+    unsigned Src = BE->getSrc()->getBlockID();
+    unsigned Dst = BE->getDst()->getBlockID();
+    Visit.Blocks.insert(Src);
+    Visit.Blocks.insert(Dst);
+    Visit.Edges.emplace(Src, Dst);
+  } else if (const CFGBlock *Block = N->getCFGBlock()) {
+    Visit.Blocks.insert(Block->getBlockID());
+  }
+}
+
+std::optional<PathDiagnosticConstraintSnapshot::CFGPosition>
+PathDiagnosticBuilder::findCFGPosition(const ExplodedNode *N) const {
+  AnalysisDeclContext *ADC = N->getStackFrame()->getAnalysisDeclContext();
+  auto It = PathCFGIndex.find(ADC);
+  if (It == PathCFGIndex.end())
+    return std::nullopt;
+  using CFGPosition = PathDiagnosticConstraintSnapshot::CFGPosition;
+  unsigned Index = It->second;
+
+  ProgramPoint P = N->getLocation();
+  if (auto BE = P.getAs<BlockEdge>()) {
+    // A branch's snapshot holds the assumption its terminator made, so that
+    // is where a reader looks for it. A plain fall-through only enters the
+    // next block.
+    const CFGBlock *Src = BE->getSrc();
+    if (Src->getTerminator().isValid())
+      return CFGPosition{Index, Src->getBlockID(), std::nullopt,
+                         /*AtTerminator=*/true};
+    return CFGPosition{Index, BE->getDst()->getBlockID(), std::nullopt,
+                       /*AtTerminator=*/false};
+  }
+  if (auto BEntrance = P.getAs<BlockEntrance>())
+    return CFGPosition{Index, BEntrance->getBlock()->getBlockID(), std::nullopt,
+                       /*AtTerminator=*/false};
+
+  const Stmt *S = N->getStmtForDiagnostics();
+  if (!S)
+    return std::nullopt;
+  const CFGBlock *Block = ADC->getCFGStmtMap()->getBlock(S);
+  if (!Block)
+    return std::nullopt;
+  // A statement the CFG has no element for, such as a parenthesized
+  // expression, is shown by the closest enclosing one.
+  const ParentMap &PM = ADC->getParentMap();
+  for (const Stmt *Cur = S; Cur; Cur = PM.getParent(Cur)) {
+    for (auto [I, Elem] : llvm::enumerate(*Block))
+      if (auto CS = Elem.getAs<CFGStmt>(); CS && CS->getStmt() == Cur)
+        return CFGPosition{Index, Block->getBlockID(), unsigned(I),
+                           /*AtTerminator=*/false};
+    if (Cur == Block->getTerminatorStmt())
+      return CFGPosition{Index, Block->getBlockID(), std::nullopt,
+                         /*AtTerminator=*/true};
+  }
+  return CFGPosition{Index, Block->getBlockID(), std::nullopt,
+                     /*AtTerminator=*/false};
+}
+
+static std::string describeCFGFunction(const Decl *D) {
+  if (const auto *ND = dyn_cast_or_null<NamedDecl>(D))
+    return ND->getQualifiedNameAsString();
+  if (isa_and_nonnull<BlockDecl>(D))
+    return "block";
+  return "function";
+}
+
+static PathDiagnosticCFG::Block renderCFGBlock(const CFGBlock &Block,
+                                               const ParentMap &PM,
+                                               const SourceManager &SM,
+                                               const LangOptions &LO) {
+  PathDiagnosticCFG::Block Result;
+  Result.ID = Block.getBlockID();
+
+  llvm::DenseMap<const Stmt *, unsigned> ElementOf;
+  for (auto [I, Elem] : llvm::enumerate(Block))
+    if (auto CS = Elem.getAs<CFGStmt>())
+      ElementOf.try_emplace(CS->getStmt(), I);
+
+  for (const CFGElement &Elem : Block) {
+    PathDiagnosticCFG::Element Out;
+    llvm::raw_string_ostream OS(Out.Text);
+    Elem.dumpToStream(OS, /*TerminateWithNewLine=*/false);
+    // A statement element ends in its own newline regardless.
+    Out.Text = StringRef(Out.Text).rtrim().str();
+    if (auto CS = Elem.getAs<CFGStmt>()) {
+      const Stmt *S = CS->getStmt();
+      if (SourceLocation Loc = S->getBeginLoc(); Loc.isValid())
+        Out.Line = SM.getExpansionLineNumber(Loc);
+      for (const Stmt *Up = PM.getParent(S); Up; Up = PM.getParent(Up))
+        if (auto Found = ElementOf.find(Up); Found != ElementOf.end()) {
+          Out.Parent = Found->second;
+          break;
+        }
+    }
+    Result.Elements.push_back(std::move(Out));
+  }
+
+  if (Block.getTerminator().isValid()) {
+    llvm::raw_string_ostream OS(Result.Terminator);
+    Block.printTerminator(OS, LO);
+  }
+
+  for (const CFGBlock::AdjacentBlock &Succ : Block.succs()) {
+    if (const CFGBlock *Reachable = Succ.getReachableBlock())
+      Result.Successors.push_back(Reachable->getBlockID());
+    else
+      Result.Successors.push_back(std::nullopt);
+  }
+  return Result;
+}
+
+std::vector<PathDiagnosticCFG> PathDiagnosticBuilder::renderPathCFGs() const {
+  std::vector<PathDiagnosticCFG> Result;
+  for (const PathCFG &Visit : PathCFGs) {
+    const CFG &Graph = *Visit.ADC->getCFG();
+    PathDiagnosticCFG Out;
+    Out.Function = describeCFGFunction(Visit.ADC->getDecl());
+    Out.EntryID = Graph.getEntry().getBlockID();
+    Out.ExitID = Graph.getExit().getBlockID();
+    for (const CFGBlock *Block : Graph)
+      Out.Blocks.push_back(renderCFGBlock(*Block, Visit.ADC->getParentMap(),
+                                          getSourceManager(),
+                                          getASTContext().getLangOpts()));
+    llvm::sort(Out.Blocks, [](const auto &LHS, const auto &RHS) {
+      return LHS.ID > RHS.ID;
+    });
+    Out.PathBlocks.assign(Visit.Blocks.begin(), Visit.Blocks.end());
+    Out.PathEdges.assign(Visit.Edges.begin(), Visit.Edges.end());
+    Result.push_back(std::move(Out));
+  }
+  return Result;
 }
 
 SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
@@ -2347,6 +2512,8 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
   }
   LastPiece->setConstraintSnapshot(makeConstraintSnapshot(ErrorNode));
   Construct.PD->setEndOfPath(LastPiece);
+  if (getAnalyzerOptions().ShouldEmitConstraintSnapshots)
+    Construct.PD->setCFGs(renderPathCFGs());
 
   PathDiagnosticLocation PrevLoc = Construct.PD->getLocation();
   Construct.EdgeEndNode = ErrorNode;

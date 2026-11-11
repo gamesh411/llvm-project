@@ -185,7 +185,8 @@ ANALYZER_OPTION(bool, ShouldSuppressFromCXXStandardLibrary,
 ANALYZER_OPTION(bool, ShouldEmitConstraintSnapshots,
                 "emit-constraint-snapshots",
                 "Whether plist output should record, for every event of a "
-                "path, what the analyzer knew about values at that step.",
+                "path, what the analyzer knew about values at that step, "
+                "and the control flow graph of each function on the path.",
                 false)
 
 ANALYZER_OPTION(bool, ShouldCrosscheckWithZ3, "crosscheck-with-z3",
