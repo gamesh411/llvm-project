@@ -86,3 +86,10 @@ After both lanes, one worker at a time, since each spans both repositories:
 3. Mitigation 11's size guard as a safety net, and mitigation 8 (gzip) only if measurement after steps 1 and 2 still shows a need.
 
 On 2026-11-11 the lead set the acceptance target: LLVM analyzed with emission on, stored, and a long-path report opened in the browser, with page ready time, store time and sizes measured against `../perf-evaluation.md`.
+
+On 2026-11-11 the lead accepted lane A.
+A plain ninja build relinked `build-colorful` against z3 5.4.0, because ninja tracks `/opt/homebrew/lib/libz3.dylib`, so no CMake reconfigure was needed.
+As of `llvm-project@385184e2a529`, snapshots are built once per node, only for pieces left after pruning, and their text is printed once per report.
+The worker showed NFC on 163 plists (tmux 3.5a, the bench TUs and `../demo/*.c`), which all match the old binary once the run-to-run noise in symbol and node IDs is normalized.
+`cmd-find.c` went from 1.44-1.55 s to 0.99-1.04 s, about the same as with emission off.
+Variables are still read eagerly, because `getSVal` creates symbols the first time it reads a parameter or global, and reading fewer of them renumbered later symbols.
