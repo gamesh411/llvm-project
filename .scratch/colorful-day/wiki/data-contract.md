@@ -48,3 +48,8 @@ As of `codechecker@e78323748` (API 6.79), `WhatIfResult` also has `8: optional b
 
 As of `llvm-project@73b1d83878a8` and `codechecker@b31cdd260`, `constraint_trace.cfgs` holds each Bug Path function's control flow graph once per report, each step has a `cfg_position`, and `version` stays 1. Details are in the Comments of `../issues/09-stretch-cfg-side-view.md`.
 The ticket 09 worker measured tmux demo plists at 23,053,531 bytes, against 17,174,536 after ticket 08 and 1,481,363 with emission off. That is 15.6 times the off size, and most of the graph data's share is plist XML overhead.
+
+## 2026-11-11: ticket 10
+
+As of `llvm-project@11efdf0713b6` and `codechecker@06fde7aaa`, the trace also carries the analyzer nodes that Path Steps came from, with their calling context and location, and there is no API change. The ticket 10 worker measured tmux plists growing by 437,861 bytes over ticket 09, to 15.9 times the off size.
+As of the same commits, trace `location.file` and `call_site.file` are plist file indices in Clang's output and full paths in `ReportDetails.constraintTrace`, and `--trim-path-prefix` does not apply to them. On 2026-11-11 the lead assigned that to a cleanup worker.
