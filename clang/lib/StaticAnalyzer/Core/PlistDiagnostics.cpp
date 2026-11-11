@@ -25,7 +25,9 @@
 #include "clang/StaticAnalyzer/Core/PathDiagnosticConsumers.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
+#include <array>
 #include <memory>
 #include <optional>
 
@@ -78,6 +80,13 @@ namespace {
 
 namespace {
 
+namespace {
+/// One entry of a constraint snapshot list, as indices into the trace's
+/// strings, except for the integer of a variable's smt_signed.
+using TraceEntry = llvm::SmallVector<unsigned, 5>;
+using TraceList = std::vector<TraceEntry>;
+} // namespace
+
 /// A helper class for emitting a single report.
 class PlistPrinter {
   const FIDMap& FM;
@@ -114,14 +123,6 @@ public:
                              unsigned indent);
 
 private:
-  void ReportSymbolRanges(
-      raw_ostream &o, StringRef Key,
-      ArrayRef<PathDiagnosticConstraintSnapshot::SymbolRange> Ranges,
-      unsigned indent);
-
-  void ReportStrings(raw_ostream &o, StringRef Key,
-                     ArrayRef<std::string> Strings, unsigned indent);
-
   void ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
                   unsigned indent);
 
@@ -131,11 +132,25 @@ private:
   void collectExplodedNodes();
   void ReportExplodedNodes(raw_ostream &o, unsigned indent);
 
-  llvm::SmallVector<const ExplodedNodeInfo *, 0> ExplodedNodes;
-  /// Keyed by the node's description, which is one per node. Not by the
-  /// node's ID: the exploded graph hands out the ID of the newest node again
-  /// after it reclaims one, so two nodes on a long path can share it.
-  llvm::DenseMap<const ExplodedNodeInfo *, unsigned> ExplodedNodeIndex;
+  /// The lists of one snapshot, in the order the trace writes them.
+  using TraceLists = std::array<TraceList, 4>;
+  TraceLists makeTraceLists(const PathDiagnosticConstraintSnapshot &Snapshot);
+  unsigned intern(StringRef String);
+  void ReportStringTable(raw_ostream &o, unsigned indent);
+
+  /// Every string the snapshots of this trace refer to, each once, so a
+  /// symbol, range or SMT-LIB line that many snapshots repeat costs one
+  /// index per use.
+  llvm::StringMap<unsigned> StringIndex;
+  llvm::SmallVector<StringRef, 0> Strings;
+
+  /// The snapshot of each node, which is one per node.
+  llvm::SmallVector<const PathDiagnosticConstraintSnapshot *, 0> ExplodedNodes;
+  /// Keyed by the snapshot, which is one per node. Not by the node's ID: the
+  /// exploded graph hands out the ID of the newest node again after it
+  /// reclaims one, so two nodes on a long path can share it.
+  llvm::DenseMap<const PathDiagnosticConstraintSnapshot *, unsigned>
+      ExplodedNodeIndex;
   struct StackFrameEntry {
     const ExplodedNodeInfo::Frame *Frame;
     std::optional<unsigned> Parent;
@@ -482,33 +497,156 @@ toString(PathDiagnosticConstraintSnapshot::Variable::ValueKind Kind) {
   llvm_unreachable("unknown variable value kind");
 }
 
-void PlistPrinter::ReportSymbolRanges(
-    raw_ostream &o, StringRef Key,
-    ArrayRef<PathDiagnosticConstraintSnapshot::SymbolRange> Ranges,
-    unsigned indent) {
-  Indent(o, indent) << "<key>" << Key << "</key>\n";
-  Indent(o, indent) << "<array>\n";
-  ++indent;
-  for (const auto &[Symbol, Range] : Ranges) {
-    Indent(o, indent) << "<dict>\n";
-    ++indent;
-    Indent(o, indent) << "<key>symbol</key>";
-    EmitString(o, Symbol) << '\n';
-    Indent(o, indent) << "<key>range</key>";
-    EmitString(o, Range) << '\n';
-    --indent;
-    Indent(o, indent) << "</dict>\n";
+/// The keys under which a node's snapshot lists are written, in the order of
+/// PlistPrinter::TraceLists.
+static constexpr StringRef TraceListKeys[] = {
+    "symbol_ranges", "variables", "path_condition", "smt_declarations"};
+
+namespace {
+/// How one snapshot list turns into the next one's. Positions in Replace and
+/// Remove are in the earlier list, and positions in Insert in the later one,
+/// so applying Replace, then Remove, then Insert in ascending order of
+/// position gives the later list.
+struct TraceListDelta {
+  llvm::SmallVector<std::pair<unsigned, const TraceEntry *>, 0> Replace;
+  llvm::SmallVector<unsigned, 0> Remove;
+  llvm::SmallVector<std::pair<unsigned, const TraceEntry *>, 0> Insert;
+
+  bool empty() const {
+    return Replace.empty() && Remove.empty() && Insert.empty();
   }
-  --indent;
-  Indent(o, indent) << "</array>\n";
+};
+} // namespace
+
+/// An entry is identified by its first index (the symbol of a range, the
+/// name of a variable, the line of a declaration), and both lists are sorted
+/// the same way, so entries kept from one snapshot to the next stay in order.
+/// When that does not hold, the delta lists the whole later list.
+static TraceListDelta diffTraceLists(const TraceList &Prev,
+                                     const TraceList &Next) {
+  TraceListDelta Delta;
+  llvm::DenseMap<unsigned, unsigned> NextByKey;
+  bool Keyed = true;
+  for (auto [Index, Entry] : llvm::enumerate(Next))
+    Keyed &= NextByKey.try_emplace(Entry.front(), Index).second;
+
+  llvm::SmallVector<bool, 0> Kept(Next.size(), false);
+  std::optional<unsigned> LastKept;
+  for (auto [Index, Entry] : llvm::enumerate(Prev)) {
+    if (!Keyed)
+      break;
+    auto It = NextByKey.find(Entry.front());
+    if (It == NextByKey.end() || Kept[It->second]) {
+      Delta.Remove.push_back(Index);
+      continue;
+    }
+    if (LastKept && It->second < *LastKept) {
+      Keyed = false;
+      break;
+    }
+    LastKept = It->second;
+    Kept[It->second] = true;
+    if (Next[It->second] != Entry)
+      Delta.Replace.emplace_back(Index, &Next[It->second]);
+  }
+
+  if (!Keyed) {
+    Delta = TraceListDelta();
+    Kept.assign(Next.size(), false);
+    for (unsigned Index = 0; Index < Prev.size(); ++Index)
+      Delta.Remove.push_back(Index);
+  }
+  for (auto [Index, Entry] : llvm::enumerate(Next))
+    if (!Kept[Index])
+      Delta.Insert.emplace_back(Index, &Entry);
+  return Delta;
 }
 
-void PlistPrinter::ReportStrings(raw_ostream &o, StringRef Key,
-                                 ArrayRef<std::string> Strings,
-                                 unsigned indent) {
+[[maybe_unused]] static TraceList
+applyTraceListDelta(TraceList List, const TraceListDelta &Delta) {
+  for (auto [Index, Entry] : Delta.Replace)
+    List[Index] = *Entry;
+  for (unsigned Index : llvm::reverse(Delta.Remove))
+    List.erase(List.begin() + Index);
+  for (auto [Index, Entry] : Delta.Insert)
+    List.insert(List.begin() + Index, *Entry);
+  return List;
+}
+
+/// An operation is written on one line, as its position followed by the
+/// entry, so a long path costs a few lines per snapshot.
+static void ReportTraceListDelta(raw_ostream &o, StringRef Key,
+                                 const TraceListDelta &Delta, unsigned indent) {
+  if (Delta.empty())
+    return;
+  auto ReportOperations = [&](StringRef Name, const auto &Operations) {
+    if (Operations.empty())
+      return;
+    Indent(o, indent + 1) << "<key>" << Name << "</key>\n";
+    Indent(o, indent + 1) << "<array>\n";
+    for (const auto &[Index, Entry] : Operations) {
+      Indent(o, indent + 2) << "<array>";
+      EmitInteger(o, Index);
+      for (unsigned Value : *Entry)
+        EmitInteger(o, Value);
+      o << "</array>\n";
+    }
+    Indent(o, indent + 1) << "</array>\n";
+  };
+
   Indent(o, indent) << "<key>" << Key << "</key>\n";
+  Indent(o, indent) << "<dict>\n";
+  ReportOperations("replace", Delta.Replace);
+  if (!Delta.Remove.empty()) {
+    Indent(o, indent + 1) << "<key>remove</key>\n";
+    Indent(o, indent + 1) << "<array>";
+    for (unsigned Index : Delta.Remove)
+      EmitInteger(o, Index);
+    o << "</array>\n";
+  }
+  ReportOperations("insert", Delta.Insert);
+  Indent(o, indent) << "</dict>\n";
+}
+
+unsigned PlistPrinter::intern(StringRef String) {
+  auto [It, Inserted] = StringIndex.try_emplace(String, Strings.size());
+  if (Inserted)
+    Strings.push_back(It->getKey());
+  return It->second;
+}
+
+PlistPrinter::TraceLists
+PlistPrinter::makeTraceLists(const PathDiagnosticConstraintSnapshot &Snapshot) {
+  TraceLists Lists;
+  auto &[Ranges, Variables, PathCondition, Declarations] = Lists;
+  for (const auto &[Symbol, Range] : Snapshot.SymbolRanges)
+    Ranges.push_back({intern(Symbol), intern(Range)});
+  for (const PathDiagnosticConstraintSnapshot::Variable &Var :
+       Snapshot.Variables) {
+    TraceEntry &Entry = Variables.emplace_back(TraceEntry{
+        intern(Var.Name), intern(Var.Value), intern(toString(Var.Kind))});
+    if (!Var.SMTTerm.empty())
+      Entry.append({intern(Var.SMTTerm), Var.SMTSigned});
+  }
+  // There is one assertion per path condition entry, in the same order, so
+  // an entry carries its assertion along.
+  assert(!Snapshot.HasSMTLIB ||
+         Snapshot.SMTAssertions.size() == Snapshot.PathCondition.size());
+  for (auto [Index, Constraint] : llvm::enumerate(Snapshot.PathCondition)) {
+    TraceEntry &Entry = PathCondition.emplace_back(
+        TraceEntry{intern(Constraint.Symbol), intern(Constraint.Range)});
+    if (Snapshot.HasSMTLIB)
+      Entry.push_back(intern(Snapshot.SMTAssertions[Index]));
+  }
+  for (const std::string &Declaration : Snapshot.SMTDeclarations)
+    Declarations.push_back({intern(Declaration)});
+  return Lists;
+}
+
+void PlistPrinter::ReportStringTable(raw_ostream &o, unsigned indent) {
+  Indent(o, indent) << "<key>strings</key>\n";
   Indent(o, indent) << "<array>\n";
-  for (const std::string &String : Strings) {
+  for (StringRef String : Strings) {
     Indent(o, indent + 1);
     EmitString(o, String) << '\n';
   }
@@ -522,6 +660,8 @@ void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
     EmitInteger(o, Value) << '\n';
   };
 
+  // Blocks and elements are arrays rather than dicts, because the keys of
+  // every subexpression would make up a third of the graph's size.
   Indent(o, indent) << "<key>cfgs</key>\n";
   Indent(o, indent) << "<array>\n";
   ++indent;
@@ -536,60 +676,43 @@ void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
     Indent(o, indent) << "<array>\n";
     ++indent;
     for (const PathDiagnosticCFG::Block &Block : CFG.Blocks) {
-      Indent(o, indent) << "<dict>\n";
-      ++indent;
-      ReportInteger(indent, "id", Block.ID);
-      Indent(o, indent) << "<key>elements</key>\n";
       Indent(o, indent) << "<array>\n";
-      ++indent;
+      Indent(o, indent + 1);
+      EmitInteger(o, Block.ID) << '\n';
+      Indent(o, indent + 1);
+      EmitString(o, Block.Terminator) << '\n';
+      Indent(o, indent + 1) << "<array>";
+      for (std::optional<unsigned> Succ : Block.Successors)
+        EmitInteger(o, Succ ? int64_t(*Succ) : -1);
+      o << "</array>\n";
+      Indent(o, indent + 1) << "<array>";
       for (const PathDiagnosticCFG::Element &Elem : Block.Elements) {
-        Indent(o, indent) << "<dict>\n";
-        ++indent;
-        Indent(o, indent) << "<key>text</key>";
-        EmitString(o, Elem.Text) << '\n';
-        if (Elem.Line)
-          ReportInteger(indent, "line", Elem.Line);
-        if (Elem.Parent)
-          ReportInteger(indent, "parent", *Elem.Parent);
-        --indent;
-        Indent(o, indent) << "</dict>\n";
+        o << '\n';
+        Indent(o, indent + 2) << "<array>";
+        EmitString(o, Elem.Text);
+        EmitInteger(o, Elem.Line);
+        EmitInteger(o, Elem.Parent ? int64_t(*Elem.Parent) : -1);
+        o << "</array>";
       }
-      --indent;
+      if (!Block.Elements.empty())
+        Indent(o << '\n', indent + 1);
+      o << "</array>\n";
       Indent(o, indent) << "</array>\n";
-      if (!Block.Terminator.empty()) {
-        Indent(o, indent) << "<key>terminator</key>";
-        EmitString(o, Block.Terminator) << '\n';
-      }
-      Indent(o, indent) << "<key>successors</key>\n";
-      Indent(o, indent) << "<array>\n";
-      for (std::optional<unsigned> Succ : Block.Successors) {
-        Indent(o, indent + 1);
-        EmitInteger(o, Succ ? int64_t(*Succ) : -1) << '\n';
-      }
-      Indent(o, indent) << "</array>\n";
-      --indent;
-      Indent(o, indent) << "</dict>\n";
     }
     --indent;
     Indent(o, indent) << "</array>\n";
     Indent(o, indent) << "<key>path_blocks</key>\n";
-    Indent(o, indent) << "<array>\n";
-    for (unsigned ID : CFG.PathBlocks) {
-      Indent(o, indent + 1);
-      EmitInteger(o, ID) << '\n';
-    }
-    Indent(o, indent) << "</array>\n";
+    Indent(o, indent) << "<array>";
+    for (unsigned ID : CFG.PathBlocks)
+      EmitInteger(o, ID);
+    o << "</array>\n";
     Indent(o, indent) << "<key>path_edges</key>\n";
-    Indent(o, indent) << "<array>\n";
-    ++indent;
+    Indent(o, indent) << "<array>";
     for (auto [From, To] : CFG.PathEdges) {
-      Indent(o, indent) << "<dict>\n";
-      ReportInteger(indent + 1, "from", From);
-      ReportInteger(indent + 1, "to", To);
-      Indent(o, indent) << "</dict>\n";
+      EmitInteger(o, From);
+      EmitInteger(o, To);
     }
-    --indent;
-    Indent(o, indent) << "</array>\n";
+    o << "</array>\n";
     --indent;
     Indent(o, indent) << "</dict>\n";
   }
@@ -598,19 +721,22 @@ void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
 }
 
 void PlistPrinter::collectExplodedNodes() {
-  for (const auto &[PathIndex, Snapshot] : ConstraintSteps)
-    if (Snapshot->Node &&
-        ExplodedNodeIndex.try_emplace(&*Snapshot->Node, 0).second)
-      ExplodedNodes.push_back(&*Snapshot->Node);
-  llvm::sort(ExplodedNodes,
-             [](const ExplodedNodeInfo *L, const ExplodedNodeInfo *R) {
-               return L->PathPosition < R->PathPosition;
-             });
+  for (const auto &[PathIndex, Snapshot] : ConstraintSteps) {
+    // Every snapshot is built from a node, and a node has one snapshot.
+    assert(Snapshot->Node && "constraint snapshot without its node");
+    if (ExplodedNodeIndex.try_emplace(Snapshot.get(), 0).second)
+      ExplodedNodes.push_back(Snapshot.get());
+  }
+  llvm::sort(ExplodedNodes, [](const PathDiagnosticConstraintSnapshot *L,
+                               const PathDiagnosticConstraintSnapshot *R) {
+    return L->Node->PathPosition < R->Node->PathPosition;
+  });
 
-  for (auto [I, Node] : llvm::enumerate(ExplodedNodes)) {
-    ExplodedNodeIndex[Node] = I;
+  for (auto [I, Snapshot] : llvm::enumerate(ExplodedNodes)) {
+    ExplodedNodeIndex[Snapshot] = I;
     std::optional<unsigned> Parent;
-    for (const ExplodedNodeInfo::Frame &Frame : llvm::reverse(Node->Stack)) {
+    for (const ExplodedNodeInfo::Frame &Frame :
+         llvm::reverse(Snapshot->Node->Stack)) {
       auto [It, Inserted] =
           StackFrameIndex.try_emplace(Frame.ID, StackFrames.size());
       if (Inserted)
@@ -624,27 +750,57 @@ void PlistPrinter::collectExplodedNodes() {
 void PlistPrinter::ReportExplodedNodes(raw_ostream &o, unsigned indent) {
   const SourceManager &SM = PP.getSourceManager();
 
+  // The nodes are the snapshot table: each node's snapshot is written as the
+  // change from the previous node's, which is linear in the path length where
+  // whole snapshots would be quadratic.
+  TraceLists Prev;
   Indent(o, indent) << "<key>exploded_nodes</key>\n";
   Indent(o, indent) << "<array>\n";
   ++indent;
-  for (auto [Node, Frame] :
+  for (auto [Snapshot, Frame] :
        llvm::zip_equal(ExplodedNodes, ExplodedNodeFrames)) {
+    const ExplodedNodeInfo &Node = *Snapshot->Node;
     Indent(o, indent) << "<dict>\n";
     ++indent;
     Indent(o, indent) << "<key>id</key>";
-    EmitInteger(o, Node->NodeID) << '\n';
+    EmitInteger(o, Node.NodeID) << '\n';
     Indent(o, indent) << "<key>state_id</key>";
-    EmitInteger(o, Node->StateID) << '\n';
+    EmitInteger(o, Node.StateID) << '\n';
     Indent(o, indent) << "<key>path_position</key>";
-    EmitInteger(o, Node->PathPosition) << '\n';
+    EmitInteger(o, Node.PathPosition) << '\n';
     Indent(o, indent) << "<key>kind</key>";
-    EmitString(o, Node->Kind) << '\n';
-    if (Node->Location.isValid()) {
+    EmitString(o, Node.Kind) << '\n';
+    if (Node.Location.isValid()) {
       Indent(o, indent) << "<key>location</key>\n";
-      EmitLocation(o, SM, Node->Location, FM, indent);
+      EmitLocation(o, SM, Node.Location, FM, indent);
     }
     Indent(o, indent) << "<key>frame</key>";
     EmitInteger(o, Frame) << '\n';
+    if (const auto &Position = Snapshot->Position) {
+      Indent(o, indent) << "<key>cfg_position</key>\n";
+      Indent(o, indent) << "<dict>\n";
+      Indent(o, indent + 1) << "<key>cfg</key>";
+      EmitInteger(o, Position->CFGIndex) << '\n';
+      Indent(o, indent + 1) << "<key>block</key>";
+      EmitInteger(o, Position->BlockID) << '\n';
+      if (Position->Element) {
+        Indent(o, indent + 1) << "<key>element</key>";
+        EmitInteger(o, *Position->Element) << '\n';
+      } else if (Position->AtTerminator) {
+        Indent(o, indent + 1) << "<key>terminator</key><true/>\n";
+      }
+      Indent(o, indent) << "</dict>\n";
+    }
+    assert(Snapshot->HasSMTLIB == ExplodedNodes.front()->HasSMTLIB);
+    TraceLists Next = makeTraceLists(*Snapshot);
+    for (auto [Key, PrevList, NextList] :
+         llvm::zip_equal(TraceListKeys, Prev, Next)) {
+      TraceListDelta Delta = diffTraceLists(PrevList, NextList);
+      assert(applyTraceListDelta(PrevList, Delta) == NextList &&
+             "a snapshot delta does not give the snapshot");
+      ReportTraceListDelta(o, Key, Delta, indent);
+    }
+    Prev = std::move(Next);
     --indent;
     Indent(o, indent) << "</dict>\n";
   }
@@ -685,65 +841,20 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
   Indent(o, indent) << "<dict>\n";
   ++indent;
   Indent(o, indent) << "<key>version</key>";
-  EmitInteger(o, 1) << '\n';
+  EmitInteger(o, 2) << '\n';
+  // Every snapshot of a report comes from the same Clang, so either all of
+  // them have SMT-LIB or none does.
+  if (ExplodedNodes.front()->HasSMTLIB)
+    Indent(o, indent) << "<key>smtlib</key><true/>\n";
   Indent(o, indent) << "<key>steps</key>\n";
   Indent(o, indent) << "<array>\n";
   ++indent;
   for (const auto &[PathIndex, Snapshot] : ConstraintSteps) {
     Indent(o, indent) << "<dict>\n";
-    ++indent;
-    Indent(o, indent) << "<key>path_index</key>";
+    Indent(o, indent + 1) << "<key>path_index</key>";
     EmitInteger(o, PathIndex) << '\n';
-    ReportSymbolRanges(o, "symbol_ranges", Snapshot->SymbolRanges, indent);
-    Indent(o, indent) << "<key>variables</key>\n";
-    Indent(o, indent) << "<array>\n";
-    ++indent;
-    for (const PathDiagnosticConstraintSnapshot::Variable &Var :
-         Snapshot->Variables) {
-      Indent(o, indent) << "<dict>\n";
-      ++indent;
-      Indent(o, indent) << "<key>name</key>";
-      EmitString(o, Var.Name) << '\n';
-      Indent(o, indent) << "<key>value</key>";
-      EmitString(o, Var.Value) << '\n';
-      Indent(o, indent) << "<key>kind</key>";
-      EmitString(o, toString(Var.Kind)) << '\n';
-      if (!Var.SMTTerm.empty()) {
-        Indent(o, indent) << "<key>smt</key>";
-        EmitString(o, Var.SMTTerm) << '\n';
-        Indent(o, indent) << "<key>smt_signed</key>"
-                          << (Var.SMTSigned ? "<true/>" : "<false/>") << '\n';
-      }
-      --indent;
-      Indent(o, indent) << "</dict>\n";
-    }
-    --indent;
-    Indent(o, indent) << "</array>\n";
-    ReportSymbolRanges(o, "path_condition", Snapshot->PathCondition, indent);
-    if (Snapshot->HasSMTLIB) {
-      ReportStrings(o, "smt_declarations", Snapshot->SMTDeclarations, indent);
-      ReportStrings(o, "smt_assertions", Snapshot->SMTAssertions, indent);
-    }
-    if (const auto &Position = Snapshot->Position) {
-      Indent(o, indent) << "<key>cfg_position</key>\n";
-      Indent(o, indent) << "<dict>\n";
-      Indent(o, indent + 1) << "<key>cfg</key>";
-      EmitInteger(o, Position->CFGIndex) << '\n';
-      Indent(o, indent + 1) << "<key>block</key>";
-      EmitInteger(o, Position->BlockID) << '\n';
-      if (Position->Element) {
-        Indent(o, indent + 1) << "<key>element</key>";
-        EmitInteger(o, *Position->Element) << '\n';
-      } else if (Position->AtTerminator) {
-        Indent(o, indent + 1) << "<key>terminator</key><true/>\n";
-      }
-      Indent(o, indent) << "</dict>\n";
-    }
-    if (Snapshot->Node) {
-      Indent(o, indent) << "<key>exploded_node</key>";
-      EmitInteger(o, ExplodedNodeIndex.find(&*Snapshot->Node)->second) << '\n';
-    }
-    --indent;
+    Indent(o, indent + 1) << "<key>exploded_node</key>";
+    EmitInteger(o, ExplodedNodeIndex.find(Snapshot.get())->second) << '\n';
     Indent(o, indent) << "</dict>\n";
   }
   --indent;
@@ -752,8 +863,8 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
   // every step in its function.
   if (!CFGs.empty())
     ReportCFGs(o, CFGs, indent);
-  if (!ExplodedNodes.empty())
-    ReportExplodedNodes(o, indent);
+  ReportExplodedNodes(o, indent);
+  ReportStringTable(o, indent);
   --indent;
   Indent(o, indent) << "</dict>\n";
 }

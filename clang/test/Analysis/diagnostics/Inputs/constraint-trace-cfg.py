@@ -13,6 +13,8 @@ without a position prints NO-POSITION.
 import plistlib
 import sys
 
+import constraint_trace
+
 
 def render_element(index, element):
     text = "%d: %s" % (index + 1, element["text"])
@@ -49,6 +51,7 @@ def main():
         if trace is None or "cfgs" not in trace:
             print("NO-CFGS")
             continue
+        trace = constraint_trace.expand(trace)
         cfgs = trace["cfgs"]
         for cfg in cfgs:
             print("CFG %s entry B%d exit B%d" % (cfg["function"], cfg["entry"], cfg["exit"]))

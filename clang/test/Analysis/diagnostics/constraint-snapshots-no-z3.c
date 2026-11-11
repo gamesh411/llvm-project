@@ -14,5 +14,5 @@ int two_step(int *p, int a) {
   return *p + a; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 
-// CHECK: TRACE version 1
+// CHECK: TRACE version 2
 // CHECK-NEXT: EVENT "Assuming 'a' is equal to 0": reg_$[[A:[0-9]+]]<int a> = { [0, 0] }

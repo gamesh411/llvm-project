@@ -13,6 +13,8 @@ the trace prints how many of its nodes share an ID with an earlier one.
 import plistlib
 import sys
 
+import constraint_trace
+
 
 def render_location(files, location):
     if location is None:
@@ -65,6 +67,7 @@ def main():
         if trace is None or "exploded_nodes" not in trace:
             print("NO-NODES")
             continue
+        trace = constraint_trace.expand(trace)
         nodes = trace["exploded_nodes"]
         frames = trace["stack_frames"]
         check_tables(nodes, frames)

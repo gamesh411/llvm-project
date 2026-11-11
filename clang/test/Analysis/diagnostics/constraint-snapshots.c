@@ -30,7 +30,7 @@ int two_step(int *p, int a) {
 }
 
 // `a` is read after the dereference, so its range stays live on every step.
-// CHECK: TRACE version 1
+// CHECK: TRACE version 2
 // CHECK-NEXT: EVENT "Assuming 'a' is equal to 0": reg_$[[A:[0-9]+]]<int a> = { [0, 0] }
 // CHECK-NEXT: EVENT "Null pointer value stored to 'p'": reg_$[[A]]<int a> = { [0, 0] }
 // CHECK-NEXT: EVENT "Dereference of null pointer (loaded from variable 'p')": reg_$[[A]]<int a> = { [0, 0] }
@@ -47,7 +47,7 @@ int through_call(int *p, int flag) {
 
 // Inlined calls add their own events: the snapshot taken at the call is empty,
 // the one at the return holds what the callee assumed.
-// CHECK: TRACE version 1
+// CHECK: TRACE version 2
 // CHECK-NEXT: EVENT "Calling 'set_null_if_flagged'": {{$}}
 // CHECK-NEXT: EVENT "Entered call from 'through_call'": {{$}}
 // CHECK-NEXT: EVENT "Assuming 'flag' is not equal to 0": reg_$[[F:[0-9]+]]<int flag> = { [-2147483648, -1], [1, 2147483647] }
@@ -111,17 +111,28 @@ int shadowed_variable(int *s) {
 // While both are bound, the name means the inner declaration.
 // VARS: EVENT "Null pointer value stored to 's'": s = 0 [integer]; shadow = 2 [integer]{{$}}
 
-// The raw plist nests the trace under the diagnostic after the path.
+// The raw plist nests the trace under the diagnostic after the path. A step
+// names the node whose snapshot it shows, a node lists what changed since the
+// node before it, and the entries are indices into the trace's strings.
 // RAW: <key>path</key>
 // RAW: <key>constraint_trace</key>
 // RAW-NEXT: <dict>
-// RAW-NEXT: <key>version</key><integer>1</integer>
-// RAW-NEXT: <key>steps</key>
+// RAW-NEXT: <key>version</key><integer>2</integer>
+// RAW: <key>steps</key>
 // RAW-NEXT: <array>
 // RAW-NEXT: <dict>
 // RAW-NEXT: <key>path_index</key><integer>[[#]]</integer>
-// RAW-NEXT: <key>symbol_ranges</key>
-// RAW-NEXT: <array>
+// RAW-NEXT: <key>exploded_node</key><integer>0</integer>
+// RAW-NEXT: </dict>
+// RAW: <key>exploded_nodes</key>
+// RAW: <key>symbol_ranges</key>
 // RAW-NEXT: <dict>
-// RAW-NEXT: <key>symbol</key><string>reg_$[[#]]&lt;int a&gt;</string>
-// RAW-NEXT: <key>range</key><string>{ [0, 0] }</string>
+// RAW-NEXT: <key>insert</key>
+// RAW-NEXT: <array>
+// RAW-NEXT: <array><integer>0</integer><integer>0</integer><integer>1</integer></array>
+// RAW-NEXT: </array>
+// RAW-NEXT: </dict>
+// RAW: <key>strings</key>
+// RAW-NEXT: <array>
+// RAW-NEXT: <string>reg_$[[#]]&lt;int a&gt;</string>
+// RAW-NEXT: <string>{ [0, 0] }</string>

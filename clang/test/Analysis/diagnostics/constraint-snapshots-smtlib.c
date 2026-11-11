@@ -21,7 +21,7 @@ int dead_symbol(int *q, int dying, unsigned u) {
 
 // A symbol the analyzer dropped as dead keeps its assertion. Every symbol a
 // variable holds is declared, constrained or not, so a term on it parses.
-// CHECK: TRACE version 1
+// CHECK: TRACE version 2
 // CHECK: EVENT "Assuming 'dying' is equal to 0": (declare-fun reg_$[[D:[0-9]+]] () (_ BitVec 32)); (declare-fun reg_$[[U:[0-9]+]] () (_ BitVec 32)); (declare-fun reg_$[[Q:[0-9]+]] () (_ BitVec 64)); (assert (= reg_$[[D]] #x00000000)){{$}}
 // CHECK: EVENT "Null pointer value stored to 'q'": (declare-fun reg_$[[D]] () (_ BitVec 32)); (declare-fun reg_$[[U]] () (_ BitVec 32)); (assert (= reg_$[[D]] #x00000000)){{$}}
 // CHECK: EVENT "Assuming 'u' is <= 7": (declare-fun reg_$[[D]] () (_ BitVec 32)); (declare-fun reg_$[[U]] () (_ BitVec 32)); (assert (= reg_$[[D]] #x00000000)); (assert (and (bvuge reg_$[[U]] #x00000000) (bvule reg_$[[U]] #x00000007))){{$}}
@@ -34,7 +34,7 @@ int no_constraints(void) {
   return *p; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 
-// CHECK: TRACE version 1
+// CHECK: TRACE version 2
 // CHECK-NEXT: EVENT "'p' initialized to a null pointer value": {{$}}
 // CHECK: EVENT "Dereference of null pointer (loaded from variable 'p')": {{$}}
 

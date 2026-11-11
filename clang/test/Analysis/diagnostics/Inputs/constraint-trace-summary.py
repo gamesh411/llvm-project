@@ -12,6 +12,8 @@ belong to an event or control piece in the path fails the script.
 import plistlib
 import sys
 
+import constraint_trace
+
 
 def entries_of(field, step):
     if field == "smtlib":
@@ -53,6 +55,7 @@ def main():
         if trace is None:
             print("NO-TRACE")
             continue
+        trace = constraint_trace.expand(trace)
         print("TRACE version", trace["version"])
 
         path = diag["path"]
