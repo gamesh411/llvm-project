@@ -342,9 +342,26 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
+# A global test server outlives a run that was killed or run straight through
+# pytest. The Makefile then deletes its workspace (and the serverport file that
+# names it) at the next run, so nothing can stop it any more and the new run
+# starts on top of the orphan. Stop it while the serverport file is still there.
+stop_stale_test_servers() {
+  local root dir port
+  root=$CC/build/workspace
+  for dir in "$root"/global_simple_server "$root"/global_auth_server; do
+    [ -f "$dir/serverport" ] || continue
+    port=$(cat "$dir/serverport")
+    echo "stopping stale test server on $port"
+    HOME=$dir "$(cc_bin)" server --workspace "$dir" --port "$port" --stop \
+      || echo "dev-loop: stale server on $port was not running" >&2
+  done
+}
+
 # CodeChecker functional tests of this feature. Needs `package` and `env`.
 cmd_functest() {
   activate; use_clang; use_test_tools
+  stop_stale_test_servers
   # Through the Makefile target: it clears the test workspace and shuts down
   # the global test server, which otherwise goes stale between runs.
   make -C "$CC" test_web_feature TEST=tests/functional/constraint_trace \

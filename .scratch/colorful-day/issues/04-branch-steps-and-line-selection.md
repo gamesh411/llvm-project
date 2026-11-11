@@ -5,7 +5,7 @@ When a Target Location matches several Path Steps, such as loop iterations, a sm
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Control-flow Path Steps carry a Constraint Snapshot in the plist.
 - [x] When edge optimization merges control-flow pieces, the merged piece keeps the snapshot of its later analyzer node.

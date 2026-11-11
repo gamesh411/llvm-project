@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A Constraint Snapshot maps visible variables to symbols or concrete values.
 - [x] The panel shows ranges against variable names where a mapping exists.

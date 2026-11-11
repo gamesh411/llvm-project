@@ -52,3 +52,11 @@ On 2026-11-10 the ticket 06 worker reported that, as of `llvm-project@0507cd96fe
 ## 2026-11-10: server stop fixed
 
 As of `codechecker@6325f9164`, the shutdown hang reported after ticket 06 is fixed in `server.py`. API workers sat in `accept()` while SIGINT landed on Z3's timer thread. `dev-loop.sh stop` now waits for shutdown and fails loudly, which supersedes the kill-by-port practice noted above.
+
+## 2026-11-11: functest poisoning and trace path trimming
+
+As of `codechecker@HEAD` of this change, a failing `setup_class` in `constraint_trace` used to leave its product on the global test server, because pytest skips `teardown_class` after a failed setup and runs `setup_class` again for the next test.
+Every later test then failed with "Failed to add the product to the test server!" ("product endpoint is already configured"), which hid the first real error.
+The setup now removes the product and workspace itself before re-raising, so each test shows the real error.
+The trigger seen in the reproduction was a sporadic `CodeChecker store` failure ("No such file or directory" on the store zip in `<report dir>/tmp*-store/`), roughly one run in five, cause not found.
+`dev-loop.sh functest` also stops a leftover global test server first: the Makefile deletes the workspace and its `serverport` file, so an orphan could never be stopped afterwards.

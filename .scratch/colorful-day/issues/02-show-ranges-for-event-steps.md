@@ -5,7 +5,7 @@ This is the tracer bullet through both repositories, from Clang's plist output t
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Clang's analyzer config option is off by default, and plist output is unchanged when it is off.
 - [x] With the option on, every event Path Step in the plist carries a Constraint Snapshot with symbol ranges.

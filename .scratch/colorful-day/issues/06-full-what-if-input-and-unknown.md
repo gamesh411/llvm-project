@@ -5,7 +5,7 @@ Input that can't be evaluated gets a specific explanation instead of a wrong ans
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved (one checkbox is intentionally unticked per the lead decision in Comments)
 
 - [x] The grammar accepts `variable op value` terms joined by `&&`, with `==`, `!=`, `<`, `<=`, `>`, `>=`, and integer literals or `null` as values.
 - [x] Syntax errors appear beside the input, and the reader's text is kept.

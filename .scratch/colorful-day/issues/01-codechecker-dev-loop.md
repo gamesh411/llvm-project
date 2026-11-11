@@ -6,7 +6,7 @@ This is prefactoring for every later ticket, and it records the exact commands s
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A Python environment for the `colorful-day` CodeChecker branch can run the analyzer, store and server commands.
 - [x] The web UI builds from the branch and the running server serves that build.

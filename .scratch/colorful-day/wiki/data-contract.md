@@ -53,3 +53,7 @@ The ticket 09 worker measured tmux demo plists at 23,053,531 bytes, against 17,1
 
 As of `llvm-project@11efdf0713b6` and `codechecker@06fde7aaa`, the trace also carries the analyzer nodes that Path Steps came from, with their calling context and location, and there is no API change. The ticket 10 worker measured tmux plists growing by 437,861 bytes over ticket 09, to 15.9 times the off size.
 As of the same commits, trace `location.file` and `call_site.file` are plist file indices in Clang's output and full paths in `ReportDetails.constraintTrace`, and `--trim-path-prefix` does not apply to them. On 2026-11-11 the lead assigned that to a cleanup worker.
+
+## 2026-11-11: trace paths and `--trim-path-prefix`
+
+`Report.trim_path_prefixes` also trims the `location.file` and `call_site.file` paths in the constraint trace, so they match the stored `filePath` of the report's events.

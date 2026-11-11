@@ -6,7 +6,7 @@ This ticket also does the final visual pass on the debug view and judges the sol
 
 **Blocked by:** 04, 06, 07
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] One script or written procedure reproduces the demo data from a clean server.
 - [x] The real report shows a What-If Constraint that gives a useful Infeasible verdict.

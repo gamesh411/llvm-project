@@ -5,7 +5,7 @@ Do this only after the demo in ticket 08 works.
 
 **Blocked by:** 04
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] With the analyzer option on, reports carry the control flow graph of each function on the Bug Path.
 - [x] A side view renders that graph legibly, with statements readable in each block.

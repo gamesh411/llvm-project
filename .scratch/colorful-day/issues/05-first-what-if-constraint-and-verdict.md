@@ -6,7 +6,7 @@ On the two-path example, `b == 0` returns Infeasible and the result is worded as
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] With a Z3-enabled Clang, the plist carries SMT-LIB built with the same symbol encoding as the Z3 crosscheck.
 - [x] Without Z3, Clang still emits readable ranges, and a check reports Unknown instead of failing.

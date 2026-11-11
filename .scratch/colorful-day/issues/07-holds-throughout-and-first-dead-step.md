@@ -5,7 +5,7 @@ An Infeasible verdict names the earliest Path Step where the path dies.
 
 **Blocked by:** 05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] A "holds throughout" toggle applies a term to every value the variable takes across the Bug Path.
 - [x] A global reassigned by an opaque call is constrained both before and after that call when the toggle is on, and only at the anchored value when it is off.

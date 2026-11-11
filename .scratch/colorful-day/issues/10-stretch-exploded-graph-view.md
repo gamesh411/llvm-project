@@ -5,7 +5,7 @@ Do this only if time remains after ticket 09.
 
 **Blocked by:** 09
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] The view is limited to the analyzer states relevant to the Bug Path, so it stays readable on a real report.
 - [x] Each state identifies its calling context and source location.
