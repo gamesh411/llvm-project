@@ -69,3 +69,20 @@ The verdict no longer repeats the step when the path dies at the anchor, as of `
 Trace paths are trimmed and a failed `functest` setup cleans up after itself, as of `codechecker@333e8467d`.
 The option description and ticket `Status` lines were updated in `llvm-project@2872a9cbe8f3`.
 The store zip race behind the `functest` setup failure was fixed in `codechecker@63ec865ce`, as recorded in [dev environment](dev-environment.md).
+
+## 2026-11-11: scaling pass
+
+On 2026-11-11 the user asked for the Clang build to be relinked against z3 5.4.0, and for the mitigations in `../perf-evaluation.md` to be applied so that a project as big as LLVM itself can be viewed, each mitigation in its own commit and NFC where possible.
+
+On 2026-11-11 the lead split the work into two lanes that touch different repositories, so they run in parallel:
+
+- Lane A, llvm-project: relink `build-colorful`, then mitigation 1 (lazy, cached snapshots and assertion printing), which must leave the plist output unchanged apart from the analyzer's own non-determinism.
+- Lane B, codechecker: mitigation 3 (fetch details once), mitigation 4 (`shallowRef` and precomputed snapshot keys), mitigation 5 (per-worker What-If cache), all NFC, then mitigation 14's explicit thrift string limit, which is a fix with a test.
+
+After both lanes, one worker at a time, since each spans both repositories:
+
+1. Trace format v2, combining mitigations 2, 6 and 10's shared declarations: a snapshot table per report, per-step deltas, interned strings and SMT declarations once per report. This one is not NFC, because the format changes.
+2. Mitigation 7: lazy trace fetching, only when "Show constraints" is on.
+3. Mitigation 11's size guard as a safety net, and mitigation 8 (gzip) only if measurement after steps 1 and 2 still shows a need.
+
+On 2026-11-11 the lead set the acceptance target: LLVM analyzed with emission on, stored, and a long-path report opened in the browser, with page ready time, store time and sizes measured against `../perf-evaluation.md`.
