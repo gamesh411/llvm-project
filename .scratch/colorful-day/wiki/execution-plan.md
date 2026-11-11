@@ -46,3 +46,11 @@ On 2026-11-11 the ticket 08 worker chose the simpler version for the demo, as `.
 The simpler version is reported along `a != 0`, `b != 0` (checked with the Colorful Day Clang at `llvm-project@8c98b9a644c8`), so the `a == 0` route to the same bug is visible in the source but not on the Bug Path.
 Checking `a == 0` then makes this path Infeasible while that same assumption is exactly the other route to the bug, which explains "this path" against "this bug" in one step.
 The forced version needs two extra resets that a viewer has to read first, and its `b == 0` story needs the viewer to trace four branches.
+
+## 2026-11-11: ticket 08 accepted, stretch goals pending
+
+On 2026-11-11 the lead accepted ticket 08 after viewing `/Users/efulop/colorful-day-env/screens/08-tmux-flags-eq-0-1400.png` and `08-two-path-a-eq-0-900.png`, at `llvm-project@41963c03f695` and `codechecker@e78323748`.
+The demo uses tmux 3.5a, `grid.c:1073`, with `flags == 0` at Step 1 dying at Step 7. The rejected candidates are in the Comments of `../issues/08-demo-on-a-real-report.md`.
+The ticket 08 worker measured plist output on the whole of tmux growing 11.6 times (about 520 KB per path-sensitive report), with analysis time up about 1.4%.
+Small wording issue left: when the dead step equals the anchor, the verdict repeats the step ("at Step 1. It dies at Step 1").
+Tickets 09 and 10 wait for the user's go-ahead, per the 2026-11-10 decision above.
