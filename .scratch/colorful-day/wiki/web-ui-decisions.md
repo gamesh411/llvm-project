@@ -49,3 +49,8 @@ As of `codechecker@e78323748` the four open items above are resolved:
 - The file header has a 12px gap between its parts, and below a 16rem path "Found in:" wraps to its own line, where before the path shrank to its copy icon.
 
 Other defects fixed in the same pass are in the Comments of `../issues/08-demo-on-a-real-report.md`.
+
+## 2026-11-11: ticket 09 graph view
+
+As of `codechecker@b31cdd260`, the graph view is HTML block cards with SVG edges in a gutter, with no new npm dependency and the Content Security Policy unchanged. It floats over the right part of the source column, covering it entirely when the column is under 600px.
+On 2026-11-11 the lead accepted that layout after viewing `/Users/efulop/colorful-day-env/screens/09-tmux-cfg-dead-step-1400.png` and `09-loop-cfg-picker-900.png`.

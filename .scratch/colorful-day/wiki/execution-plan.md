@@ -56,3 +56,5 @@ Small wording issue left: when the dead step equals the anchor, the verdict repe
 Tickets 09 and 10 wait for the user's go-ahead, per the 2026-11-10 decision above.
 
 On 2026-11-11 the user approved the stretch tickets. The lead started 09, with 10 to follow once 09 is accepted, since 10 is blocked by 09.
+
+On 2026-11-11 the lead accepted ticket 09 and started ticket 10.

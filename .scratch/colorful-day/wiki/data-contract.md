@@ -43,3 +43,8 @@ On 2026-11-10 the lead accepted mapping the server's earliest `order`, often the
 ## 2026-11-11: ticket 08
 
 As of `codechecker@e78323748` (API 6.79), `WhatIfResult` also has `8: optional bool firstDeadStepIsEarliest`, set with `firstDeadStep`, false when the search ran out of budget or the solver gave up on a step. A missing flag reads as earliest in the UI.
+
+## 2026-11-11: ticket 09
+
+As of `llvm-project@73b1d83878a8` and `codechecker@b31cdd260`, `constraint_trace.cfgs` holds each Bug Path function's control flow graph once per report, each step has a `cfg_position`, and `version` stays 1. Details are in the Comments of `../issues/09-stretch-cfg-side-view.md`.
+The ticket 09 worker measured tmux demo plists at 23,053,531 bytes, against 17,174,536 after ticket 08 and 1,481,363 with emission off. That is 15.6 times the off size, and most of the graph data's share is plist XML overhead.
