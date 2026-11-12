@@ -12,7 +12,7 @@ Sources such as the spec and tickets are cited here, never copied.
 ## Direction
 
 - [Use case review](use-case-review.md): the 2026-11-12 triage study's findings on What-If against other uses of the constraint data, the lead's recommended order of next work, the mechanical pass, the Explain the path spec and tickets, and the LLVM rerun with assertions on.
-- [Explain the path run](explain-the-path-run.md): ticket order, constraints and acceptance record of the follow-up spec's implementation.
+- [Explain the path run](explain-the-path-run.md): ticket order, constraints, acceptance record of the follow-up spec's implementation, and the slice 1 measurement on the LLVM run.
 
 ## Environment
 

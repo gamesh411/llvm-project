@@ -63,3 +63,26 @@ The worker's checks: emission off byte-identical on 146 tmux and 18 other plists
 The worker fixed `map_trace_locations`, which mapped only a table's last location key.
 A running server keeps the report converter it started with, so it has to be restarted after a reader change before storing.
 Seen by the lead in the case 1 screenshot: the replaced pointer's range reads `[1, 18446744073709551615]` instead of non-null, because pointer detection reads the type from the dump and a derived symbol's dump has none, so ticket 03 was asked to carry pointer-ness in the table.
+
+## 2026-11-12: ticket 03 accepted, slice 1 closed
+
+On 2026-11-12 the lead accepted ticket 03 after viewing `/Users/efulop/colorful-day-env/screens/t03-llvm-case10-1400.png`, `t03-llvm-case27-900.png`, `t03-same-call-900.png` and `t03-tmux-accumulated-1400.png`, at `llvm-project@e7de190f44c3..ac2e9a89861e` and `codechecker@df256f397..7457ff20c`.
+As of `llvm-project@e7de190f44c3`, a symbol entry has the symbol's canonical `type` and a `pointer` flag, which the worker chose over a bare flag because the type also gives derived symbols and typedefs their integer width.
+As of `codechecker@e976b56bf`, a compound expression renders from the labels of its atoms and falls back to the whole raw dump when any atom has no label or the text is not read to its end.
+Two `call_result` symbols with equal, uncut statement text are each tagged "another `f()` result, Step N"; invalidation and `other` symbols are not tagged.
+One rule shortens statements over 40 characters to the outermost callee without arguments, replacing ticket 02's 32-character stopgap.
+The CFG and States views show no symbols, so only the line picker gained labels.
+`nearestStep` ties by column and then prefers an event over an arrow, so two calls on one line link to different steps.
+The worker's checks: Colorful Day lit 9 passed and 1 unsupported, functest 39, report-converter unit 155, server unit 119, jest 85; emission off byte-identical on 146 tmux and 20 other plists.
+`func-mapping-test.cpp` fails after a Clang rebuild until `clang-extdef-mapping` is rebuilt too.
+
+Slice 1 measurement on the full LLVM run (3546 TUs, NDEBUG database, `-j8`, emission on), details in the Comments of `../../explain-the-path/issues/03-labels-everywhere-and-unrelated-values.md`:
+plists total 627,216,851 bytes against 560,384,519 before the slice (+11.9%), largest 26,800,385 against 20,119,376.
+User time was 23,339 s against 22,958 s for the first LLVM run (+1.7%); wall time is not comparable because the machine was shared.
+The symbol table is 8.7% of trace bytes with CFG bodies and 25.7% without.
+Of 51,280 conjured entries, 33,956 are `call_result`, 14,279 `invalidation` and 3,045 `other` (5.9%), the last led by `dynCastTo`, `memcmp`, `memcpy`, atomic `fetch_sub` and `simplify_type::getSimplifiedValue`, all checker or builtin modelled.
+The lead judged 5.9% low enough not to spend another classification round on it.
+
+Against the study's cases: case 10 (`APSInt.h:78`) is answered, the two `DestTy->isRealFloatingType()` results are tagged as different values; case 2 (`WhitespaceManager.h:343`) has its origin question answered but not the relation between cell counts and cells; case 27 (`CheckExprLifetime.cpp:1450`) is partly answered, `LK` reads as a `memcpy` value & 7 and not as `getEntityLifetime()`'s result.
+Seen by the lead in the screenshots and passed to ticket 04: a compound expression's range stays raw (`LK` reads `[1, 18446744073709551615]`, clipped at 900 pixels) because an expression has no type in the table, and `Element{SymRegion{...}}` regions and extents stay raw dumps.
+A same-call tag can link to "Arrow after step N", which reads oddly and was left open.
