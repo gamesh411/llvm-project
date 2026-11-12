@@ -33,3 +33,18 @@ Seen by the lead in the screenshots and left for a later polish: in the accumula
 Not done: a legend for the tags.
 
 On 2026-11-12 the lead started ticket 01 on Opus once no process was using `build-colorful/bin/clang`, because it spans Clang and both readers and has to verify how the analyzer conjures symbols.
+
+## 2026-11-12: ticket 01 accepted
+
+On 2026-11-12 the lead accepted ticket 01 after viewing `/Users/efulop/colorful-day-env/screens/t01-call-result-1400.png` and `t01-tmux-900.png`, at `llvm-project@c8ffa734edc1..640ad98c49b7` and `codechecker@00362f60c..958c17681`.
+As of `llvm-project@6024f9416d07`, a trace has a `symbols` table, a list of dicts with one entry per atomic symbol, and the trace stays at version 2.
+The spec's lead on the reason field held only in part.
+A call result has no symbol tag, but so do other conjured values, and a checker that models a call, such as `malloc`, conjures a symbol identical to the analyzer's own.
+The rule Clang applies as of that commit: a conjured symbol is `call_result` only when the Bug Path has a node tagged "Conservative eval call" whose statement is bound to that symbol in that frame, and every other conjured symbol is `other`.
+Invalidation tags the symbol with the invalidated region and loop widening goes through invalidation, which is what ticket 02 builds on.
+The worker's checks: emission off is byte-identical on 146 tmux plists and 17 others apart from the version string; emission on is equal after dropping the table and normalizing IDs; tmux plists grew 4.7% (4,991,542 to 5,226,320 bytes); Colorful Day lit 8 passed and 1 unsupported, functest 35, report-converter unit 155, server unit 119, jest 44.
+`sarif-multi-diagnostic-test.c` failed once in 15 runs of `clang/test/Analysis` and did not reproduce, cause not found.
+The opaque-call demo shows no label because its call returns void, so the worker added `demo/call-result.c`.
+The worker also moved the path condition's change tag beside its range, which closes the wrap noted after ticket 07.
+Left open: a result made in a callee the diagnostic pruned links by line and not to its call site, and analysis time and LLVM-run size were not measured, which ticket 03 owes.
+Seen by the lead in the screenshot: a checker-modelled `malloc` result reads "origin not recorded line 11", which hides the statement text the table has, so ticket 02 was asked to show the statement for `other` symbols.
