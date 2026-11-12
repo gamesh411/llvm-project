@@ -65,3 +65,9 @@ Left open as of `codechecker@e23482c40`: at 900px the two checkboxes still wrap 
 The CodeChecker analyzer unit suite fails the same 13 tests at the merge base `codechecker@bae448521` and at `codechecker@e23482c40`, so the branch causes none of them.
 The worker traced 11 to macOS `/tmp` being a symlink to `/private/tmp` and one to needing the packaged clang, and left `test_analyze_correct_analyzer_not_enabled` unexplained.
 `dev-loop.sh package` wipes `/Users/efulop/codechecker/build` before it needs Docker, so running it with Docker down leaves no package until Docker is started and it is rerun.
+
+## 2026-11-12: tickets published
+
+On 2026-11-12 the user approved the breakdown of the spec into ten tickets, `../../explain-the-path/issues/01` to `10`, and asked for ticket 10 (readable ranges and the tooltip that stays open) to be done first.
+Tickets 01 to 03 are slice 1, 04 to 06 slice 2, and 07 to 09 slice 3; ticket 10 is outside the spec.
+On 2026-11-12 the lead decided to run the tickets one at a time, as in the first run, because both repositories have one `colorful-day` branch and the tickets edit the same emission and panel code.
