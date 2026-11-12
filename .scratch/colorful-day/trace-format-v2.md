@@ -77,7 +77,7 @@ Every SMT-LIB declaration and assertion text is in `strings` once per report.
 As of the `llvm-project` commit titled "[analyzer] Record where conjured symbols of a constraint trace came from", a trace has a table of the atomic symbols its snapshots mention.
 It has one entry for each symbol that is the symbol of a `symbol_ranges` or `path_condition` entry, the value of a `variables` entry of kind `symbol`, or an atom of a symbolic expression in one of them.
 A symbolic expression such as `(conj_$5{int, ...}) + 1` has no entry of its own, and a reader renders it from the entries of its atoms.
-Symbols that only appear inside another symbol's dump, such as the parent of a `derived_` symbol, have no entry yet.
+As of the `llvm-project` commit titled "[analyzer] Say which call or loop replaced a value in a constraint trace", the parent of a `derived_` symbol has an entry as well, even when it appears only inside the derived symbol's dump.
 The table is keyed by the symbol's dump in `strings`, the same string the lists use, and is sorted by that dump.
 
 ```
@@ -86,6 +86,8 @@ symbols[*]: dict
   kind: string, one of region_value, conjured, derived, metadata, extent
   smt: integer, index into strings of the symbol's SMT-LIB term, in the encoding of smt_declarations; only when smtlib is true and the symbol has a bitvector term
   smt_signed: boolean, whether comparisons on smt are signed; present with smt
+  parent: integer, index into strings of the dump of the symbol a derived symbol is part of, which has an entry too; only for a derived symbol
+  region: integer, index into strings of the access path of a derived symbol's region, such as Tok.Kind; absent when the analyzer cannot describe the region
   origin: dict, only for a conjured symbol
     reason: string, why the analyzer made the symbol (see below)
     function: integer, index into strings of the function of the stack frame the symbol was made in
@@ -93,19 +95,28 @@ symbols[*]: dict
     statement: integer, index into strings of the statement the symbol was made for, printed on one line and cut at 120 bytes with "..." appended; absent when there is none
     location: dict of line, col, file, as a node's location, the start of that statement; absent with statement
     callee: integer, index into strings of the called function's name, when statement is a call to a known function
+    globals: true when the symbol replaced every global; only for invalidation
+    region: integer, index into strings of the access path of the memory the symbol replaced, such as Tok; only for invalidation and loop_widening, and absent with globals or when the analyzer cannot describe the memory
+    loop: dict of line, col, file, as a node's location, the start of the loop; only for loop_widening
 ```
 
 `reason` is one of:
 
 - `call_result`: the value a call returned, which the analyzer evaluated without seeing inside the callee.
   Clang writes it only for a symbol that was bound to the call at the node in which the analyzer's own conservative evaluation of that call ended, which is the node tagged "ExprEngine : Conservative eval call".
-- `other`: anything else, including a call that a checker modelled, such as `malloc` under `unix.Malloc`, and values that invalidation or loop widening made.
+- `invalidation`: the new value of memory that such a call may have changed, as of the commit named above.
+  Clang writes it only when the analyzer's own conservative evaluation of the symbol's call, in its frame, is on the Bug Path, and at that node the store binds the symbol to the memory the symbol's tag names while the node before does not.
+  The invalidated memory is the tag: a base region, or a memory space of globals.
+- `loop_widening`: the new value of memory that a loop may have changed, made when the analyzer stopped following the loop, which it does only under `-analyzer-config widen-loops=true`.
+  Clang writes it only when the symbol was made for the first element of a block, and the Bug Path enters that block in the symbol's frame at a node whose store binds the symbol to the memory its tag names while the node before does not.
+  The symbol's statement is that first element, which is part of the loop's condition, so `loop` gives the loop itself.
+- `other`: anything else, including a call that a checker modelled, such as `malloc` under `unix.Malloc`, and memory a checker replaced while modelling a call, such as the destination of `memcpy` under `unix.cstring`.
 
 Clang never reads a reason off the statement's text or kind.
 More reasons may be added, and a reader must treat a reason it does not know as `other`.
 
 Nothing else in the trace changes with the table: the existing keys are as before, except that `strings` gains the strings only the table names, after all the others.
-A plist's `files` can gain the file of a symbol's statement when no other location names it.
+A plist's `files` can gain the file of a symbol's statement or loop when no other location names it.
 Such files are added in order after the files of the diagnostic's `ExecutedLines`, so every file keeps the index it has without the table.
 
 ## Control flow graphs
@@ -161,7 +172,7 @@ That was too little for a change to every reader once bodies are kept per file, 
 The report converter keeps a version 2 trace as Clang wrote it and does not expand it.
 As in version 1, each step's `path_index` becomes `kind` (`event` or `control`), `index` and `order`, and `location.file` and `call_site.file` become paths.
 The converter checks each trace once, at parse time, and drops a malformed one with a warning.
-The symbol table is stored as Clang wrote it, with an origin's `location.file` turned into a path like the other trace locations, and trimmed by `--trim-path-prefix` with them.
+The symbol table is stored as Clang wrote it, with an origin's `location.file` and `loop.file` turned into paths like the other trace locations, and trimmed by `--trim-path-prefix` with them.
 A symbol table that does not read makes its trace malformed.
 A trace of any other version is kept as `{"version": N}` alone.
 The web UI then shows the disabled "Show constraints" toggle with an explanation that the data was recorded in an older format, and What-If answers Unknown with the same reason.
@@ -178,7 +189,7 @@ Each language has one reader, and every consumer goes through it.
   `snapshot(node)` rebuilds a whole snapshot by replaying deltas from a checkpoint kept every 64 nodes.
   `encode()` writes a version 2 trace from whole snapshots, with Clang's matching rule, for tests and fixture derivation.
 - JavaScript: `web/server/vue-cli/src/components/Report/ConstraintTrace.js`, `ConstraintTrace`.
-  `symbols` and `symbol(dump)` read the symbol table, `nearestStep()` finds the Path Step nearest to a symbol's origin, and `symbolLabel()` gives the text the panel shows for a symbol.
+  `symbols` and `symbol(dump)` read the symbol table, `nearestStep()` finds the Path Step nearest to a symbol's origin, and `symbolLabel()` gives the text the panel shows for a symbol, labelling a derived symbol from its parent's entry.
   The UI builds a step's snapshot the first time it is shown and keeps it.
   It tells whether two steps show the same snapshot without building either, from a running hash of each node's lists checked against the raw entries, and it names path condition symbols from a change log built once.
 - The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`, whose `expand()` takes the plist's `constraint_trace_cfgs` too, and whose `symbols()` reads the symbol table.
