@@ -6,6 +6,7 @@ Contents:
 :maxdepth: 2
 
 developer-docs/DebugChecks
+developer-docs/ConstraintSnapshots
 developer-docs/IPA
 developer-docs/InitializerLists
 developer-docs/nullability
