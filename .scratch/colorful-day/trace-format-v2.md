@@ -90,7 +90,7 @@ symbols[*]: dict
   smt: integer, index into strings of the symbol's SMT-LIB term, in the encoding of smt_declarations; only when smtlib is true and the symbol has a bitvector term
   smt_signed: boolean, whether comparisons on smt are signed; present with smt
   parent: integer, index into strings of the dump of the symbol a derived symbol is part of, which has an entry too; only for a derived symbol
-  region: integer, index into strings of the access path of a derived symbol's region, such as Tok.Kind; absent when the analyzer cannot describe the region
+  region: integer, index into strings of the access path of a derived symbol's region, such as Tok.Kind, or of the memory whose size an extent is, such as *l->cells; absent when the analyzer cannot describe the region
   name: integer, index into strings of the access path of a region value's region, such as p->len or this->Current; only for region_value, and absent when the analyzer cannot describe the region
   origin: dict, only for a conjured symbol
     reason: string, why the analyzer made the symbol (see below)
@@ -123,7 +123,7 @@ As of the `llvm-project` commit titled "[analyzer] Record the type of each symbo
 They exist because the dump of a derived symbol has no type, and a typedef hides the width.
 A reader that finds neither reads the type from the dump, as before.
 
-As of the `llvm-project` commit titled "[analyzer] Name region values and type expressions in a constraint trace", a `region_value` entry has `name`, and access paths are described by Clang's own walk of the region rather than `MemRegion::getDescriptiveName`, so `region` in derived entries and origins covers the same memory.
+As of the `llvm-project` commit titled "[analyzer] Name region values and type expressions in a constraint trace", a `region_value` entry has `name`, and as of "[analyzer] Name the memory of an extent in a constraint trace" an `extent` entry has `region`, and access paths are described by Clang's own walk of the region rather than `MemRegion::getDescriptiveName`, so `region` in derived entries and origins covers the same memory.
 An access path follows a pointer whose value is the initial or replaced value of named memory (`*p`, `p[2]`, `p->len`, `this->Current`), names memory read as another type than its pointer's through a cast (`((struct S *)data)->len`), and leaves out base classes and anonymous structs and unions.
 It is absent when any part of the region cannot be described, such as the pointee of a call's result, an element at a computed index, or an element region that reinterprets memory that is not an array of that element type.
 No reader may make a name out of a dump.
