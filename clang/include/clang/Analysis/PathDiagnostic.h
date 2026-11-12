@@ -481,7 +481,54 @@ struct PathDiagnosticConstraintSnapshot {
     std::vector<Frame> Stack;
   };
   std::optional<ExplodedNodeInfo> Node;
+
+  /// Every atomic symbol the lists above mention, alone or inside a symbolic
+  /// expression, as indices into the diagnostic's symbol table, ascending.
+  std::vector<unsigned> Symbols;
 };
+
+/// What is known about one atomic symbol of a bug path's Constraint Snapshots,
+/// which is the same at every point of the path.
+struct PathDiagnosticSymbol {
+  enum class Kind { RegionValue, Conjured, Derived, Metadata, Extent };
+
+  /// Why the analyzer made a conjured symbol, as far as it recorded it.
+  enum class Reason {
+    /// The value of a call that the analyzer evaluated without seeing inside
+    /// the callee.
+    CallResult,
+    /// Anything the analyzer recorded no reason for, such as a call a checker
+    /// modelled.
+    Other
+  };
+
+  struct Origin {
+    Reason Why = Reason::Other;
+    /// The statement the symbol was made for, printed on one line and capped
+    /// in length. Empty when the symbol has none.
+    std::string Statement;
+    /// Invalid when the symbol has no statement.
+    SourceLocation Location;
+    /// The called function's name when Statement is a call to a known one.
+    std::string Callee;
+    /// The stack frame the symbol was made in, by its LocationContext ID, and
+    /// its function.
+    int64_t FrameID;
+    std::string Function;
+  };
+
+  /// The symbol's dump, as the snapshot lists print it.
+  std::string Symbol;
+  Kind SymbolKind;
+  /// The SMT-LIB term of the symbol in the encoding of SMTDeclarations, empty
+  /// when it has no bitvector term or there is no SMT-LIB.
+  std::string SMTTerm;
+  bool SMTSigned = false;
+  /// Only for conjured symbols.
+  std::optional<Origin> Conjured;
+};
+
+using PathDiagnosticSymbolTable = std::vector<PathDiagnosticSymbol>;
 
 /// The control flow graph of one function on a bug path, rendered to text,
 /// with the part of it the bug path took.
@@ -935,6 +982,11 @@ class PathDiagnostic : public llvm::FoldingSetNode {
   /// Snapshot positions refer to by index. Empty unless snapshots are on.
   std::vector<PathDiagnosticCFG> CFGs;
 
+  /// The atomic symbols Constraint Snapshots mention, shared with the
+  /// diagnostics of the same report for other consumers. Null unless
+  /// snapshots are on.
+  std::shared_ptr<const PathDiagnosticSymbolTable> Symbols;
+
 public:
   PathDiagnostic() = delete;
   PathDiagnostic(StringRef CheckerName, const Decl *DeclWithIssue,
@@ -1007,6 +1059,15 @@ public:
   ArrayRef<PathDiagnosticCFG> getCFGs() const { return CFGs; }
   void setCFGs(std::vector<PathDiagnosticCFG> NewCFGs) {
     CFGs = std::move(NewCFGs);
+  }
+
+  /// The symbol table that the indices in Constraint Snapshots refer to.
+  ArrayRef<PathDiagnosticSymbol> getSymbols() const {
+    return Symbols ? ArrayRef<PathDiagnosticSymbol>(*Symbols)
+                   : ArrayRef<PathDiagnosticSymbol>();
+  }
+  void setSymbols(std::shared_ptr<const PathDiagnosticSymbolTable> Table) {
+    Symbols = std::move(Table);
   }
 
   /// Get the top-level entry point from which this issue was discovered.

@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Print the symbol table of each diagnostic's constraint trace, one line per
+symbol, so a test can FileCheck it.
+
+A symbol prints as `SYMBOL <dump> <kind>`, followed for a conjured symbol by
+its origin: `<reason> "<statement>" @<file>:<line>:<col> callee <name> in
+<function> frame <index>`, each part only when the trace has it, and `frame
+none` when its frame is not in stack_frames. With the optional second
+argument `smt`, a symbol with an SMT-LIB term also prints `smt <term>
+[signed|unsigned]`.
+
+Before the symbols, the table is checked against the snapshots: an atomic
+symbol that a list names without an entry prints NO-ENTRY, and an entry that
+no list mentions prints UNUSED-ENTRY.
+"""
+
+import plistlib
+import re
+import sys
+
+import constraint_trace
+
+# The atomic symbol a whole dump is, as in conj_$3{int, LC1, S1234, #1} or
+# reg_$0<int x>. A symbolic expression starts with a parenthesis or holds an
+# operator after its first symbol.
+ATOM = re.compile(r"^[a-z]+_\$\d+[<{]")
+OPENERS = {"<": ">", "{": "}"}
+
+
+def is_atom(dump):
+    match = ATOM.match(dump)
+    if not match:
+        return False
+    closing, depth = OPENERS[dump[match.end() - 1]], 0
+    for index in range(match.end() - 1, len(dump)):
+        if dump[index] == dump[match.end() - 1]:
+            depth += 1
+        elif dump[index] == closing:
+            depth -= 1
+            if depth == 0:
+                return index == len(dump) - 1
+    return False
+
+
+def mentioned(trace):
+    """Every symbol dump the snapshot lists of the trace name."""
+    dumps = set()
+    for step in constraint_trace.snapshots(trace):
+        dumps.update(entry["symbol"] for entry in step["symbol_ranges"])
+        dumps.update(entry["symbol"] for entry in step["path_condition"])
+        dumps.update(
+            entry["value"] for entry in step["variables"] if entry["kind"] == "symbol"
+        )
+    return dumps
+
+
+def render_location(files, location):
+    return "@%s:%d:%d" % (
+        files[location["file"]].rsplit("/", 1)[-1],
+        location["line"],
+        location["col"],
+    )
+
+
+def render(files, dump, symbol, smt):
+    parts = ["SYMBOL", dump, symbol["kind"]]
+    origin = symbol.get("origin")
+    if origin is not None:
+        parts.append(origin["reason"])
+        if "statement" in origin:
+            parts.append('"%s"' % origin["statement"])
+        if "location" in origin:
+            parts.append(render_location(files, origin["location"]))
+        if "callee" in origin:
+            parts.append("callee " + origin["callee"])
+        parts.append("in " + origin["function"])
+        parts.append("frame %s" % origin.get("frame", "none"))
+    if smt and "smt" in symbol:
+        parts.append(
+            "smt %s [%s]"
+            % (symbol["smt"], "signed" if symbol["smt_signed"] else "unsigned")
+        )
+    return " ".join(parts)
+
+
+def main():
+    smt = len(sys.argv) > 2 and sys.argv[2] == "smt"
+    with open(sys.argv[1], "rb") as f:
+        plist = plistlib.load(f)
+
+    for diag in plist["diagnostics"]:
+        trace = diag.get("constraint_trace")
+        if trace is None:
+            print("NO-TRACE")
+            continue
+        print("TRACE %s" % diag["description"])
+        table = constraint_trace.symbols(trace)
+        dumps = mentioned(trace)
+        for dump in sorted(dumps):
+            if is_atom(dump) and dump not in table:
+                print("NO-ENTRY %s" % dump)
+        for dump in table:
+            if not any(dump in text for text in dumps):
+                print("UNUSED-ENTRY %s" % dump)
+        if list(table) != sorted(table):
+            print("UNSORTED-TABLE")
+        for dump, symbol in table.items():
+            print(render(plist["files"], dump, symbol, smt))
+
+
+if __name__ == "__main__":
+    main()

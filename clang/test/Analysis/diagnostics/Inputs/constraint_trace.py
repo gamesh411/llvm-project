@@ -7,7 +7,7 @@ written as the change from the node before it, and keeps every string once in
 `constraint_trace_cfgs`, which holds each body once per file. `expand` returns
 the trace with each step carrying its node's whole snapshot, and with the
 control flow graphs whole and as dicts, so that the helpers can print what a
-step shows.
+step shows. `symbols` reads the table of the symbols those snapshots mention.
 """
 
 LISTS = ("symbol_ranges", "variables", "path_condition", "smt_declarations")
@@ -68,6 +68,26 @@ def snapshots(trace):
             snapshot["cfg_position"] = node["cfg_position"]
         result.append(snapshot)
     return result
+
+
+def symbols(trace):
+    """The trace's symbol table keyed by symbol dump, with its strings read.
+    A trace from a Clang before the table has none, and gives an empty one."""
+    strings = trace["strings"]
+    table = {}
+    for entry in trace.get("symbols", []):
+        symbol = {"kind": entry["kind"]}
+        if "smt" in entry:
+            symbol["smt"] = strings[entry["smt"]]
+            symbol["smt_signed"] = entry["smt_signed"]
+        if "origin" in entry:
+            origin = dict(entry["origin"])
+            for key in ("statement", "callee", "function"):
+                if key in origin:
+                    origin[key] = strings[origin[key]]
+            symbol["origin"] = origin
+        table[strings[entry["symbol"]]] = symbol
+    return table
 
 
 def expand_cfg(cfg, graphs):

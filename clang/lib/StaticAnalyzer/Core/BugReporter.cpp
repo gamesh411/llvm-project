@@ -275,6 +275,13 @@ class PathDiagnosticBuilder : public BugReporterContext {
   mutable std::map<SymbolRef, std::optional<std::pair<std::string, bool>>>
       SMTTerms;
   mutable std::map<const SymbolData *, std::string> SMTDeclarations;
+  /// The atomic symbols the built snapshots mention, each once, shared with
+  /// every diagnostic this builder makes. Null unless snapshots are on.
+  std::shared_ptr<PathDiagnosticSymbolTable> SymbolTable;
+  mutable llvm::DenseMap<const SymbolData *, unsigned> SymbolTableIndex;
+  /// Conjured symbols that are the return value of a call the analyzer
+  /// evaluated without inlining it, see recordPathHistory.
+  llvm::DenseSet<const SymbolConjured *> CallResults;
   /// The part of a function's control flow graph the bug path took.
   struct PathCFG {
     AnalysisDeclContext *ADC;
@@ -328,6 +335,19 @@ private:
   std::vector<PathDiagnosticConstraintSnapshot::SymbolRange>
   renderConstraints(ConstraintMap Constraints) const;
   const std::string &getSymbolDump(SymbolRef Sym) const;
+
+  /// Adds the atomic symbols \p Sym is made of to the symbol table, and their
+  /// indices to \p Indices.
+  void recordSymbols(SymbolRef Sym, SmallVectorImpl<unsigned> &Indices) const;
+  PathDiagnosticSymbol describeSymbol(const SymbolData *Sym) const;
+
+#if LLVM_WITH_Z3
+  llvm::SMTSolverRef &getSMTSolver() const;
+  /// The SMT-LIB term of \p Sym and whether comparisons on it are signed, or
+  /// nothing when it has no bitvector term.
+  const std::optional<std::pair<std::string, bool>> &
+  getSMTTerm(SymbolRef Sym) const;
+#endif
   PrintedConstraint &getPrintedConstraint(SymbolRef Sym,
                                           const RangeSet &Range) const;
 
@@ -337,6 +357,9 @@ private:
 
   /// Adds the blocks and the edge \p N is at to the path's CFGs.
   void recordCFGVisit(const ExplodedNode *N);
+
+  /// Records the return value of a call \p N evaluated without inlining it.
+  void recordCallResult(const ExplodedNode *N);
 
   /// Where \p N is in the CFGs the diagnostic carries, if anywhere.
   std::optional<PathDiagnosticConstraintSnapshot::CFGPosition>
@@ -1303,6 +1326,14 @@ PathDiagnosticBuilder::renderConstraints(ConstraintMap Constraints) const {
   return Result;
 }
 
+static std::string describeCFGFunction(const Decl *D) {
+  if (const auto *ND = dyn_cast_or_null<NamedDecl>(D))
+    return ND->getQualifiedNameAsString();
+  if (isa_and_nonnull<BlockDecl>(D))
+    return "block";
+  return "function";
+}
+
 namespace {
 class DirectVarBindingCollector final : public StoreManager::BindingsHandler {
 public:
@@ -1396,6 +1427,120 @@ void PathDiagnosticBuilder::fillConstraintSnapshot(
   addSMTLIB(Snapshot, PathCondition, VariableSymbols);
   Snapshot.Position = findCFGPosition(Node);
   Snapshot.Node = describeExplodedNode(Node);
+
+  // Every symbol with a known range here is in the path condition too.
+  SmallVector<unsigned, 32> Symbols;
+  for (const auto &[Sym, Range] : PathCondition)
+    recordSymbols(Sym, Symbols);
+  for (SymbolRef Sym : VariableSymbols)
+    if (Sym)
+      recordSymbols(Sym, Symbols);
+  llvm::sort(Symbols);
+  Snapshot.Symbols.assign(Symbols.begin(), llvm::unique(Symbols));
+}
+
+void PathDiagnosticBuilder::recordSymbols(
+    SymbolRef Sym, SmallVectorImpl<unsigned> &Indices) const {
+  for (SymbolRef Part : Sym->symbols()) {
+    const auto *Data = dyn_cast<SymbolData>(Part);
+    if (!Data)
+      continue;
+    auto [It, Inserted] =
+        SymbolTableIndex.try_emplace(Data, SymbolTable->size());
+    if (Inserted)
+      SymbolTable->push_back(describeSymbol(Data));
+    Indices.push_back(It->second);
+  }
+}
+
+/// \p S printed on one line, cut at \p MaxLength bytes with "..." appended.
+/// The source is one click away, so this only has to tell statements apart.
+static std::string printStatement(const Stmt *S, const LangOptions &LO,
+                                  size_t MaxLength = 120) {
+  std::string Printed;
+  llvm::raw_string_ostream OS(Printed);
+  S->printPretty(OS, /*Helper=*/nullptr, PrintingPolicy(LO));
+
+  std::string Result;
+  for (char C : Printed) {
+    if (llvm::isSpace(C)) {
+      if (!Result.empty() && Result.back() != ' ')
+        Result.push_back(' ');
+      continue;
+    }
+    Result.push_back(C);
+  }
+  Result = StringRef(Result).rtrim().str();
+  if (Result.size() <= MaxLength)
+    return Result;
+  size_t Cut = MaxLength - 3;
+  // Not inside a UTF-8 sequence.
+  while (Cut > 0 && (static_cast<unsigned char>(Result[Cut]) & 0xC0) == 0x80)
+    --Cut;
+  return Result.substr(0, Cut) + "...";
+}
+
+/// The name of the function \p S calls, or empty when it is not a call or the
+/// callee is not known.
+static std::string getCalleeName(const Stmt *S) {
+  const NamedDecl *Callee = nullptr;
+  if (const auto *Call = dyn_cast<CallExpr>(S))
+    Callee = Call->getDirectCallee();
+  else if (const auto *Construct = dyn_cast<CXXConstructExpr>(S))
+    Callee = Construct->getConstructor();
+  else if (const auto *New = dyn_cast<CXXNewExpr>(S))
+    Callee = New->getOperatorNew();
+  else if (const auto *Message = dyn_cast<ObjCMessageExpr>(S))
+    return Message->getSelector().getAsString();
+  return Callee ? Callee->getNameAsString() : std::string();
+}
+
+static PathDiagnosticSymbol::Kind getSymbolKind(const SymbolData *Sym) {
+  using Kind = PathDiagnosticSymbol::Kind;
+  switch (Sym->getKind()) {
+  case SymExpr::SymbolRegionValueKind:
+    return Kind::RegionValue;
+  case SymExpr::SymbolConjuredKind:
+    return Kind::Conjured;
+  case SymExpr::SymbolDerivedKind:
+    return Kind::Derived;
+  case SymExpr::SymbolMetadataKind:
+    return Kind::Metadata;
+  case SymExpr::SymbolExtentKind:
+    return Kind::Extent;
+  default:
+    llvm_unreachable("not an atomic symbol");
+  }
+}
+
+PathDiagnosticSymbol
+PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
+  PathDiagnosticSymbol Result;
+  Result.Symbol = getSymbolDump(Sym);
+  Result.SymbolKind = getSymbolKind(Sym);
+#if LLVM_WITH_Z3
+  if (const auto &Term = getSMTTerm(Sym))
+    std::tie(Result.SMTTerm, Result.SMTSigned) = *Term;
+#endif
+
+  const auto *Conjured = dyn_cast<SymbolConjured>(Sym);
+  if (!Conjured)
+    return Result;
+  PathDiagnosticSymbol::Origin &Origin = Result.Conjured.emplace();
+  // Only what recordPathHistory saw the analyzer do gives a reason; a
+  // statement's text or kind alone would be a guess.
+  Origin.Why = CallResults.contains(Conjured)
+                   ? PathDiagnosticSymbol::Reason::CallResult
+                   : PathDiagnosticSymbol::Reason::Other;
+  if (const Stmt *S = Conjured->getStmt()) {
+    Origin.Statement = printStatement(S, getASTContext().getLangOpts());
+    Origin.Location = getSourceManager().getExpansionLoc(S->getBeginLoc());
+    Origin.Callee = getCalleeName(S);
+  }
+  const StackFrame *Frame = Conjured->getStackFrame();
+  Origin.FrameID = Frame->getID();
+  Origin.Function = describeCFGFunction(Frame->getDecl());
+  return Result;
 }
 
 template <typename T> static std::string printToString(const T &Printable) {
@@ -1409,8 +1554,7 @@ void PathDiagnosticBuilder::addSMTLIB(
     PathDiagnosticConstraintSnapshot &Snapshot, ConstraintMap PathCondition,
     ArrayRef<SymbolRef> VariableSymbols) const {
 #if LLVM_WITH_Z3
-  if (!SMTSolver)
-    SMTSolver = llvm::CreateZ3Solver();
+  getSMTSolver();
   ASTContext &Ctx = getASTContext();
   Snapshot.HasSMTLIB = true;
 
@@ -1442,20 +1586,10 @@ void PathDiagnosticBuilder::addSMTLIB(
   for (auto [Var, Sym] : llvm::zip_equal(Snapshot.Variables, VariableSymbols)) {
     if (!Sym)
       continue;
-    auto [It, Inserted] = SMTTerms.try_emplace(Sym);
-    if (Inserted) {
-      QualType Ty;
-      std::optional<llvm::SMTExprRef> Term =
-          SMTConv::getExpr(SMTSolver, Ctx, Sym, Ty);
-      // A comparison against an integer needs a bitvector.
-      if (Term && !Ty->isBooleanType() &&
-          (Ty->isIntegralOrEnumerationType() || Ty->isAnyPointerType()))
-        It->second.emplace(printToString(**Term),
-                           Ty->isSignedIntegerOrEnumerationType());
-    }
-    if (!It->second)
+    const auto &Term = getSMTTerm(Sym);
+    if (!Term)
       continue;
-    std::tie(Var.SMTTerm, Var.SMTSigned) = *It->second;
+    std::tie(Var.SMTTerm, Var.SMTSigned) = *Term;
     Declare(Sym);
   }
 
@@ -1470,6 +1604,30 @@ void PathDiagnosticBuilder::addSMTLIB(
   }
 #endif
 }
+
+#if LLVM_WITH_Z3
+llvm::SMTSolverRef &PathDiagnosticBuilder::getSMTSolver() const {
+  if (!SMTSolver)
+    SMTSolver = llvm::CreateZ3Solver();
+  return SMTSolver;
+}
+
+const std::optional<std::pair<std::string, bool>> &
+PathDiagnosticBuilder::getSMTTerm(SymbolRef Sym) const {
+  auto [It, Inserted] = SMTTerms.try_emplace(Sym);
+  if (Inserted) {
+    QualType Ty;
+    std::optional<llvm::SMTExprRef> Term =
+        SMTConv::getExpr(getSMTSolver(), getASTContext(), Sym, Ty);
+    // A comparison against an integer needs a bitvector.
+    if (Term && !Ty->isBooleanType() &&
+        (Ty->isIntegralOrEnumerationType() || Ty->isAnyPointerType()))
+      It->second.emplace(printToString(**Term),
+                         Ty->isSignedIntegerOrEnumerationType());
+  }
+  return It->second;
+}
+#endif
 
 void PathDiagnosticBuilder::recordPathHistory() {
   SmallVector<const ExplodedNode *, 0> Nodes;
@@ -1496,8 +1654,30 @@ void PathDiagnosticBuilder::recordPathHistory() {
     }
     PathHistory.try_emplace(N, std::make_pair(Accumulated, Position));
     recordCFGVisit(N);
+    recordCallResult(N);
     ++Position;
   }
+}
+
+void PathDiagnosticBuilder::recordCallResult(const ExplodedNode *N) {
+  // A checker that models a call conjures its return value with the same
+  // statement, frame and tag as the analyzer does, so the symbol alone does
+  // not tell them apart. The node the analyzer's own evaluation ends in does.
+  if (N->getLocation().getTag() != ExprEngine::conservativeEvalCallTag())
+    return;
+  auto Point = N->getLocationAs<PostStmt>();
+  if (!Point)
+    return;
+  const auto *Call = dyn_cast<Expr>(Point->getStmt());
+  if (!Call)
+    return;
+  const auto *Result = dyn_cast_or_null<SymbolConjured>(
+      N->getState()->getSVal(Call, N->getStackFrame()).getAsSymbol());
+  // Invalidation conjures with the invalidated region as the tag, and a value
+  // bound to the call that was made elsewhere is not this call's result.
+  if (Result && !Result->getTag() && Result->getStmt() == Call &&
+      Result->getStackFrame() == N->getStackFrame())
+    CallResults.insert(Result);
 }
 
 void PathDiagnosticBuilder::recordCFGVisit(const ExplodedNode *N) {
@@ -1566,14 +1746,6 @@ PathDiagnosticBuilder::findCFGPosition(const ExplodedNode *N) const {
   }
   return CFGPosition{Index, Block->getBlockID(), std::nullopt,
                      /*AtTerminator=*/false};
-}
-
-static std::string describeCFGFunction(const Decl *D) {
-  if (const auto *ND = dyn_cast_or_null<NamedDecl>(D))
-    return ND->getQualifiedNameAsString();
-  if (isa_and_nonnull<BlockDecl>(D))
-    return "block";
-  return "function";
 }
 
 PathDiagnosticConstraintSnapshot::ExplodedNodeInfo
@@ -2646,8 +2818,10 @@ PathDiagnosticBuilder::PathDiagnosticBuilder(
     : BugReporterContext(BRC), BugPath(std::move(BugPath)), R(r),
       ErrorNode(ErrorNode),
       VisitorsDiagnostics(std::move(VisitorsDiagnostics)) {
-  if (getAnalyzerOptions().ShouldEmitConstraintSnapshots)
+  if (getAnalyzerOptions().ShouldEmitConstraintSnapshots) {
+    SymbolTable = std::make_shared<PathDiagnosticSymbolTable>();
     recordPathHistory();
+  }
 }
 
 std::unique_ptr<PathDiagnostic>
@@ -2760,8 +2934,10 @@ PathDiagnosticBuilder::generate(const PathDiagnosticConsumer *PDC) const {
   if (Opts.ShouldDisplayMacroExpansions)
     CompactMacroExpandedPieces(Construct.getMutablePieces(), SM);
 
-  if (Opts.ShouldEmitConstraintSnapshots)
+  if (Opts.ShouldEmitConstraintSnapshots) {
     buildConstraintSnapshots(Construct.getMutablePieces());
+    Construct.PD->setSymbols(SymbolTable);
+  }
 
   return std::move(Construct.PD);
 }

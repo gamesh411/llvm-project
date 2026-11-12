@@ -65,7 +65,7 @@ public:
 
     void printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
                       const PathPieces &Path, ArrayRef<PathDiagnosticCFG> CFGs,
-                      CFGTable &Graphs);
+                      ArrayRef<PathDiagnosticSymbol> Symbols, CFGTable &Graphs);
 
   public:
     PlistDiagnostics(PathDiagnosticConsumerOptions DiagOpts,
@@ -135,6 +135,7 @@ public:
   /// Print the constraint trace collected while the path was printed, which
   /// does not exist unless constraint snapshots were requested.
   void ReportConstraintTrace(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
+                             ArrayRef<PathDiagnosticSymbol> Symbols,
                              CFGTable &Graphs, unsigned indent);
 
 private:
@@ -146,6 +147,9 @@ private:
   /// each stack frame of those nodes once, after its parent.
   void collectExplodedNodes();
   void ReportExplodedNodes(raw_ostream &o, unsigned indent);
+  /// The entries of \p Symbols that the listed nodes' snapshots mention.
+  void ReportSymbols(raw_ostream &o, ArrayRef<PathDiagnosticSymbol> Symbols,
+                     unsigned indent);
 
   /// The lists of one snapshot, in the order the trace writes them.
   using TraceLists = std::array<TraceList, 4>;
@@ -873,8 +877,106 @@ void PlistPrinter::ReportExplodedNodes(raw_ostream &o, unsigned indent) {
   Indent(o, indent) << "</array>\n";
 }
 
+static StringRef toString(PathDiagnosticSymbol::Kind SymbolKind) {
+  using Kind = PathDiagnosticSymbol::Kind;
+  switch (SymbolKind) {
+  case Kind::RegionValue:
+    return "region_value";
+  case Kind::Conjured:
+    return "conjured";
+  case Kind::Derived:
+    return "derived";
+  case Kind::Metadata:
+    return "metadata";
+  case Kind::Extent:
+    return "extent";
+  }
+  llvm_unreachable("unknown symbol kind");
+}
+
+static StringRef toString(PathDiagnosticSymbol::Reason Why) {
+  using Reason = PathDiagnosticSymbol::Reason;
+  switch (Why) {
+  case Reason::CallResult:
+    return "call_result";
+  case Reason::Other:
+    return "other";
+  }
+  llvm_unreachable("unknown conjured symbol reason");
+}
+
+void PlistPrinter::ReportSymbols(raw_ostream &o,
+                                 ArrayRef<PathDiagnosticSymbol> Symbols,
+                                 unsigned indent) {
+  std::vector<unsigned> Listed;
+  for (const PathDiagnosticConstraintSnapshot *Snapshot : ExplodedNodes)
+    llvm::append_range(Listed, Snapshot->Symbols);
+  if (Listed.empty())
+    return;
+  // In the order of the snapshot lists, which are sorted by dump.
+  llvm::sort(Listed, [Symbols](unsigned L, unsigned R) {
+    return Symbols[L].Symbol < Symbols[R].Symbol;
+  });
+  Listed.erase(llvm::unique(Listed), Listed.end());
+
+  const SourceManager &SM = PP.getSourceManager();
+  Indent(o, indent) << "<key>symbols</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (unsigned Index : Listed) {
+    const PathDiagnosticSymbol &Sym = Symbols[Index];
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>symbol</key>";
+    EmitInteger(o, intern(Sym.Symbol)) << '\n';
+    Indent(o, indent) << "<key>kind</key>";
+    EmitString(o, toString(Sym.SymbolKind)) << '\n';
+    if (!Sym.SMTTerm.empty()) {
+      Indent(o, indent) << "<key>smt</key>";
+      EmitInteger(o, intern(Sym.SMTTerm)) << '\n';
+      Indent(o, indent) << "<key>smt_signed</key>"
+                        << (Sym.SMTSigned ? "<true/>" : "<false/>") << '\n';
+    }
+    if (const auto &Origin = Sym.Conjured) {
+      Indent(o, indent) << "<key>origin</key>\n";
+      Indent(o, indent) << "<dict>\n";
+      ++indent;
+      Indent(o, indent) << "<key>reason</key>";
+      EmitString(o, toString(Origin->Why)) << '\n';
+      if (!Origin->Statement.empty()) {
+        Indent(o, indent) << "<key>statement</key>";
+        EmitInteger(o, intern(Origin->Statement)) << '\n';
+      }
+      if (Origin->Location.isValid()) {
+        Indent(o, indent) << "<key>location</key>\n";
+        EmitLocation(o, SM, Origin->Location, FM, indent);
+      }
+      if (!Origin->Callee.empty()) {
+        Indent(o, indent) << "<key>callee</key>";
+        EmitInteger(o, intern(Origin->Callee)) << '\n';
+      }
+      Indent(o, indent) << "<key>function</key>";
+      EmitInteger(o, intern(Origin->Function)) << '\n';
+      // A frame the path only passed through, such as a call the diagnostic
+      // pruned, has no entry in stack_frames.
+      if (auto Frame = StackFrameIndex.find(Origin->FrameID);
+          Frame != StackFrameIndex.end()) {
+        Indent(o, indent) << "<key>frame</key>";
+        EmitInteger(o, Frame->second) << '\n';
+      }
+      --indent;
+      Indent(o, indent) << "</dict>\n";
+    }
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+}
+
 void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
                                          ArrayRef<PathDiagnosticCFG> CFGs,
+                                         ArrayRef<PathDiagnosticSymbol> Symbols,
                                          CFGTable &Graphs, unsigned indent) {
   if (ConstraintSteps.empty())
     return;
@@ -907,6 +1009,7 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
   if (!CFGs.empty())
     ReportCFGs(o, CFGs, Graphs, indent);
   ReportExplodedNodes(o, indent);
+  ReportSymbols(o, Symbols, indent);
   ReportStringTable(o, indent);
   --indent;
   Indent(o, indent) << "</dict>\n";
@@ -1072,6 +1175,7 @@ void ento::createPlistMultiFileDiagnosticConsumer(
 void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
                                     const PathPieces &Path,
                                     ArrayRef<PathDiagnosticCFG> CFGs,
+                                    ArrayRef<PathDiagnosticSymbol> Symbols,
                                     CFGTable &Graphs) {
   PlistPrinter Printer(FM, PP, CTU, MacroExpansions);
   assert(std::is_partitioned(Path.begin(), Path.end(),
@@ -1106,7 +1210,7 @@ void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
 
   o << "   </array>\n";
 
-  Printer.ReportConstraintTrace(o, CFGs, Graphs, /* indent */ 3);
+  Printer.ReportConstraintTrace(o, CFGs, Symbols, Graphs, /* indent */ 3);
 
   if (!DiagOpts.ShouldDisplayMacroExpansions)
     return;
@@ -1205,7 +1309,18 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
     o << "  <dict>\n";
 
     const PathDiagnostic *D = *DI;
-    printBugPath(o, FM, D->path, D->getCFGs(), Graphs);
+    // The statement of a symbol is often in a file only the coverage below
+    // names, such as a header with a callee the path left out. Adding the
+    // coverage's files first, in its order, keeps every file the index it had
+    // without the symbol table.
+    if (!D->getSymbols().empty()) {
+      for (const auto &[FID, Lines] : D->getExecutedLines())
+        AddFID(FM, Fids, FID);
+      for (const PathDiagnosticSymbol &Sym : D->getSymbols())
+        if (Sym.Conjured && Sym.Conjured->Location.isValid())
+          AddFID(FM, Fids, SM, Sym.Conjured->Location);
+    }
+    printBugPath(o, FM, D->path, D->getCFGs(), D->getSymbols(), Graphs);
 
     // Output the bug type and bug category.
     o << "   <key>description</key>";
