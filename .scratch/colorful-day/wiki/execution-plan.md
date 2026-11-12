@@ -133,3 +133,19 @@ As of `codechecker@44129629f`, edges into one graph block share a gutter lane, b
 On 2026-11-11 the lead decided to defer mitigation 7 (lazy trace fetching) and mitigation 8 (gzip), because report details at 1205 steps are 632 KB fetched in 0.03 s, so neither has a measured need.
 The LLVM run comes next instead, and its measurements decide whether 7, 8 or 11 is needed.
 In parallel, a UI polish worker takes the queued problems, the slow step clicks, and the report tree not scrolling the source to a clicked step, which the v2 worker saw on the old build as well.
+
+## 2026-11-12: LLVM run, acceptance target met
+
+On 2026-11-12 the lead accepted the LLVM run after viewing `/Users/efulop/colorful-day-env/screens/llvm-r1031-1100steps-step.png` and `llvm-r927-90steps-states.png`, measured at `llvm-project@6fbdf0613af7` and `codechecker@54e8c88b7`, not at the polish head.
+All 3546 TUs of `llvm/lib`, `llvm/tools`, `clang/lib` and `clang/tools` were analyzed with emission on in 50.6 minutes at `-j8`, stored in 660 s (404 s of it git blame), and opened in the browser.
+The full table against `../perf-evaluation.md` is in `/Users/efulop/colorful-day-env/llvm-scale/results.md`.
+Emission costs +2.6% wall time on a 150-TU slice, but plists are 1.44 GB, 17.2 times the off size, the largest 97 MB (`CompilerInvocation.cpp`).
+CFGs are 87% of trace JSON and steps 0.8%, so CFGs repeated in every report of a TU now drive size, and a store peaks at 4.55 GB in the client and 5.1 GB in one server worker.
+getReportDetails stays at or under 3.8 MB and 129 ms, so mitigations 7 and 8 stay deferred.
+Slow step clicks and page ready times on long reports are the same with "Show constraints" off, so they are CodeChecker's own.
+Opening the CFG on the 1100-step report takes 6.9 s, for one block of about 180 rows.
+Visual defects found: multi-file tree labels show only the file name; States frame names clip without an ellipsis and stray chevrons sit on their own rows; symbol dumps wrap mid-identifier and carry absolute paths; report 927 offers no What-If variables while the placeholder says `x == 0`; a selected bubble hides under about 180 stacked "Entered call" bubbles; a CFG arrowhead overlaps its "F" label; the function picker truncates.
+The LLVM setup traps (precompiled headers and CIR on by default, Apple libc++ paths) are in Open Brain.
+
+On 2026-11-12 the lead decided the next worker shrinks CFGs (mitigation 12) and makes the CFG view fast on huge blocks, both in one worker because both change the CFG data and its reader, followed by a second polish worker for the visual defects above and the two left open by the first.
+Mitigation 11's size guard waits for that measurement, since the CFG change targets the same driver.
