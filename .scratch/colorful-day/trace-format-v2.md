@@ -84,6 +84,8 @@ The table is keyed by the symbol's dump in `strings`, the same string the lists 
 symbols[*]: dict
   symbol: integer, index into strings of the symbol's dump
   kind: string, one of region_value, conjured, derived, metadata, extent
+  type: integer, index into strings of the symbol's type, canonical and without qualifiers, such as unsigned long or int *
+  pointer: true when the analyzer treats the symbol as an address (a pointer, a reference or the like); absent otherwise
   smt: integer, index into strings of the symbol's SMT-LIB term, in the encoding of smt_declarations; only when smtlib is true and the symbol has a bitvector term
   smt_signed: boolean, whether comparisons on smt are signed; present with smt
   parent: integer, index into strings of the dump of the symbol a derived symbol is part of, which has an entry too; only for a derived symbol
@@ -114,6 +116,10 @@ symbols[*]: dict
 
 Clang never reads a reason off the statement's text or kind.
 More reasons may be added, and a reader must treat a reason it does not know as `other`.
+
+As of the `llvm-project` commit titled "[analyzer] Record the type of each symbol in a constraint trace", every entry has `type` and an address also has `pointer`.
+They exist because the dump of a derived symbol has no type, and a typedef hides the width.
+A reader that finds neither reads the type from the dump, as before.
 
 Nothing else in the trace changes with the table: the existing keys are as before, except that `strings` gains the strings only the table names, after all the others.
 A plist's `files` can gain the file of a symbol's statement or loop when no other location names it.

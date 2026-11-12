@@ -381,6 +381,7 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-egraph.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-delta.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-symbols.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-symbol-types.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
