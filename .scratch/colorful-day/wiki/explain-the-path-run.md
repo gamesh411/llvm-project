@@ -151,3 +151,12 @@ Checks the worker reported: jest 127 in 7 suites, eslint clean, functest 46 pass
 The decision on where it sits and the control step rename are in [web UI decisions](web-ui-decisions.md); the Comments of `../../explain-the-path/issues/08-this-path-requires-list.md` have the rest.
 On the three LLVM cases the worker analyzed again as `t08-llvm`: the list shows the decisive requirement of case 6 (`SuperLoc` 0, first row) and of case 29 (`m + n` 0, an entry input), and of case 27 (`LK` 7) only under Other, since its call was modelled by a checker.
 The ticket 06 spacing bug ("Step 10.n") was already fixed by that ticket; a test now guards it.
+
+## 2026-11-13: ticket 08 accepted
+
+On 2026-11-13 the lead accepted ticket 08 after viewing `/Users/efulop/colorful-day-env/screens/t08-llvm-case6-requires-900.png`, `t08-tmux-requires-1400.png` and `t08-llvm-case29-requires-1400.png`, at `codechecker@08cd17806..8414ea383` and `llvm-project@5c56e6603aa2`.
+The lead accepted the worker's placement, a "This step" and "Whole path" toggle, recorded in [web UI decisions](web-ui-decisions.md), because What-If keeps its place and the last step's rows are not shown twice.
+The lead left a checker-modelled value such as case 27's `LK` under Other and did not add a group for it, since Clang does not record that such a value is a call's result.
+Seen by the lead in the screenshots and passed to ticket 09: a comparison row reads `xx >= end` with the value 0, which a reader has to decode as "false".
+Also seen: in case 29 a row is named `Val`, a parameter of an inlined callee, under Entry inputs, because a value goes by the variable that first held it.
+Not seen in a browser: the ungrouped list for a trace without the symbol table, which jest covers.
