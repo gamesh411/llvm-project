@@ -9,6 +9,10 @@ Sources such as the spec and tickets are cited here, never copied.
 - [Execution plan](execution-plan.md): ticket order, what runs in parallel, when to stop for the user, and the scaling pass with its lane results.
 - [Worker rules](worker-rules.md): constraints every ticket worker is given.
 
+## Direction
+
+- [Use case review](use-case-review.md): the 2026-11-12 triage study's findings on What-If against other uses of the constraint data, and the lead's recommended order of next work.
+
 ## Environment
 
 - [Dev environment](dev-environment.md): where the Clang build, venv and server state live, and why, plus environment traps and the performance evaluation.
