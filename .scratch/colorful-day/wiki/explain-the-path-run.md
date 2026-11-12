@@ -118,3 +118,26 @@ On study case 7 (`MemorySanitizer.cpp:1865`), which had no variable at its last 
 The worker found that the analyzer drops a caller's locals at the call unless the caller reads them afterwards, so on real code a caller group is often just the analyzed function's parameters.
 Seen by the lead in the screenshots and passed to ticket 06: a variable whose range the analyzer dropped reads "no known range" in its group while the accumulated path condition shows the value with a `dropped` tag (`top::n` is 2 in the demo).
 Left open: a 33-character function name breaks mid-word in a group heading at 900 pixels.
+
+## 2026-11-12: ticket 06 accepted, slice 2 closed
+
+On 2026-11-12 the lead accepted ticket 06 after viewing `/Users/efulop/colorful-day-env/screens/t06-llvm-case1-900-verdict.png`, `t06-llvm-case25-900-verdict.png` and `t06-caller-ambiguous-1400.png`, at `codechecker@4a5db1481..e92a2d384` and `llvm-project@4bf1528255ed..d480d5b7c777`.
+It needed no Clang, Thrift or database change.
+As of `codechecker@7c268620e`, a What-If name resolves on the server, in `what_if.py` only, to a variable of the step's frame or a calling frame, written alone or as `function::name`, and otherwise to memory the symbol table names; a variable hides memory of the same name.
+A name with several values at a step gives Unknown and lists them.
+A derived value counts as a name of its memory, so "Holds throughout" covers a field before and after a call replaced it, and an anchored check on such memory after the call is Unknown.
+The page's suggestion list mirrors the server rule, and a file of names written by a server unit test (`what_if_names.json`) is compared by jest, which the worker chose over a new RPC to keep the one API bump for slice 3.
+The grammar accepts subscripts that are names, beyond the spec's constant subscripts, because Clang names study case 25's value `Op.Node->ValueList[Op.ResNo].V.SimpleTy`.
+As of `codechecker@64f180381`, a variable the analyzer dropped shows its last path-condition range with a `dropped` tag.
+`codechecker@4a5db1481` fixes a mypy error that predates the ticket.
+The worker's checks: functest 46, server unit 139, report-converter unit 159, jest 117, Colorful Day lit 11 passed and 1 unsupported.
+
+Study table A4 measured again on ticket 05's LLVM run with the study's `measure.report()` and `/Users/efulop/colorful-day-env/t06/a4.py`:
+What-If can address 39.0% of LLVM path-condition entries against 11.4% under the study's rule, and 67% against 36% on tmux.
+84.8% of LLVM entries read as a name or label and not a raw dump, and 26.9% have a display name.
+The share the panel names by a variable stayed at 9.3%, since caller variables added 8 entries.
+1220 of 1225 reports have at least one What-If name.
+
+What-Ifs on study cases: case 1, `this->Current == null` throughout, is Infeasible at Step 3 and settles the case; case 25, `VT != 0`, is Infeasible where the study got Unknown and settles the case; case 7, `DataShadow != 0`, is Infeasible but only restates the path, since the deciding assert is compiled out.
+Left open: no spelling picks "the value after `parse()`" for an anchored check; memory is told apart by name only, so two functions' `this->Current` are one name; 9.3% of stack frames have a function name that cannot be typed before `::`.
+Seen by the lead in `t06-caller-ambiguous-1400.png`: the Unknown reason reads "at Step 10.n names 2 values" with no space after the period, passed to ticket 08 to check.
