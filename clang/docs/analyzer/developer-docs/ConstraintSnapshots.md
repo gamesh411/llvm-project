@@ -60,8 +60,19 @@ A symbol the analyzer conjured also has an origin: the statement it was made for
 The reason is `call_result` when the symbol is the value a call returned and the analyzer evaluated that call without seeing inside the callee.
 The analyzer does not record this on the symbol, which a checker modelling the call makes in the same way.
 Clang tells them apart by the node the analyzer's conservative evaluation of a call ends in: a symbol bound to the call there is the call's result.
+The reason is `invalidation` when the symbol is the new value of memory such a call may have changed.
+Invalidation conjures with the replaced memory as the symbol's tag, at the call's statement, frame and visit, so the symbol looks like the call's result except for the tag.
+Clang gives this reason only when, at the node the analyzer's conservative evaluation of that call ends in, the store binds the symbol to the memory its tag names and the node before does not.
+The reason is `loop_widening` when the analyzer stopped following a loop and replaced the function's memory at the entrance of the loop's condition block, which it does under `-analyzer-config widen-loops=true`.
+Clang gives this reason only when the symbol was made for the first element of that block and the store binds it anew at that block's entrance on the bug path.
+For both, the entry names the replaced memory as an access path, such as `Tok`, or says that the call replaced every global, and for loop widening it gives the loop's location.
+Checkers that model a call replace memory with symbols of the same shape, but not at those nodes, so their symbols stay `other`.
 Every other conjured symbol has the reason `other`, including a value a checker made for a call it models, such as `malloc` under `unix.Malloc`.
 Clang never infers a reason from the statement's text.
+
+A symbol derived from another one, such as the field `Tok.Kind` of the value that replaced `Tok`, names that parent symbol and the access path of its own region.
+The parent has an entry of its own even when no list mentions it, so a reader can label the field from the parent's origin.
+An access path is the analyzer's own description of the region, and it is absent when the analyzer has none, for example behind a pointer.
 Consumers must treat a reason they do not know as `other`, because more reasons may be added.
 
 ## SMT-LIB and Z3
