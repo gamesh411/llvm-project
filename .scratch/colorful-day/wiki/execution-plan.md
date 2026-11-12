@@ -47,6 +47,7 @@ On 2026-11-11 the ticket 08 worker chose the simpler version for the demo, as `.
 The simpler version is reported along `a != 0`, `b != 0` (checked with the Colorful Day Clang at `llvm-project@8c98b9a644c8`), so the `a == 0` route to the same bug is visible in the source but not on the Bug Path.
 Checking `a == 0` then makes this path Infeasible while that same assumption is exactly the other route to the bug, which explains "this path" against "this bug" in one step.
 The forced version needs two extra resets that a viewer has to read first, and its `b == 0` story needs the viewer to trace four branches.
+The citations for this entry are added in the 2026-11-12 wiki lint entry below.
 
 ## 2026-11-11: ticket 08 accepted, stretch goals pending
 
@@ -128,6 +129,7 @@ The worker's measurements, before and after:
 
 Size now grows about 2.0 times per path doubling, against 3.9 before, and tmux plists went from 23.5 to 6.9 MB.
 Step clicks stayed at about 180-350 ms, which the worker traced to rendering 400-800 panel rows, not to reading the trace.
+The panel-rows attribution is superseded by the 2026-11-12 wiki lint entry below.
 As of `codechecker@44129629f`, edges into one graph block share a gutter lane, because at 1205 steps a 3200 px gutter pushed the graph out of view.
 
 On 2026-11-11 the lead decided to defer mitigation 7 (lazy trace fetching) and mitigation 8 (gzip), because report details at 1205 steps are 632 KB fetched in 0.03 s, so neither has a measured need.
@@ -145,6 +147,7 @@ getReportDetails stays at or under 3.8 MB and 129 ms, so mitigations 7 and 8 sta
 Slow step clicks and page ready times on long reports are the same with "Show constraints" off, so they are CodeChecker's own.
 Opening the CFG on the 1100-step report takes 6.9 s, for one block of about 180 rows.
 Visual defects found: multi-file tree labels show only the file name; States frame names clip without an ellipsis and stray chevrons sit on their own rows; symbol dumps wrap mid-identifier and carry absolute paths; report 927 offers no What-If variables while the placeholder says `x == 0`; a selected bubble hides under about 180 stacked "Entered call" bubbles; a CFG arrowhead overlaps its "F" label; the function picker truncates.
+Fixes for this list are recorded in the 2026-11-12 wiki lint entry below.
 The LLVM setup traps (precompiled headers and CIR on by default, Apple libc++ paths) are in Open Brain.
 
 On 2026-11-12 the lead decided the next worker shrinks CFGs (mitigation 12) and makes the CFG view fast on huge blocks, both in one worker because both change the CFG data and its reader, followed by a second polish worker for the visual defects above and the two left open by the first.
@@ -164,3 +167,15 @@ On the whole LLVM set, plists went from 1,444 to 560 MB, the largest from 97.2 t
 3255 of 3255 traces with CFGs rebuild identically, and 1166 of 1166 What-If checks give the same verdicts.
 Left open as of `codechecker@e7da30fe6`: both remaining peaks are Thrift's JSON codec moving the whole 112 MB base64 store zip, which is CodeChecker's own `massStoreRun` design. CFG rows scrolled out of view are not in the DOM, so Ctrl+F does not find them.
 Mitigation 11's size guard has no remaining measured need, since the largest plist is 20.1 MB.
+
+## 2026-11-12: wiki lint corrections
+
+The two demo files in the two-path entry above were added in `llvm-project@41963c03f695` (`two-path-short.c`) and `llvm-project@da4604b880b8` (`two-path.c`).
+The Clang cited there, `llvm-project@8c98b9a644c8`, is a wiki commit with no Clang change against `41963c03f695`, so the Clang it names is the same.
+
+The panel-rows attribution of slow step clicks in the trace format v2 entry above is superseded: as of `codechecker@8693c4955`, the polish worker measured a 1205-step tree click at about 190 ms in Vuetify's tree and about 100 ms in jsPlumb arrows, with the panel taking about 10 ms, as recorded in [web UI decisions](web-ui-decisions.md).
+
+Of the visual defects listed in the LLVM run entry above:
+- the arrowhead over its "F" label and the truncated function picker were fixed in the CFG and store pass, as of `codechecker@eb3036552` and `codechecker@fb24a0812`
+- the 927 placeholder, the bubble hidden under stacked bubbles, the States frame clipping and the symbol dump wrapping and paths were fixed in the second polish pass, `codechecker@844f9d3e4`, `71f1d9f9a`, `c4f7c98bc` and `b7b6d1c72`
+- the multi-file tree labels were left as upstream behavior, as recorded in [web UI decisions](web-ui-decisions.md)

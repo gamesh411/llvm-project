@@ -14,6 +14,7 @@ As of `codechecker@45840c305`, the API version carrying `constraintTrace` is 6.7
 ## 2026-11-10: ticket 03
 
 As of `llvm-project@320ae5fbf4ae`, each step also has `variables` and `path_condition`, `version` stays 1, and the schema is in the Comments of `../issues/03-complete-the-constraint-snapshot.md`.
+The `version` part is superseded by the 2026-11-12 wiki lint entry below.
 As of the same commit, `path_condition` follows the crosscheck visitor's merge rule through a shared `mergeConstraintMaps`, and the per-node `ConstraintMap` is available for ticket 05's SMT-LIB.
 
 As of the same commit, `Calling` and `Entered call` events share the CallEnter node's snapshot, so their variables are the caller's.
@@ -22,6 +23,7 @@ On 2026-11-10 the lead accepted this limit for the prototype, since the callee's
 ## 2026-11-10: ticket 04
 
 As of `codechecker@41f307f73`, CodeChecker steps can be `kind: "control"` with `index` into `executionPath`, every step has an `order` on the Bug Path, and `version` stays 1. Details are in the Comments of `../issues/04-branch-steps-and-line-selection.md`.
+The `version` part is superseded by the 2026-11-12 wiki lint entry below.
 As of `llvm-project@ffa40b68fbaf`, a control edge carries the snapshot of the node at its end, and a merged edge keeps its later node's snapshot.
 
 ## 2026-11-10: ticket 05
@@ -48,6 +50,7 @@ As of `codechecker@e78323748` (API 6.79), `WhatIfResult` also has `8: optional b
 ## 2026-11-11: ticket 09
 
 As of `llvm-project@73b1d83878a8` and `codechecker@b31cdd260`, `constraint_trace.cfgs` holds each Bug Path function's control flow graph once per report, each step has a `cfg_position`, and `version` stays 1. Details are in the Comments of `../issues/09-stretch-cfg-side-view.md`.
+The `version` and `constraint_trace.cfgs` parts are superseded by the 2026-11-12 wiki lint entry below.
 The ticket 09 worker measured tmux demo plists at 23,053,531 bytes, against 17,174,536 after ticket 08 and 1,481,363 with emission off. That is 15.6 times the off size, and most of the graph data's share is plist XML overhead.
 
 ## 2026-11-11: ticket 10
@@ -64,3 +67,12 @@ As of `codechecker@333e8467d`, `Report.trim_path_prefixes` also trims the `locat
 
 The worst-case figure in the ticket 07 entry above is superseded in its wording: as of `codechecker@6325f9164`, the Baseline and verdict calls take up to 2000 ms each, and the first dead step search is capped by its 4000 ms budget, so a check takes at most 8 s.
 The source is the Comments of `../issues/07-holds-throughout-and-first-dead-step.md`.
+
+## 2026-11-12: wiki lint corrections
+
+The "`version` stays 1" claims in the ticket 03, 04 and 09 entries above are superseded: as of `llvm-project@7af3828bc619` and `codechecker@545cc2d12..54e8c88b7`, traces are format version 2, which replaces version 1 everywhere.
+Version 2 writes one snapshot per analyzer node as a delta against the node before it, and keeps each string once per report.
+The schema is in `../trace-format-v2.md`, and the decision is in the 2026-11-11 trace format v2 entry of [execution plan](execution-plan.md).
+
+The per-report `constraint_trace.cfgs` of the ticket 09 entry above is superseded in Clang's output: as of `llvm-project@a2b47aba60aa`, each CFG body is kept once per plist file in a top-level `constraint_trace_cfgs`, and traces name it by index.
+As of `codechecker@398558744`, CodeChecker plists hold the blocks as JSON text, and the stored per-report trace still carries its own CFGs, so there was no version bump and no database change.

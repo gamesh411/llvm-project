@@ -96,3 +96,8 @@ The report-converter rewrite of the PVS-Studio sample files noted in the test ba
 The citation in the server stop fixed entry above covers only the `server.py` fix: the `dev-loop.sh stop` change that waits for shutdown is in `llvm-project@014428369df9`.
 
 The citation in the functest poisoning entry above covers only the CodeChecker side: the `dev-loop.sh functest` change that stops a leftover global test server is in `llvm-project@2872a9cbe8f3`.
+
+## 2026-11-12: wiki lint corrections
+
+The remaining report_viewer_api failure entry above says it updates a "stale" description, but the test baseline entry above never uses that word.
+What it updates is the test baseline entry's implication that the expected line numbers 15 and 25 are wrong: the ticket 03 Comments in `../issues/03-complete-the-constraint-snapshot.md` say the test is not stale but encodes Clang 14 behavior.
