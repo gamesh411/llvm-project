@@ -160,3 +160,20 @@ The lead left a checker-modelled value such as case 27's `LK` under Other and di
 Seen by the lead in the screenshots and passed to ticket 09: a comparison row reads `xx >= end` with the value 0, which a reader has to decode as "false".
 Also seen: in case 29 a row is named `Val`, a parameter of an inlined callee, under Entry inputs, because a value goes by the variable that first held it.
 Not seen in a browser: the ungrouped list for a trace without the symbol table, which jest covers.
+
+## 2026-11-13: ticket 09 accepted, slice 3 and the spec closed
+
+On 2026-11-13 the lead accepted ticket 09 after viewing `/Users/efulop/colorful-day-env/screens/t09-llvm-case29-what-if-1400.png`, `t09-tmux-example-900-rows.png` and `t09-tmux-this-step-1400.png`, at `codechecker@22aee2ee6..fe046668e` and `llvm-project@e6a65ee237ff`.
+It needed no Clang change and no database migration, and nothing about an example is stored.
+As of `codechecker@22aee2ee6`, the API is 6.80: `checkWhatIf` has a third argument `withExample`, and `WhatIfResult` has optional `example` (symbol and decimal string value pairs) and `exampleReason`.
+The example is the model of the verdict's own solver call, so asking for it adds no call and cannot change the verdict; a timeout gives no example and a reason.
+The server returns a value only for entries of the last step's path condition, each the solver's evaluation of the term that entry constrains.
+It prints the signed or unsigned reading that lies inside the analyzer's range for that entry, which needs no type table.
+A new Thrift argument breaks callers positionally: a page built at `22aee2ee6` alone would send its callback in the wrong place, and the page passes the argument from `codechecker@ec38498fd`.
+As of `codechecker@1af850862`, `readableRange` reads a range of a comparison as "true" or "false", with the analyzer's range on hover.
+As of `codechecker@ec38498fd`, "Whole path" has a "Show an example" button, each row gets an "e.g. V" chip, and any change of the What-If list drops the example.
+The worker's checks: server unit 147, functest 50, report-converter unit 159, jest 137, eslint, pycodestyle and pylint clean, mypy clean on 198 files with the repo's pinned mypy installed into the Colorful Day venv; the 19 mypy errors ticket 08 reported came from Homebrew's mypy on PATH.
+An example request took 12 to 21 ms on study case 6 and 67 to 70 ms on case 9's 1,837-step trace with 363 values.
+On the study's cases the example repeats the list where the analyzer already narrowed the deciding value to one value (cases 1, 6, 25), and helps on case 29, where `n` not 0 and `m + n` 0 become `n` 1, and under `m == 100` `n` becomes 4294967196, which makes the unsigned wrap explicit.
+Left open: a symbol that is not a row of its own, such as case 29's `m`, gets no value; a single-valued row shows a chip that repeats its value; the comparison reading in the line picker was not seen in a browser.
+With this ticket every ticket of `../../explain-the-path/issues/` is resolved.
