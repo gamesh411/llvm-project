@@ -273,7 +273,7 @@ PY
 
   # What a Clang from before trace format version 2 writes, and what reports
   # stored before it hold: every step with its whole snapshot, and the CFGs
-  # as dicts.
+  # as dicts in each trace rather than once per file.
   dir=$src/v1_trace
   mkdir -p "$dir"
   cp "$DEMO" "$dir/two_path.c"
@@ -284,10 +284,12 @@ sys.path.insert(0, sys.argv[1])
 from codechecker_report_converter.report import constraint_trace
 with open(sys.argv[2], 'rb') as f:
     plist = plistlib.load(f)
+graphs = plist.pop(constraint_trace.PLIST_GRAPHS, [])
 for diag in plist['diagnostics']:
     if 'constraint_trace' not in diag:
         continue
-    trace = constraint_trace.ConstraintTrace(diag['constraint_trace'])
+    trace = constraint_trace.ConstraintTrace(
+        constraint_trace.resolve_cfgs(diag['constraint_trace'], graphs))
     diag['constraint_trace'] = {
         'version': 1,
         'steps': [{**step, **trace.snapshot(step['exploded_node'])}
