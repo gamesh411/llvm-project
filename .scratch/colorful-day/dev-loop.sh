@@ -222,7 +222,8 @@ cmd_status() {
 # value a checker made, and the same without the table, as a Clang before the
 # table wrote it; and one from demo/replaced-field.c, a field of an object an
 # opaque call replaced, and one from demo/widened-loop.c, values a widened loop
-# replaced. Output
+# replaced. It also writes what_if_names.json, the What-If names of every
+# fixture as the server resolves them. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -374,6 +375,14 @@ with open(sys.argv[2], 'wb') as f:
 PY
   ! grep -q '<key>symbols</key>' "$dir/call_result.plist" || die "table left in $dir"
   echo "fixture ok: $dir/call_result.plist"
+
+  # The What-If names the server resolves at every step of the fixtures,
+  # which the page's jest tests compare with its own reading.
+  activate
+  (cd "$CC/web/server" && REPO_ROOT=$CC UPDATE_WHAT_IF_NAMES=1 \
+    python -m pytest -q tests/unit/test_what_if_names.py >/dev/null) \
+    || die "what_if_names.json not written"
+  echo "fixture ok: $src/what_if_names.json"
 }
 
 # Clang lit tests of this feature, plus any extra lit paths passed as arguments.
