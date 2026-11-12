@@ -54,7 +54,9 @@ The tests are the `constraint-snapshots*.c` files under `clang/test/Analysis/dia
 ## Where a symbol came from
 
 The trace's `symbols` key has one entry for each atomic symbol that the snapshots mention, alone or inside a symbolic expression, such as `conj_$5{int, LC1, S1234, #1}` in `(conj_$5{int, LC1, S1234, #1}) + 1`.
-An entry gives the symbol's kind, and, with Z3, its SMT-LIB term.
+An entry gives the symbol's kind, its type, and, with Z3, its SMT-LIB term.
+The type is the canonical type without qualifiers, such as `unsigned long` for a `size_t`, and the entry says whether the analyzer treats the symbol as an address.
+A reader needs both for symbols whose dump does not start with their type, such as a derived one: they say whether a range is null and how wide an integer is.
 A symbol the analyzer conjured also has an origin: the statement it was made for, with its location and the called function's name when the statement is a call, the function it was made in, and a reason.
 
 The reason is `call_result` when the symbol is the value a call returned and the analyzer evaluated that call without seeing inside the callee.

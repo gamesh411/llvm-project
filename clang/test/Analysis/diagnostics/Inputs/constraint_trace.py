@@ -80,6 +80,10 @@ def symbols(trace):
         for key in ("parent", "region"):
             if key in entry:
                 symbol[key] = strings[entry[key]]
+        if "type" in entry:
+            symbol["type"] = strings[entry["type"]]
+        if entry.get("pointer"):
+            symbol["pointer"] = True
         if "smt" in entry:
             symbol["smt"] = strings[entry["smt"]]
             symbol["smt_signed"] = entry["smt_signed"]

@@ -1549,6 +1549,12 @@ PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
   if (const auto &Term = getSMTTerm(Sym))
     std::tie(Result.SMTTerm, Result.SMTSigned) = *Term;
 #endif
+  QualType Type = Sym->getType();
+  if (!Type.isNull()) {
+    Result.Type = Type.getCanonicalType().getUnqualifiedType().getAsString(
+        getASTContext().getPrintingPolicy());
+    Result.IsPointer = Loc::isLocType(Type);
+  }
 
   if (const auto *Derived = dyn_cast<SymbolDerived>(Sym)) {
     Result.Parent = getSymbolDump(Derived->getParentSymbol());

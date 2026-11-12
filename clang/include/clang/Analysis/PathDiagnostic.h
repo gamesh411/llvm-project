@@ -536,6 +536,14 @@ struct PathDiagnosticSymbol {
   /// when it has no bitvector term or there is no SMT-LIB.
   std::string SMTTerm;
   bool SMTSigned = false;
+  /// The symbol's type without qualifiers and typedefs, as the analyzer would
+  /// print it, such as "unsigned long" or "int *". A reader needs it to say
+  /// whether a symbol is a pointer and how wide an integer is, which the dump
+  /// of a derived symbol does not tell.
+  std::string Type;
+  /// Whether the analyzer treats the symbol as an address: a pointer, a
+  /// reference or the like.
+  bool IsPointer = false;
   /// Only for conjured symbols.
   std::optional<Origin> Conjured;
   /// Only for derived symbols: the dump of the symbol they are a part of,

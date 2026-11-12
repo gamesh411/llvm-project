@@ -943,6 +943,12 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
       Indent(o, indent) << "<key>region</key>";
       EmitInteger(o, intern(Sym.Region)) << '\n';
     }
+    if (!Sym.Type.empty()) {
+      Indent(o, indent) << "<key>type</key>";
+      EmitInteger(o, intern(Sym.Type)) << '\n';
+    }
+    if (Sym.IsPointer)
+      Indent(o, indent) << "<key>pointer</key><true/>\n";
     if (!Sym.SMTTerm.empty()) {
       Indent(o, indent) << "<key>smt</key>";
       EmitInteger(o, intern(Sym.SMTTerm)) << '\n';

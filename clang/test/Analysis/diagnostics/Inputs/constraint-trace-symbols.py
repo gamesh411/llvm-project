@@ -9,7 +9,8 @@ globals loop @<file>:<line>:<col> in <function> frame <index>`, each part only
 when the trace has it, and `frame none` when its frame is not in
 stack_frames. With the optional second
 argument `smt`, a symbol with an SMT-LIB term also prints `smt <term>
-[signed|unsigned]`.
+[signed|unsigned]`. With `types`, every symbol prints `type <type>` and, for an
+address, `pointer`, after the rest.
 
 Before the symbols, the table is checked against the snapshots: an atomic
 symbol that a list names without an entry prints NO-ENTRY, and an entry that
@@ -64,7 +65,7 @@ def render_location(files, location):
     )
 
 
-def render(files, dump, symbol, smt):
+def render(files, dump, symbol, smt, types=False):
     parts = ["SYMBOL", dump, symbol["kind"]]
     if "parent" in symbol:
         parts.append("parent " + symbol["parent"])
@@ -92,11 +93,16 @@ def render(files, dump, symbol, smt):
             "smt %s [%s]"
             % (symbol["smt"], "signed" if symbol["smt_signed"] else "unsigned")
         )
+    if types:
+        parts.append("type %s" % symbol.get("type", "none"))
+        if symbol.get("pointer"):
+            parts.append("pointer")
     return " ".join(parts)
 
 
 def main():
-    smt = len(sys.argv) > 2 and sys.argv[2] == "smt"
+    smt = "smt" in sys.argv[2:]
+    types = "types" in sys.argv[2:]
     with open(sys.argv[1], "rb") as f:
         plist = plistlib.load(f)
 
@@ -117,7 +123,7 @@ def main():
         if list(table) != sorted(table):
             print("UNSORTED-TABLE")
         for dump, symbol in table.items():
-            print(render(plist["files"], dump, symbol, smt))
+            print(render(plist["files"], dump, symbol, smt, types))
 
 
 if __name__ == "__main__":
