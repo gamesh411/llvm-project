@@ -284,7 +284,8 @@ sys.path.insert(0, sys.argv[1])
 from codechecker_report_converter.report import constraint_trace
 with open(sys.argv[2], 'rb') as f:
     plist = plistlib.load(f)
-graphs = plist.pop(constraint_trace.PLIST_GRAPHS, [])
+graphs = constraint_trace.read_graphs(
+    plist.pop(constraint_trace.PLIST_GRAPHS, []))
 for diag in plist['diagnostics']:
     if 'constraint_trace' not in diag:
         continue
