@@ -24,7 +24,7 @@ constraint_trace: dict
   exploded_nodes: array, the snapshot table, one dict per node a step names, sorted by path_position
     id, state_id, path_position, kind, location, frame: as in version 1
     cfg_position: as a version 1 step's, absent when the node has no place in a carried CFG
-    symbol_ranges, variables, path_condition, smt_declarations: list deltas (see below), each absent when that list did not change
+    symbol_ranges, variables, path_condition, smt_declarations, caller_variables: list deltas (see below), each absent when that list did not change
   stack_frames: array, as in version 1
   symbols: array, the symbol table (see below), absent when the snapshots mention no symbol
   expressions: array, the types of symbolic expressions (see below), absent when the snapshots constrain none
@@ -37,7 +37,7 @@ Every step names a node, because every snapshot is built from one, and a node ha
 
 ## Snapshot lists
 
-A node's snapshot has four lists.
+A node's snapshot has five lists.
 Each is written as a delta against the same list of the previous entry in `exploded_nodes`.
 The first entry's deltas are against empty lists.
 
@@ -59,11 +59,13 @@ Entries are arrays of integers, which are indices into `strings` unless noted ot
 | `variables` | `[name, value, kind]` or `[name, value, kind, smt, signed]`, where `signed` is the integer 0 or 1 | `{name, value, kind}` and, when present, `smt` and `smt_signed` |
 | `path_condition` | `[symbol, range]`, or `[symbol, range, assertion]` when `smtlib` is true | `{symbol, range}`; the assertions in list order are the step's `smt_assertions` |
 | `smt_declarations` | `[declaration]` | one string of `smt_declarations` |
+| `caller_variables` | `[frame, name, value, kind]` or `[frame, name, value, kind, smt, signed]`, where `frame` is an index into `stack_frames` | none, version 1 had no caller variables |
 
 Without `smtlib`, a step has neither `smt_declarations` nor `smt_assertions`, as in version 1 from a Clang without Z3.
 The order of each rebuilt list is the version 1 order: ranges and the path condition sorted by symbol dump, variables by name, declarations by symbol ID.
+Caller variables are sorted by frame, innermost caller first, then by name.
 
-Clang matches the entries of two consecutive lists by their first value, which is the symbol, the name or the declaration.
+Clang matches the entries of two consecutive lists by their first value, which is the symbol, the name or the declaration, and caller variables by their first two, the frame and the name.
 An entry kept with new values becomes a `replace`, so a narrowed range on a symbol is one operation.
 When matching fails, for example because two entries share a first value or kept entries change order, the delta removes the whole previous list and inserts the whole new one.
 Clang checks in assertion builds that each delta rebuilds the snapshot it describes.
@@ -73,10 +75,20 @@ So its deltas only replace and insert, and never remove.
 Each entry carries its SMT-LIB assertion, so the SMT-LIB of the path condition costs one index per change rather than a full copy per step.
 Every SMT-LIB declaration and assertion text is in `strings` once per report.
 
+### Caller variables
+
+As of the `llvm-project` commit titled "[analyzer] Write the variables of calling frames into a constraint trace", a node inside an inlined call has `caller_variables`: the variables of every frame above the node's own, as `variables` lists the node's frame's.
+`variables` keeps its meaning, the node's own frame, so a reader that knows only it is unchanged.
+Every frame of a node's stack is in `stack_frames`, so `frame` always resolves; two frames of one function, as in recursion, are two indices.
+A frame is listed only when it has a variable to show, and a caller's local only while the analyzer's store keeps it, which is while the caller reads it after the call; the analyzed function's parameters keep their initial values throughout, as in `variables`.
+A global is the same memory in every frame, so a frame leaves out a global that a frame it called lists already.
+`smt_declarations` declares the symbols of caller variables too, so a term from either list reads with the node's declarations.
+Entering a call inserts the calling frame's entries and returning removes them, and a callee's own steps leave the list alone, so the list costs about one entry per variable per call on the path.
+
 ## Symbol table
 
 As of the `llvm-project` commit titled "[analyzer] Record where conjured symbols of a constraint trace came from", a trace has a table of the atomic symbols its snapshots mention.
-It has one entry for each symbol that is the symbol of a `symbol_ranges` or `path_condition` entry, the value of a `variables` entry of kind `symbol`, or an atom of a symbolic expression in one of them.
+It has one entry for each symbol that is the symbol of a `symbol_ranges` or `path_condition` entry, the value of a `variables` or `caller_variables` entry of kind `symbol`, or an atom of a symbolic expression in one of them.
 A symbolic expression such as `(conj_$5{int, ...}) + 1` has no entry of its own, and a reader renders it from the entries of its atoms.
 As of the `llvm-project` commit titled "[analyzer] Say which call or loop replaced a value in a constraint trace", the parent of a `derived_` symbol has an entry as well, even when it appears only inside the derived symbol's dump.
 The table is keyed by the symbol's dump in `strings`, the same string the lists use, and is sorted by that dump.
@@ -128,7 +140,7 @@ An access path follows a pointer whose value is the initial or replaced value of
 It is absent when any part of the region cannot be described, such as the pointee of a call's result, an element at a computed index, or an element region that reinterprets memory that is not an array of that element type.
 No reader may make a name out of a dump.
 
-The same commit adds the trace's `expressions` key: one entry for each symbolic expression that is the symbol of a `symbol_ranges` or `path_condition` entry or the value of a `variables` entry of kind `symbol`, sorted by dump.
+The same commit adds the trace's `expressions` key: one entry for each symbolic expression that is the symbol of a `symbol_ranges` or `path_condition` entry or the value of a `variables` or `caller_variables` entry of kind `symbol`, sorted by dump.
 Its subexpressions get none.
 It exists because a range is readable only with the type of what it constrains, which the dump of an expression does not start with.
 
@@ -210,13 +222,15 @@ Each language has one reader, and every consumer goes through it.
   `symbols()` reads the symbol table, keyed by dump, with its strings read, and `expressions()` the types of expressions; `encode()` writes both.
   `read_graphs()` reads a plist's `constraint_trace_cfgs`, `resolve_cfgs()` puts those bodies back into a trace, and `GraphTable` keeps each body once, with JSON text blocks, when a plist is written.
   The report converter uses its `check()`, and What-If uses its `lifetimes()`, which lists every entry once with the span of nodes it holds for.
-  `snapshot(node)` rebuilds a whole snapshot by replaying deltas from a checkpoint kept every 64 nodes.
+  `snapshot(node)` rebuilds a whole snapshot by replaying deltas from a checkpoint kept every 64 nodes, with `caller_variables` as a list of variables that each have a `frame`, and `frame(index)` reads that frame's `stack_frames` entry.
+  `lifetimes('caller_variables')` and `entry()` give a caller's variable, its frame and its symbol, which is what What-If needs to resolve one.
   `encode()` writes a version 2 trace from whole snapshots, with Clang's matching rule, for tests and fixture derivation.
 - JavaScript: `web/server/vue-cli/src/components/Report/ConstraintTrace.js`, `ConstraintTrace`.
   `symbols` and `symbol(dump)` read the symbol table, `expressions` and `typeOf(dump)` the types of expressions and symbols, `nearestStep()` finds the Path Step nearest to a symbol's origin, and `symbolLabel()` gives the text the panel shows for a symbol, labelling a derived symbol from its parent's entry.
   The UI builds a step's snapshot the first time it is shown and keeps it.
   It tells whether two steps show the same snapshot without building either, from a running hash of each node's lists checked against the raw entries, and it names path condition symbols from a change log built once.
-- The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`, whose `expand()` takes the plist's `constraint_trace_cfgs` too, and whose `symbols()` and `expressions()` read the symbol table and the types of expressions.
+  `snapshot(node).caller_variables` and `frame(index)` give the callers' variables and their frames, and `symbolNames(order)` names a symbol by the variable of the step's own frame that holds it, else by the innermost caller's, else by the step's frame's history, written `function::name` when a variable of that name in another frame holds something else at the step.
+- The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`, whose `expand()` takes the plist's `constraint_trace_cfgs` too, and whose `symbols()` and `expressions()` read the symbol table and the types of expressions; a step's `caller_variables` there have their `frame` as well.
 
 ## Sizes
 

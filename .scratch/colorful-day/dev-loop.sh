@@ -265,7 +265,7 @@ for diag in plist['diagnostics']:
     for index, node in enumerate(trace.nodes):
         snapshot = trace.snapshot(index)
         del snapshot['smt_declarations'], snapshot['smt_assertions']
-        for variable in snapshot['variables']:
+        for variable in snapshot['variables'] + snapshot['caller_variables']:
             variable.pop('smt', None)
             variable.pop('smt_signed', None)
         nodes.append({**{key: value for key, value in node.items()
@@ -307,7 +307,9 @@ for diag in plist['diagnostics']:
         constraint_trace.resolve_cfgs(diag['constraint_trace'], graphs))
     diag['constraint_trace'] = {
         'version': 1,
-        'steps': [{**step, **trace.snapshot(step['exploded_node'])}
+        'steps': [{**step, **{key: value for key, value
+                              in trace.snapshot(step['exploded_node']).items()
+                              if key != 'caller_variables'}}
                   for step in trace.steps],
         'cfgs': trace.cfgs(),
         'exploded_nodes': [{key: value for key, value in node.items()
@@ -334,9 +336,10 @@ PY
   # widened_loop: locals a widened loop replaced, with widening turned on.
   # access_path: values of fields, elements and pointees, named by the
   # expression a reader would write.
+  # caller_frames: a bug two calls deep, with an `n` in each of three frames.
   local name checkers widen
   for name in z3_refuted concrete_value opaque_call several_contexts \
-      call_result replaced_field widened_loop access_path; do
+      call_result replaced_field widened_loop access_path caller_frames; do
     dir=$src/$name
     mkdir -p "$dir"
     cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
@@ -387,6 +390,8 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-delta.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-symbols.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-symbol-types.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-names.cpp" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-callers.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
