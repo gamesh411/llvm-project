@@ -97,8 +97,9 @@ namespace {
 
 namespace {
 /// One entry of a constraint snapshot list, as indices into the trace's
-/// strings, except for the integer of a variable's smt_signed.
-using TraceEntry = llvm::SmallVector<unsigned, 5>;
+/// strings, except for the integer of a variable's smt_signed and the stack
+/// frame of a caller's variable.
+using TraceEntry = llvm::SmallVector<unsigned, 6>;
 using TraceList = std::vector<TraceEntry>;
 } // namespace
 
@@ -153,7 +154,7 @@ private:
                      unsigned indent);
 
   /// The lists of one snapshot, in the order the trace writes them.
-  using TraceLists = std::array<TraceList, 4>;
+  using TraceLists = std::array<TraceList, 5>;
   TraceLists makeTraceLists(const PathDiagnosticConstraintSnapshot &Snapshot);
   unsigned intern(StringRef String);
   void ReportStringTable(raw_ostream &o, unsigned indent);
@@ -520,7 +521,12 @@ toString(PathDiagnosticConstraintSnapshot::Variable::ValueKind Kind) {
 /// The keys under which a node's snapshot lists are written, in the order of
 /// PlistPrinter::TraceLists.
 static constexpr StringRef TraceListKeys[] = {
-    "symbol_ranges", "variables", "path_condition", "smt_declarations"};
+    "symbol_ranges", "variables", "path_condition", "smt_declarations",
+    "caller_variables"};
+
+/// How many of an entry's first values identify it in its list: a caller's
+/// variable is its frame and its name, since several frames have an `n`.
+static constexpr unsigned TraceListKeyWidths[] = {1, 1, 1, 1, 2};
 
 namespace {
 /// How one snapshot list turns into the next one's. Positions in Replace and
@@ -538,24 +544,28 @@ struct TraceListDelta {
 };
 } // namespace
 
-/// An entry is identified by its first index (the symbol of a range, the
-/// name of a variable, the line of a declaration), and both lists are sorted
-/// the same way, so entries kept from one snapshot to the next stay in order.
-/// When that does not hold, the delta lists the whole later list.
+/// An entry is identified by its first \p KeyWidth indices (the symbol of a
+/// range, the name of a variable, the line of a declaration, the frame and
+/// name of a caller's variable), and both lists are sorted the same way, so
+/// entries kept from one snapshot to the next stay in order. When that does
+/// not hold, the delta lists the whole later list.
 static TraceListDelta diffTraceLists(const TraceList &Prev,
-                                     const TraceList &Next) {
+                                     const TraceList &Next, unsigned KeyWidth) {
+  auto KeyOf = [KeyWidth](const TraceEntry &Entry) {
+    return std::make_pair(Entry[0], KeyWidth > 1 ? Entry[1] : 0U);
+  };
   TraceListDelta Delta;
-  llvm::DenseMap<unsigned, unsigned> NextByKey;
+  llvm::DenseMap<std::pair<unsigned, unsigned>, unsigned> NextByKey;
   bool Keyed = true;
   for (auto [Index, Entry] : llvm::enumerate(Next))
-    Keyed &= NextByKey.try_emplace(Entry.front(), Index).second;
+    Keyed &= NextByKey.try_emplace(KeyOf(Entry), Index).second;
 
   llvm::SmallVector<bool, 0> Kept(Next.size(), false);
   std::optional<unsigned> LastKept;
   for (auto [Index, Entry] : llvm::enumerate(Prev)) {
     if (!Keyed)
       break;
-    auto It = NextByKey.find(Entry.front());
+    auto It = NextByKey.find(KeyOf(Entry));
     if (It == NextByKey.end() || Kept[It->second]) {
       Delta.Remove.push_back(Index);
       continue;
@@ -638,16 +648,22 @@ unsigned PlistPrinter::intern(StringRef String) {
 PlistPrinter::TraceLists
 PlistPrinter::makeTraceLists(const PathDiagnosticConstraintSnapshot &Snapshot) {
   TraceLists Lists;
-  auto &[Ranges, Variables, PathCondition, Declarations] = Lists;
+  auto &[Ranges, Variables, PathCondition, Declarations, CallerVariables] =
+      Lists;
   for (const auto &[Symbol, Range] : Snapshot.SymbolRanges)
     Ranges.push_back({intern(Symbol), intern(Range)});
+  auto AddVariable =
+      [this](TraceList &List, TraceEntry Entry,
+             const PathDiagnosticConstraintSnapshot::Variable &Var) {
+        Entry.append(
+            {intern(Var.Name), intern(Var.Value), intern(toString(Var.Kind))});
+        if (!Var.SMTTerm.empty())
+          Entry.append({intern(Var.SMTTerm), Var.SMTSigned});
+        List.push_back(std::move(Entry));
+      };
   for (const PathDiagnosticConstraintSnapshot::Variable &Var :
-       Snapshot.Variables) {
-    TraceEntry &Entry = Variables.emplace_back(TraceEntry{
-        intern(Var.Name), intern(Var.Value), intern(toString(Var.Kind))});
-    if (!Var.SMTTerm.empty())
-      Entry.append({intern(Var.SMTTerm), Var.SMTSigned});
-  }
+       Snapshot.Variables)
+    AddVariable(Variables, {}, Var);
   // There is one assertion per path condition entry, in the same order, so
   // an entry carries its assertion along.
   assert(!Snapshot.HasSMTLIB ||
@@ -660,6 +676,12 @@ PlistPrinter::makeTraceLists(const PathDiagnosticConstraintSnapshot &Snapshot) {
   }
   for (const std::string &Declaration : Snapshot.SMTDeclarations)
     Declarations.push_back({intern(Declaration)});
+  // Every frame of a node's stack is in StackFrames by now.
+  for (const auto &[FrameID, FrameVariables] : Snapshot.CallerVariables) {
+    unsigned Frame = StackFrameIndex.find(FrameID)->second;
+    for (const PathDiagnosticConstraintSnapshot::Variable &Var : FrameVariables)
+      AddVariable(CallerVariables, {Frame}, Var);
+  }
   return Lists;
 }
 
@@ -841,9 +863,9 @@ void PlistPrinter::ReportExplodedNodes(raw_ostream &o, unsigned indent) {
     }
     assert(Snapshot->HasSMTLIB == ExplodedNodes.front()->HasSMTLIB);
     TraceLists Next = makeTraceLists(*Snapshot);
-    for (auto [Key, PrevList, NextList] :
-         llvm::zip_equal(TraceListKeys, Prev, Next)) {
-      TraceListDelta Delta = diffTraceLists(PrevList, NextList);
+    for (auto [Key, KeyWidth, PrevList, NextList] :
+         llvm::zip_equal(TraceListKeys, TraceListKeyWidths, Prev, Next)) {
+      TraceListDelta Delta = diffTraceLists(PrevList, NextList, KeyWidth);
       assert(applyTraceListDelta(PrevList, Delta) == NextList &&
              "a snapshot delta does not give the snapshot");
       ReportTraceListDelta(o, Key, Delta, indent);

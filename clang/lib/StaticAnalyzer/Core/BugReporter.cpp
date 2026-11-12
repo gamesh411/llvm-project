@@ -252,9 +252,12 @@ class PathDiagnosticBuilder : public BugReporterContext {
       ConstraintSnapshots;
   /// A variable a snapshot shows, by name, before it is printed.
   using VisibleVariable = std::pair<std::string, SVal>;
+  using VisibleVariables = SmallVector<VisibleVariable, 16>;
   struct UnbuiltSnapshot {
     const ExplodedNode *Node;
-    SmallVector<VisibleVariable, 16> Variables;
+    VisibleVariables Variables;
+    /// By the frame's LocationContext ID, innermost first.
+    SmallVector<std::pair<int64_t, VisibleVariables>, 0> CallerVariables;
   };
   /// The snapshots in ConstraintSnapshots that are not built yet.
   mutable llvm::DenseMap<const PathDiagnosticConstraintSnapshot *,
@@ -275,6 +278,10 @@ class PathDiagnosticBuilder : public BugReporterContext {
   mutable std::map<SymbolRef, std::optional<std::pair<std::string, bool>>>
       SMTTerms;
   mutable std::map<const SymbolData *, std::string> SMTDeclarations;
+  /// The globals each function's body names, in the order it names them.
+  /// Every snapshot asks for those of every frame on its stack.
+  mutable llvm::DenseMap<const Decl *, SmallVector<const VarDecl *, 4>>
+      ReferencedGlobals;
   /// The atomic symbols the built snapshots mention, and the symbolic
   /// expressions they constrain, each once, shared with every diagnostic this
   /// builder makes. Null unless snapshots are on.
@@ -392,21 +399,29 @@ private:
 
   std::vector<PathDiagnosticCFG> renderPathCFGs() const;
 
-  /// The variables of \p Node's stack frame and the globals its function
-  /// names, sorted by name.
-  SmallVector<VisibleVariable, 16>
-  collectVisibleVariables(const ExplodedNode *Node) const;
+  /// The variables of \p Node's stack frame and of each frame that called
+  /// it, each with the globals its function names, sorted by name, see
+  /// PathDiagnosticConstraintSnapshot::CallerVariables.
+  UnbuiltSnapshot collectVisibleVariables(const ExplodedNode *Node) const;
 
-  /// Returns the symbol each added variable holds, null for a concrete value.
-  SmallVector<SymbolRef, 16>
-  addVisibleVariables(PathDiagnosticConstraintSnapshot &Snapshot,
-                      ArrayRef<VisibleVariable> Variables) const;
+  ArrayRef<const VarDecl *> getReferencedGlobals(const Decl *D) const;
 
-  /// Adds the path condition as SMT-LIB, and the SMT term of each variable
-  /// holding one of \p VariableSymbols. Does nothing without Z3.
+  /// A variable a snapshot shows, and the symbol it holds, null for a
+  /// concrete value.
+  using ShownVariable =
+      std::pair<PathDiagnosticConstraintSnapshot::Variable *, SymbolRef>;
+
+  /// Prints \p Variables into \p Out, leaving out those whose value a
+  /// snapshot cannot show, and returns the symbol each printed one holds.
+  SmallVector<SymbolRef, 16> printVisibleVariables(
+      std::vector<PathDiagnosticConstraintSnapshot::Variable> &Out,
+      ArrayRef<VisibleVariable> Variables) const;
+
+  /// Adds the path condition as SMT-LIB, and the SMT term of each of \p
+  /// Variables that holds a symbol. Does nothing without Z3.
   void addSMTLIB(PathDiagnosticConstraintSnapshot &Snapshot,
                  ConstraintMap PathCondition,
-                 ArrayRef<SymbolRef> VariableSymbols) const;
+                 ArrayRef<ShownVariable> Variables) const;
 
   void addEdgeToPath(PathDiagnosticConstruct &C,
                      PathDiagnosticLocation &PrevLoc,
@@ -1403,8 +1418,8 @@ PathDiagnosticBuilder::makeConstraintSnapshot(const ExplodedNode *Node) const {
     // numbers every symbol created after it. So variables are read for every
     // snapshot asked for, pruned or not, in the order the path is walked,
     // which keeps symbol IDs independent of which snapshots are built.
-    UnbuiltSnapshots.try_emplace(
-        It->second.get(), UnbuiltSnapshot{Node, collectVisibleVariables(Node)});
+    UnbuiltSnapshots.try_emplace(It->second.get(),
+                                 collectVisibleVariables(Node));
   }
   return It->second;
 }
@@ -1442,28 +1457,42 @@ void PathDiagnosticBuilder::fillConstraintSnapshot(
   const ExplodedNode *Node = Unbuilt.Node;
   Snapshot.SymbolRanges =
       renderConstraints(getConstraintMapOfClassMembers(Node->getState()));
-  SmallVector<SymbolRef, 16> VariableSymbols =
-      addVisibleVariables(Snapshot, Unbuilt.Variables);
+  SmallVector<ShownVariable, 16> Shown;
+  auto AddShown = [&Shown](auto &Variables, ArrayRef<SymbolRef> Symbols) {
+    for (auto [Var, Sym] : llvm::zip_equal(Variables, Symbols))
+      Shown.emplace_back(&Var, Sym);
+  };
+  SmallVector<SymbolRef, 16> Symbols =
+      printVisibleVariables(Snapshot.Variables, Unbuilt.Variables);
+  AddShown(Snapshot.Variables, Symbols);
+  for (const auto &[FrameID, Variables] : Unbuilt.CallerVariables) {
+    PathDiagnosticConstraintSnapshot::CallerFrame Caller{FrameID, {}};
+    Symbols = printVisibleVariables(Caller.Variables, Variables);
+    if (Caller.Variables.empty())
+      continue;
+    Snapshot.CallerVariables.push_back(std::move(Caller));
+    AddShown(Snapshot.CallerVariables.back().Variables, Symbols);
+  }
   ConstraintMap PathCondition = PathHistory.find(Node)->second.first;
   Snapshot.PathCondition = renderConstraints(PathCondition);
-  addSMTLIB(Snapshot, PathCondition, VariableSymbols);
+  addSMTLIB(Snapshot, PathCondition, Shown);
   Snapshot.Position = findCFGPosition(Node);
   Snapshot.Node = describeExplodedNode(Node);
 
   // Every symbol with a known range here is in the path condition too.
-  SmallVector<unsigned, 32> Symbols;
+  SmallVector<unsigned, 32> Indices;
   for (const auto &[Sym, Range] : PathCondition) {
-    recordSymbols(Sym, Symbols);
-    recordExpression(Sym, Symbols);
+    recordSymbols(Sym, Indices);
+    recordExpression(Sym, Indices);
   }
-  for (SymbolRef Sym : VariableSymbols) {
+  for (const auto &[Var, Sym] : Shown) {
     if (!Sym)
       continue;
-    recordSymbols(Sym, Symbols);
-    recordExpression(Sym, Symbols);
+    recordSymbols(Sym, Indices);
+    recordExpression(Sym, Indices);
   }
-  llvm::sort(Symbols);
-  Snapshot.Symbols.assign(Symbols.begin(), llvm::unique(Symbols));
+  llvm::sort(Indices);
+  Snapshot.Symbols.assign(Indices.begin(), llvm::unique(Indices));
 }
 
 void PathDiagnosticBuilder::recordSymbols(
@@ -1761,7 +1790,7 @@ template <typename T> static std::string printToString(const T &Printable) {
 
 void PathDiagnosticBuilder::addSMTLIB(
     PathDiagnosticConstraintSnapshot &Snapshot, ConstraintMap PathCondition,
-    ArrayRef<SymbolRef> VariableSymbols) const {
+    ArrayRef<ShownVariable> Variables) const {
 #if LLVM_WITH_Z3
   getSMTSolver();
   ASTContext &Ctx = getASTContext();
@@ -1792,13 +1821,13 @@ void PathDiagnosticBuilder::addSMTLIB(
   for (const auto &Assertion : Assertions)
     Snapshot.SMTAssertions.push_back(Assertion.second.str());
 
-  for (auto [Var, Sym] : llvm::zip_equal(Snapshot.Variables, VariableSymbols)) {
+  for (auto [Var, Sym] : Variables) {
     if (!Sym)
       continue;
     const auto &Term = getSMTTerm(Sym);
     if (!Term)
       continue;
-    std::tie(Var.SMTTerm, Var.SMTSigned) = *Term;
+    std::tie(Var->SMTTerm, Var->SMTSigned) = *Term;
     Declare(Sym);
   }
 
@@ -2111,19 +2140,29 @@ std::vector<PathDiagnosticCFG> PathDiagnosticBuilder::renderPathCFGs() const {
   return Result;
 }
 
-SmallVector<PathDiagnosticBuilder::VisibleVariable, 16>
+PathDiagnosticBuilder::UnbuiltSnapshot
 PathDiagnosticBuilder::collectVisibleVariables(const ExplodedNode *Node) const {
   const SourceManager &SM = getSourceManager();
   ProgramStateRef State = Node->getState();
-  const auto *Frame = Node->getStackFrame();
 
-  // Keyed by name, which is also what makes the output sorted.
-  std::map<std::string, std::pair<const VarDecl *, SVal>> Visible;
+  // One per frame, innermost first, each keyed by name, which is also what
+  // makes the output sorted.
+  using Visible = std::map<std::string, std::pair<const VarDecl *, SVal>>;
+  SmallVector<std::pair<const StackFrame *, Visible>, 4> Frames;
+  llvm::DenseMap<const StackFrame *, unsigned> FrameIndex;
+  for (const StackFrame *Frame = Node->getStackFrame(); Frame;
+       Frame = Frame->getParent()) {
+    FrameIndex.try_emplace(Frame, Frames.size());
+    Frames.emplace_back(Frame, Visible());
+  }
+
   for (const auto &[Region, Val] : collectDirectVarBindings(State)) {
-    if (Region->getStackFrame() != Frame)
+    auto Found = FrameIndex.find(Region->getStackFrame());
+    if (Found == FrameIndex.end())
       continue;
+    Visible &Vars = Frames[Found->second].second;
     const VarDecl *VD = Region->getDecl();
-    auto [It, Inserted] = Visible.try_emplace(VD->getName().str(), VD, Val);
+    auto [It, Inserted] = Vars.try_emplace(VD->getName().str(), VD, Val);
     // Two live variables with one name are nested scopes; the name means the
     // inner one, which is declared later.
     if (!Inserted && SM.isBeforeInTranslationUnit(
@@ -2131,40 +2170,67 @@ PathDiagnosticBuilder::collectVisibleVariables(const ExplodedNode *Node) const {
       It->second = {VD, Val};
   }
 
-  // A parameter of the analyzed function has its initial value without any
-  // binding. Once a written parameter is dropped as dead, reading it would
-  // give that initial value back, so it is treated as gone instead.
-  if (Frame->inTopFrame()) {
-    if (const auto *FD = dyn_cast_or_null<FunctionDecl>(Frame->getDecl())) {
-      unsigned Position = PathHistory.find(Node)->second.second;
-      for (const ParmVarDecl *Param : FD->parameters()) {
-        const MemRegion *Region = State->getLValue(Param, Frame).getAsRegion();
-        auto Write = FirstParameterWrite.find(Region);
-        if (Write == FirstParameterWrite.end() || Write->second > Position)
-          Visible.try_emplace(Param->getName().str(), Param,
-                              State->getSVal(Region));
+  // A global is the same memory in every frame, so only the innermost frame
+  // whose function names it shows it.
+  llvm::DenseSet<const VarDecl *> GlobalsShown;
+  for (auto &[Frame, Vars] : Frames) {
+    // A parameter of the analyzed function has its initial value without any
+    // binding. Once a written parameter is dropped as dead, reading it would
+    // give that initial value back, so it is treated as gone instead.
+    if (Frame->inTopFrame()) {
+      if (const auto *FD = dyn_cast_or_null<FunctionDecl>(Frame->getDecl())) {
+        unsigned Position = PathHistory.find(Node)->second.second;
+        for (const ParmVarDecl *Param : FD->parameters()) {
+          const MemRegion *Region =
+              State->getLValue(Param, Frame).getAsRegion();
+          auto Write = FirstParameterWrite.find(Region);
+          if (Write == FirstParameterWrite.end() || Write->second > Position)
+            Vars.try_emplace(Param->getName().str(), Param,
+                             State->getSVal(Region));
+        }
       }
+    }
+
+    for (const VarDecl *Global : getReferencedGlobals(Frame->getDecl())) {
+      if (GlobalsShown.contains(Global))
+        continue;
+      if (Vars.try_emplace(Global->getName().str(), Global,
+                           State->getSVal(State->getLValue(Global, Frame)))
+              .second)
+        GlobalsShown.insert(Global);
     }
   }
 
-  if (const Decl *D = Frame->getDecl()) {
-    ReferencedGlobalsCollector Globals;
-    if (D->hasBody())
-      Globals.TraverseStmt(D->getBody());
-    for (const VarDecl *Global : Globals.Found)
-      Visible.try_emplace(Global->getName().str(), Global,
-                          State->getSVal(State->getLValue(Global, Frame)));
+  UnbuiltSnapshot Result{Node, {}, {}};
+  for (auto [Index, FrameAndVars] : llvm::enumerate(Frames)) {
+    VisibleVariables &Out =
+        Index == 0
+            ? Result.Variables
+            : Result.CallerVariables
+                  .emplace_back(FrameAndVars.first->getID(), VisibleVariables())
+                  .second;
+    for (const auto &[Name, DeclAndVal] : FrameAndVars.second)
+      if (!Name.empty())
+        Out.emplace_back(Name, DeclAndVal.second);
   }
-
-  SmallVector<VisibleVariable, 16> Result;
-  for (const auto &[Name, DeclAndVal] : Visible)
-    if (!Name.empty())
-      Result.emplace_back(Name, DeclAndVal.second);
   return Result;
 }
 
-SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
-    PathDiagnosticConstraintSnapshot &Snapshot,
+ArrayRef<const VarDecl *>
+PathDiagnosticBuilder::getReferencedGlobals(const Decl *D) const {
+  if (!D)
+    return {};
+  auto [It, Inserted] = ReferencedGlobals.try_emplace(D);
+  if (Inserted && D->hasBody()) {
+    ReferencedGlobalsCollector Globals;
+    Globals.TraverseStmt(D->getBody());
+    It->second.assign(Globals.Found.begin(), Globals.Found.end());
+  }
+  return It->second;
+}
+
+SmallVector<SymbolRef, 16> PathDiagnosticBuilder::printVisibleVariables(
+    std::vector<PathDiagnosticConstraintSnapshot::Variable> &Out,
     ArrayRef<VisibleVariable> Variables) const {
   SmallVector<SymbolRef, 16> Symbols;
   for (const auto &[Name, Val] : Variables) {
@@ -2188,7 +2254,7 @@ SmallVector<SymbolRef, 16> PathDiagnosticBuilder::addVisibleVariables(
     } else {
       continue;
     }
-    Snapshot.Variables.push_back(
+    Out.push_back(
         {Name, std::move(Value), Kind, /*SMTTerm=*/{}, /*SMTSigned=*/false});
     Symbols.push_back(Sym);
   }

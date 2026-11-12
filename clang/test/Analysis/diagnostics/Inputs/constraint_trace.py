@@ -10,7 +10,13 @@ control flow graphs whole and as dicts, so that the helpers can print what a
 step shows. `symbols` reads the table of the symbols those snapshots mention.
 """
 
-LISTS = ("symbol_ranges", "variables", "path_condition", "smt_declarations")
+LISTS = (
+    "symbol_ranges",
+    "variables",
+    "path_condition",
+    "smt_declarations",
+    "caller_variables",
+)
 
 
 def apply_delta(entries, delta):
@@ -26,19 +32,26 @@ def apply_delta(entries, delta):
     return entries
 
 
+def render_variable(entry, strings):
+    variable = {
+        "name": strings[entry[0]],
+        "value": strings[entry[1]],
+        "kind": strings[entry[2]],
+    }
+    if len(entry) > 3:
+        variable["smt"] = strings[entry[3]]
+        variable["smt_signed"] = bool(entry[4])
+    return variable
+
+
 def render_entry(field, entry, strings, smtlib):
     if field == "smt_declarations":
         return strings[entry[0]]
     if field == "variables":
-        variable = {
-            "name": strings[entry[0]],
-            "value": strings[entry[1]],
-            "kind": strings[entry[2]],
-        }
-        if len(entry) > 3:
-            variable["smt"] = strings[entry[3]]
-            variable["smt_signed"] = bool(entry[4])
-        return variable
+        return render_variable(entry, strings)
+    if field == "caller_variables":
+        # The first value is an index into stack_frames, not into strings.
+        return {"frame": entry[0], **render_variable(entry[1:], strings)}
     rendered = {"symbol": strings[entry[0]], "range": strings[entry[1]]}
     if field == "path_condition" and smtlib:
         rendered["assertion"] = strings[entry[2]]

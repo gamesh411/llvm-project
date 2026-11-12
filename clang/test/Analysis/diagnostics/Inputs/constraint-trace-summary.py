@@ -2,8 +2,10 @@
 """Print one line per Path Step of each diagnostic in a plist file, with one
 list its Constraint Snapshot holds, so a test can FileCheck it. The list is
 named by the optional second argument: symbol_ranges (default), path_condition,
-variables, smtlib (declarations, then assertions) or smt_variables (the SMT
-term of each variable that has one). Only events are printed unless the third argument is "control",
+variables, caller_variables (each as `<function>#<frame>: <variable>`, with
+the frame's index in stack_frames), smtlib (declarations, then assertions),
+smt_variables (the SMT term of each variable that has one) or
+smt_caller_variables (the same for callers' variables). Only events are printed unless the third argument is "control",
 which adds the control-flow pieces, labelled by their end position.
 Steps without a snapshot are printed as MISSING, and a snapshot that does not
 belong to an event or control piece in the path fails the script.
@@ -22,20 +24,31 @@ def entries_of(field, step):
         return step["smt_declarations"] + step["smt_assertions"]
     if field == "smt_variables":
         return [entry for entry in step["variables"] if "smt" in entry]
+    if field == "smt_caller_variables":
+        return [entry for entry in step["caller_variables"] if "smt" in entry]
     return step[field]
 
 
-def render(field, entry):
+def render(field, entry, frames):
     if field == "smtlib":
         return entry
-    if field == "smt_variables":
-        return "%s = %s [%s]" % (
+    frame = ""
+    if field in ("caller_variables", "smt_caller_variables"):
+        frame = "%s#%d: " % (frames[entry["frame"]]["function"], entry["frame"])
+    if field in ("smt_variables", "smt_caller_variables"):
+        return "%s%s = %s [%s]" % (
+            frame,
             entry["name"],
             entry["smt"],
             "signed" if entry["smt_signed"] else "unsigned",
         )
-    if field == "variables":
-        return "%s = %s [%s]" % (entry["name"], entry["value"], entry["kind"])
+    if field in ("variables", "caller_variables"):
+        return "%s%s = %s [%s]" % (
+            frame,
+            entry["name"],
+            entry["value"],
+            entry["kind"],
+        )
     return "%s = %s" % (entry["symbol"], entry["range"])
 
 
@@ -73,7 +86,8 @@ def main():
                 "MISSING"
                 if step is None
                 else "; ".join(
-                    render(field, entry) for entry in entries_of(field, step)
+                    render(field, entry, trace.get("stack_frames", []))
+                    for entry in entries_of(field, step)
                 )
             )
             label = (

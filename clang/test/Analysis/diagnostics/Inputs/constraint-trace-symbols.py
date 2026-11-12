@@ -58,7 +58,9 @@ def mentioned(trace):
         dumps.update(entry["symbol"] for entry in step["symbol_ranges"])
         dumps.update(entry["symbol"] for entry in step["path_condition"])
         dumps.update(
-            entry["value"] for entry in step["variables"] if entry["kind"] == "symbol"
+            entry["value"]
+            for entry in step["variables"] + step["caller_variables"]
+            if entry["kind"] == "symbol"
         )
     return dumps
 

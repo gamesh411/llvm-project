@@ -431,15 +431,27 @@ struct PathDiagnosticConstraintSnapshot {
   /// sorted by name. Variables with no symbol or concrete value are left out.
   std::vector<Variable> Variables;
 
+  /// The variables of a frame that called the current one, as Variables
+  /// lists the current frame's.
+  struct CallerFrame {
+    /// The frame's LocationContext ID, as ExplodedNodeInfo::Frame has it.
+    int64_t FrameID;
+    std::vector<Variable> Variables;
+  };
+  /// Every calling frame that has a variable to show, innermost first. A
+  /// global is the same memory in every frame, so a frame leaves out the
+  /// globals that a frame it called already shows.
+  std::vector<CallerFrame> CallerVariables;
+
   /// Every constraint collected from the start of the path up to this point,
   /// including those on symbols the analyzer has since dropped as dead. Sorted
   /// by name.
   std::vector<SymbolRange> PathCondition;
 
   /// PathCondition as SMT-LIB, in the symbol encoding of the Z3 crosscheck:
-  /// a declaration of every symbol PathCondition or a Variable refers to, and
-  /// one assertion per PathCondition entry. Only built with Z3, so a path
-  /// with no constraints is told apart from a Clang without Z3.
+  /// a declaration of every symbol PathCondition or a variable of any frame
+  /// refers to, and one assertion per PathCondition entry. Only built with
+  /// Z3, so a path with no constraints is told apart from a Clang without Z3.
   bool HasSMTLIB = false;
   std::vector<std::string> SMTDeclarations;
   std::vector<std::string> SMTAssertions;

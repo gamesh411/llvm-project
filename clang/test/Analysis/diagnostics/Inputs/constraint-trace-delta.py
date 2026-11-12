@@ -20,6 +20,7 @@ NAMES = {
     "variables": "vars",
     "path_condition": "pc",
     "smt_declarations": "decls",
+    "caller_variables": "callers",
 }
 
 
