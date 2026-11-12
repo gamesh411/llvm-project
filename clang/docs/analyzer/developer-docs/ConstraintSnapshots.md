@@ -38,6 +38,7 @@ It holds the following, and everything is derived from the bug path of that one 
 - One snapshot for each path step that has one.
   A snapshot is taken from the analyzer node (a node of the exploded graph) the step was created at.
 - The values of the variables visible at the step, as the analyzer's symbol or concrete value, and the range the analyzer holds for each symbol.
+- The variables of every function that called the step's function, each with the stack frame it belongs to, described below.
 - The path condition accumulated from the start of the path up to the step.
   It only narrows along a path, so it can still mention a symbol that the analyzer no longer tracks.
 - The control flow graph of each function the bug path runs through, with the blocks and edges the path took marked.
@@ -47,6 +48,13 @@ It holds the following, and everything is derived from the bug path of that one 
 Snapshots are stored as the change from the previous node's snapshot, and every string is stored once per diagnostic, so the trace grows with the length of the path.
 The version of this encoding is the `version` key of the trace, and it is 2 at the time of writing.
 The bodies of the control flow graphs are written once per plist file under the top-level key `constraint_trace_cfgs`, and a trace refers to them by index.
+
+A snapshot's `variables` are those of the step's own stack frame, and the globals its function names.
+A step inside an inlined call also has `caller_variables`: the variables of each frame above it, innermost first, as the analyzer's store holds them at that node.
+Each entry names its frame by its index in the trace's `stack_frames`, since two frames can each have a variable called `n`.
+A caller's variable is shown only while the analyzer keeps it, which for a local means while the caller still reads it after the call; the analyzed function's parameters keep their initial values throughout.
+A global is the same memory in every frame, so a frame leaves out the globals that a frame it called already shows.
+Reading a caller's parameters and globals can make the analyzer create the symbols of their initial values earlier than it otherwise would, which renumbers later symbols with the option on.
 
 `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py` is a reader of the format that the tests of this feature use.
 The tests are the `constraint-snapshots*` files under `clang/test/Analysis/diagnostics/`.
@@ -87,7 +95,7 @@ Consumers must treat a reason they do not know as `other`, because more reasons 
 
 ## SMT-LIB and Z3
 
-When Clang is built with Z3 (`LLVM_ENABLE_Z3_SOLVER=ON`), each snapshot also carries the SMT-LIB form of the path condition and of the variables' symbols.
+When Clang is built with Z3 (`LLVM_ENABLE_Z3_SOLVER=ON`), each snapshot also carries the SMT-LIB form of the path condition and of the symbols of the variables of every frame.
 The trace then has the key `smtlib` set to true.
 This is what a consumer needs to decide whether the path stays feasible under extra assumptions.
 
