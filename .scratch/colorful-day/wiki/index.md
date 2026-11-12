@@ -13,6 +13,8 @@ Sources such as the spec and tickets are cited here, never copied.
 
 - [Use case review](use-case-review.md): the 2026-11-12 triage study's findings on What-If against other uses of the constraint data, and the lead's recommended order of next work.
 
+- [Explain the path run](explain-the-path-run.md): ticket order, constraints and acceptance record of the follow-up spec's implementation.
+
 ## Environment
 
 - [Dev environment](dev-environment.md): where the Clang build, venv and server state live, and why, plus environment traps and the performance evaluation.
