@@ -100,3 +100,21 @@ Study case 1 reads "`this->Current` after `this->parse(prec::LogicalOr)` may hav
 In the tmux report every row of the accumulated path condition renders from labels, such as `xx >= gd->linedata[py].cellsize` and `(py * 40) < size of *gd->linedata`.
 The worker's checks: Colorful Day lit 9 passed and 1 unsupported, functest 40, report-converter unit 157, server unit 119, jest 92; emission off byte-identical on 146 tmux and 21 other plists; tmux plists grew 0.64% (5,388,483 to 5,422,895 bytes); 275 of 298 tmux region values have a name.
 Left open: pointees of call results and temporaries have no name, metadata symbols have no name, and a constructor's invalidation statement prints as `*this`.
+
+## 2026-11-12: ticket 05 accepted
+
+On 2026-11-12 the lead accepted ticket 05 after viewing `/Users/efulop/colorful-day-env/screens/t05-caller-frames-900.png`, `t05-caller-frames-tags-1400.png` and `t05-llvm-case7-900.png`, at `llvm-project@3c0cd591fc73..5d04251d1913` and `codechecker@f664a3467..da6f46c19`.
+As of `llvm-project@3c0cd591fc73`, a node has a `caller_variables` list whose entries start with an index into `stack_frames`, deltas match by frame and name, and `variables` is unchanged.
+A global is written only under the innermost frame whose function uses it, and a frame with nothing to show is not written.
+Caller variables' symbols get symbol table, `expressions` and SMT-LIB entries, so the worker expects ticket 06 to need no Clang change.
+As of `codechecker@bbd3f31f7`, the Variables section has one group per frame, the step's own first and always open, callers collapsible and closed by default when there are more than 3.
+A name from another frame is written `function::name` only when a variable of that name in another shown frame holds a different value.
+With emission on, symbols are renumbered, because reading callers' parameters and globals creates their symbols earlier.
+LLVM run (3546 TUs, `-j8`, `/Users/efulop/colorful-day-env/t05/reports`): plists total 638,798,617 bytes against ticket 03's 627,216,851 (+1.85%), largest 27,040,071, user time 23,704 s against 23,339 s (+1.6%, with a stuck `ReportCrash` process and web builds on the machine).
+The caller list is 0.96% of trace bytes without CFG bodies.
+The trace with the most stack frames is study case 9 (`YAMLTraits.h:753`) with 186 frames, at most 6 deep at once; the deepest stack anywhere is 16.
+The worker's checks: Colorful Day lit 10 passed and 1 unsupported, functest 41, report-converter unit 159, server unit 119, jest 99; emission off byte-identical on 146 tmux and 22 other plists.
+On study case 7 (`MemorySanitizer.cpp:1865`), which had no variable at its last step, the caller group shows `DataShadow` 0, which points at the loop that should have set it; the compiled-out assert the triager asked about cannot appear in a snapshot.
+The worker found that the analyzer drops a caller's locals at the call unless the caller reads them afterwards, so on real code a caller group is often just the analyzed function's parameters.
+Seen by the lead in the screenshots and passed to ticket 06: a variable whose range the analyzer dropped reads "no known range" in its group while the accumulated path condition shows the value with a `dropped` tag (`top::n` is 2 in the demo).
+Left open: a 33-character function name breaks mid-word in a group heading at 900 pixels.
