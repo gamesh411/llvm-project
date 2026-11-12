@@ -42,6 +42,14 @@ Rejected as the next step: more What-If features first, because the study shows 
 Rejected: dropping What-If, because on C code its reach is high and items 1 and 2 extend it on C++.
 
 The user's decision on this recommendation is not recorded here yet.
+That line is superseded by the 2026-11-12 spec entry below.
+
+## 2026-11-12: spec written
+
+On 2026-11-12 the user approved the recommendation's direction by asking for a spec of items 1 to 3 and for the assertions-on rerun (item 5) to start alongside it.
+The spec is `../../explain-the-path/spec.md`.
+Its main decisions, made by the lead: the trace stays at version 2 with additive keys (a per-report symbol table and a separate list for caller-frame variables), because a version bump would disable every stored trace; Clang writes the reason "other" when it cannot classify a conjured symbol; What-If accepts access paths and caller variables matched as text against display names; the example is an optional part of a Feasible What-If result.
+Readable ranges and the tooltip that stays open (item 4) are kept out of the spec as a direct ticket.
 
 ## 2026-11-12: remaining work done the same day
 
