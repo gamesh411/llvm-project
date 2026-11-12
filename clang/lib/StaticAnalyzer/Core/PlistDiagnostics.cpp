@@ -41,6 +41,20 @@ using namespace markup;
 //===----------------------------------------------------------------------===//
 
 namespace {
+/// The control flow graph bodies of one plist file, each once. The reports of
+/// a translation unit often run through the same functions, and a body does
+/// not depend on the path, so a constraint trace names its bodies by index
+/// into this table and keeps only the part its path took.
+class CFGTable {
+  /// Keyed by the body as printed, which is also what the file holds.
+  llvm::StringMap<unsigned> Index;
+  llvm::SmallVector<StringRef, 0> Bodies;
+
+public:
+  unsigned add(const PathDiagnosticCFG &CFG);
+  void print(raw_ostream &o) const;
+};
+
   class PlistDiagnostics : public PathDiagnosticConsumer {
     PathDiagnosticConsumerOptions DiagOpts;
     const std::string OutputFile;
@@ -50,7 +64,8 @@ namespace {
     const bool SupportsCrossFileDiagnostics;
 
     void printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
-                      const PathPieces &Path, ArrayRef<PathDiagnosticCFG> CFGs);
+                      const PathPieces &Path, ArrayRef<PathDiagnosticCFG> CFGs,
+                      CFGTable &Graphs);
 
   public:
     PlistDiagnostics(PathDiagnosticConsumerOptions DiagOpts,
@@ -120,11 +135,11 @@ public:
   /// Print the constraint trace collected while the path was printed, which
   /// does not exist unless constraint snapshots were requested.
   void ReportConstraintTrace(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
-                             unsigned indent);
+                             CFGTable &Graphs, unsigned indent);
 
 private:
   void ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
-                  unsigned indent);
+                  CFGTable &Graphs, unsigned indent);
 
   using ExplodedNodeInfo = PathDiagnosticConstraintSnapshot::ExplodedNodeInfo;
   /// Lists each node the collected steps came from once, in path order, and
@@ -653,54 +668,82 @@ void PlistPrinter::ReportStringTable(raw_ostream &o, unsigned indent) {
   Indent(o, indent) << "</array>\n";
 }
 
-void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
-                              unsigned indent) {
-  auto ReportInteger = [&o](unsigned indent, StringRef Key, int64_t Value) {
-    Indent(o, indent) << "<key>" << Key << "</key>";
-    EmitInteger(o, Value) << '\n';
-  };
-
+static void printCFGBody(raw_ostream &o, const PathDiagnosticCFG &CFG,
+                         unsigned indent) {
   // Blocks and elements are arrays rather than dicts, because the keys of
   // every subexpression would make up a third of the graph's size.
+  Indent(o, indent) << "<dict>\n";
+  ++indent;
+  Indent(o, indent) << "<key>function</key>";
+  EmitString(o, CFG.Function) << '\n';
+  Indent(o, indent) << "<key>entry</key>";
+  EmitInteger(o, CFG.EntryID) << '\n';
+  Indent(o, indent) << "<key>exit</key>";
+  EmitInteger(o, CFG.ExitID) << '\n';
+  Indent(o, indent) << "<key>blocks</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (const PathDiagnosticCFG::Block &Block : CFG.Blocks) {
+    Indent(o, indent) << "<array>\n";
+    Indent(o, indent + 1);
+    EmitInteger(o, Block.ID) << '\n';
+    Indent(o, indent + 1);
+    EmitString(o, Block.Terminator) << '\n';
+    Indent(o, indent + 1) << "<array>";
+    for (std::optional<unsigned> Succ : Block.Successors)
+      EmitInteger(o, Succ ? int64_t(*Succ) : -1);
+    o << "</array>\n";
+    Indent(o, indent + 1) << "<array>";
+    for (const PathDiagnosticCFG::Element &Elem : Block.Elements) {
+      o << '\n';
+      Indent(o, indent + 2) << "<array>";
+      EmitString(o, Elem.Text);
+      EmitInteger(o, Elem.Line);
+      EmitInteger(o, Elem.Parent ? int64_t(*Elem.Parent) : -1);
+      o << "</array>";
+    }
+    if (!Block.Elements.empty())
+      Indent(o << '\n', indent + 1);
+    o << "</array>\n";
+    Indent(o, indent) << "</array>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+  --indent;
+  Indent(o, indent) << "</dict>\n";
+}
+
+unsigned CFGTable::add(const PathDiagnosticCFG &CFG) {
+  std::string Body;
+  llvm::raw_string_ostream OS(Body);
+  // At the depth of the file's table, so a body is printed once.
+  printCFGBody(OS, CFG, /*indent=*/2);
+  auto [It, Inserted] = Index.try_emplace(Body, Bodies.size());
+  if (Inserted)
+    Bodies.push_back(It->getKey());
+  return It->second;
+}
+
+void CFGTable::print(raw_ostream &o) const {
+  if (Bodies.empty())
+    return;
+  o << " <key>constraint_trace_cfgs</key>\n";
+  o << " <array>\n";
+  for (StringRef Body : Bodies)
+    o << Body;
+  o << " </array>\n";
+}
+
+void PlistPrinter::ReportCFGs(raw_ostream &o, ArrayRef<PathDiagnosticCFG> CFGs,
+                              CFGTable &Graphs, unsigned indent) {
   Indent(o, indent) << "<key>cfgs</key>\n";
   Indent(o, indent) << "<array>\n";
   ++indent;
   for (const PathDiagnosticCFG &CFG : CFGs) {
     Indent(o, indent) << "<dict>\n";
     ++indent;
-    Indent(o, indent) << "<key>function</key>";
-    EmitString(o, CFG.Function) << '\n';
-    ReportInteger(indent, "entry", CFG.EntryID);
-    ReportInteger(indent, "exit", CFG.ExitID);
-    Indent(o, indent) << "<key>blocks</key>\n";
-    Indent(o, indent) << "<array>\n";
-    ++indent;
-    for (const PathDiagnosticCFG::Block &Block : CFG.Blocks) {
-      Indent(o, indent) << "<array>\n";
-      Indent(o, indent + 1);
-      EmitInteger(o, Block.ID) << '\n';
-      Indent(o, indent + 1);
-      EmitString(o, Block.Terminator) << '\n';
-      Indent(o, indent + 1) << "<array>";
-      for (std::optional<unsigned> Succ : Block.Successors)
-        EmitInteger(o, Succ ? int64_t(*Succ) : -1);
-      o << "</array>\n";
-      Indent(o, indent + 1) << "<array>";
-      for (const PathDiagnosticCFG::Element &Elem : Block.Elements) {
-        o << '\n';
-        Indent(o, indent + 2) << "<array>";
-        EmitString(o, Elem.Text);
-        EmitInteger(o, Elem.Line);
-        EmitInteger(o, Elem.Parent ? int64_t(*Elem.Parent) : -1);
-        o << "</array>";
-      }
-      if (!Block.Elements.empty())
-        Indent(o << '\n', indent + 1);
-      o << "</array>\n";
-      Indent(o, indent) << "</array>\n";
-    }
-    --indent;
-    Indent(o, indent) << "</array>\n";
+    Indent(o, indent) << "<key>graph</key>";
+    EmitInteger(o, Graphs.add(CFG)) << '\n';
     Indent(o, indent) << "<key>path_blocks</key>\n";
     Indent(o, indent) << "<array>";
     for (unsigned ID : CFG.PathBlocks)
@@ -832,7 +875,7 @@ void PlistPrinter::ReportExplodedNodes(raw_ostream &o, unsigned indent) {
 
 void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
                                          ArrayRef<PathDiagnosticCFG> CFGs,
-                                         unsigned indent) {
+                                         CFGTable &Graphs, unsigned indent) {
   if (ConstraintSteps.empty())
     return;
 
@@ -862,7 +905,7 @@ void PlistPrinter::ReportConstraintTrace(raw_ostream &o,
   // Once per diagnostic rather than per step, because a CFG is shared by
   // every step in its function.
   if (!CFGs.empty())
-    ReportCFGs(o, CFGs, indent);
+    ReportCFGs(o, CFGs, Graphs, indent);
   ReportExplodedNodes(o, indent);
   ReportStringTable(o, indent);
   --indent;
@@ -1028,7 +1071,8 @@ void ento::createPlistMultiFileDiagnosticConsumer(
 
 void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
                                     const PathPieces &Path,
-                                    ArrayRef<PathDiagnosticCFG> CFGs) {
+                                    ArrayRef<PathDiagnosticCFG> CFGs,
+                                    CFGTable &Graphs) {
   PlistPrinter Printer(FM, PP, CTU, MacroExpansions);
   assert(std::is_partitioned(Path.begin(), Path.end(),
                              [](const PathDiagnosticPieceRef &E) {
@@ -1062,7 +1106,7 @@ void PlistDiagnostics::printBugPath(llvm::raw_ostream &o, const FIDMap &FM,
 
   o << "   </array>\n";
 
-  Printer.ReportConstraintTrace(o, CFGs, /* indent */ 3);
+  Printer.ReportConstraintTrace(o, CFGs, Graphs, /* indent */ 3);
 
   if (!DiagOpts.ShouldDisplayMacroExpansions)
     return;
@@ -1145,11 +1189,15 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
   //  - "clang_version", the string representation of clang version
   //  - "files", an <array> mapping from FIDs to file names
   //  - "diagnostics", an <array> containing the path diagnostics
+  //  - "constraint_trace_cfgs", the control flow graphs constraint traces
+  //    name, when there are any
   o << "<dict>\n" <<
        " <key>clang_version</key>\n";
   EmitString(o, getClangFullVersion()) << '\n';
   o << " <key>diagnostics</key>\n"
        " <array>\n";
+
+  CFGTable Graphs;
 
   for (std::vector<const PathDiagnostic*>::iterator DI=Diags.begin(),
        DE = Diags.end(); DI!=DE; ++DI) {
@@ -1157,7 +1205,7 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
     o << "  <dict>\n";
 
     const PathDiagnostic *D = *DI;
-    printBugPath(o, FM, D->path, D->getCFGs());
+    printBugPath(o, FM, D->path, D->getCFGs(), Graphs);
 
     // Output the bug type and bug category.
     o << "   <key>description</key>";
@@ -1278,6 +1326,8 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
   for (FileID FID : Fids)
     EmitString(o << "  ", SM.getFileEntryRefForID(FID)->getName()) << '\n';
   o << " </array>\n";
+
+  Graphs.print(o);
 
   if (llvm::AreStatisticsEnabled() && DiagOpts.ShouldSerializeStats) {
     o << " <key>statistics</key>\n";

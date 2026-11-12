@@ -2,6 +2,8 @@
 """Print the control flow graphs of each diagnostic's constraint trace, and
 where each Path Step sits in them, so a test can FileCheck it.
 
+Each graph prints the index of its body in the plist's `constraint_trace_cfgs`
+after `body`, and the file prints how many bodies it holds after `BODIES`, last.
 Blocks are printed as `B<id>`, with `path` when the Bug Path entered them, then
 their elements as `<n>: <text> @<line> ^<parent>` with n counted from 1 as in
 debug.DumpCFG, the terminator after `T:`, and the successors after `->`, `-`
@@ -51,10 +53,13 @@ def main():
         if trace is None or "cfgs" not in trace:
             print("NO-CFGS")
             continue
-        trace = constraint_trace.expand(trace)
+        trace = constraint_trace.expand(trace, plist.get("constraint_trace_cfgs", []))
         cfgs = trace["cfgs"]
-        for cfg in cfgs:
-            print("CFG %s entry B%d exit B%d" % (cfg["function"], cfg["entry"], cfg["exit"]))
+        for cfg, ref in zip(cfgs, diag["constraint_trace"]["cfgs"]):
+            print(
+                "CFG %s entry B%d exit B%d body %d"
+                % (cfg["function"], cfg["entry"], cfg["exit"], ref["graph"])
+            )
             on_path = set(cfg["path_blocks"])
             for block in cfg["blocks"]:
                 line = "B%d%s" % (block["id"], " path" if block["id"] in on_path else "")
@@ -77,6 +82,7 @@ def main():
             print("%s: %s" % (
                 step_label(piece),
                 "NO-POSITION" if position is None else render_position(cfgs, position)))
+    print("BODIES %d" % len(plist.get("constraint_trace_cfgs", [])))
 
 
 if __name__ == "__main__":

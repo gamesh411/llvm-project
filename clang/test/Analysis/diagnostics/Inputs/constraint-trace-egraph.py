@@ -67,7 +67,7 @@ def main():
         if trace is None or "exploded_nodes" not in trace:
             print("NO-NODES")
             continue
-        trace = constraint_trace.expand(trace)
+        trace = constraint_trace.expand(trace, plist.get("constraint_trace_cfgs", []))
         nodes = trace["exploded_nodes"]
         frames = trace["stack_frames"]
         check_tables(nodes, frames)

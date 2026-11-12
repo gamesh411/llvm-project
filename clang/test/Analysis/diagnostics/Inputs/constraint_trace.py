@@ -3,9 +3,11 @@ Path Step, for the test helpers next to this file.
 
 A trace keeps one snapshot per analyzer node in `exploded_nodes`, each one
 written as the change from the node before it, and keeps every string once in
-`strings`. `expand` returns the trace with each step carrying its node's whole
-snapshot, and with the control flow graphs as dicts, so that the helpers can
-print what a step shows.
+`strings`. Its control flow graphs name their bodies in the plist's
+`constraint_trace_cfgs`, which holds each body once per file. `expand` returns
+the trace with each step carrying its node's whole snapshot, and with the
+control flow graphs whole and as dicts, so that the helpers can print what a
+step shows.
 """
 
 LISTS = ("symbol_ranges", "variables", "path_condition", "smt_declarations")
@@ -68,9 +70,10 @@ def snapshots(trace):
     return result
 
 
-def expand_cfg(cfg):
+def expand_cfg(cfg, graphs):
+    graph = graphs[cfg["graph"]]
     blocks = []
-    for block_id, terminator, successors, elements in cfg["blocks"]:
+    for block_id, terminator, successors, elements in graph["blocks"]:
         block = {"id": block_id, "elements": [], "successors": successors}
         for text, line, parent in elements:
             element = {"text": text}
@@ -84,9 +87,9 @@ def expand_cfg(cfg):
         blocks.append(block)
     edges = cfg["path_edges"]
     return {
-        "function": cfg["function"],
-        "entry": cfg["entry"],
-        "exit": cfg["exit"],
+        "function": graph["function"],
+        "entry": graph["entry"],
+        "exit": graph["exit"],
         "blocks": blocks,
         "path_blocks": cfg["path_blocks"],
         "path_edges": [
@@ -95,12 +98,13 @@ def expand_cfg(cfg):
     }
 
 
-def expand(trace):
-    """The trace with each step's full snapshot in the step."""
+def expand(trace, graphs):
+    """The trace with each step's full snapshot in the step. `graphs` is the
+    plist's `constraint_trace_cfgs`."""
     assert trace["version"] == 2, trace["version"]
     by_node = snapshots(trace)
     steps = [{**step, **by_node[step["exploded_node"]]} for step in trace["steps"]]
     expanded = {**trace, "steps": steps}
     if "cfgs" in trace:
-        expanded["cfgs"] = [expand_cfg(cfg) for cfg in trace["cfgs"]]
+        expanded["cfgs"] = [expand_cfg(cfg, graphs) for cfg in trace["cfgs"]]
     return expanded

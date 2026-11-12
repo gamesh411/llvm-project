@@ -9,7 +9,7 @@
 // RUN:   -o %t/off.plist -verify %s
 // RUN: %python %S/Inputs/constraint-trace-cfg.py %t/off.plist | FileCheck %s --check-prefix=OFF
 
-// OFF-COUNT-3: NO-CFGS
+// OFF-COUNT-4: NO-CFGS
 // OFF-NOT: CFG
 
 // Each function on the Bug Path carries its control flow graph once per
@@ -51,12 +51,12 @@ int call(int *p, int flag) {
 
 // The caller comes first, since it is where the Bug Path starts. The callee's
 // exit is on the path, the caller's is not.
-// CHECK:      CFG call entry B2 exit B0
+// CHECK:      CFG call entry B2 exit B0 body 1
 // CHECK-NEXT: B2 path -> B1
 // CHECK-NEXT: B1 path: {{.*}} -> B0
 // CHECK-NEXT: B0{{$}}
 // CHECK-NEXT: EDGES B2->B1{{$}}
-// CHECK-NEXT: CFG set_null entry B3 exit B0
+// CHECK-NEXT: CFG set_null entry B3 exit B0 body 2
 // CHECK-NEXT: B3 path -> B2
 // CHECK-NEXT: B2 path: {{.*}}; T: if flag -> B1 B0
 // CHECK-NEXT: B1 path: {{.*}} -> B0
@@ -69,6 +69,22 @@ int call(int *p, int flag) {
 // CHECK:      EVENT "Assuming 'flag' is not equal to 0": set_null B2.T
 // CHECK:      EVENT "Null pointer value stored to 'p'": set_null B1.6
 // CHECK:      EVENT "Returning from 'set_null'": call B1.7
+
+int call_again(int *q, int flag) {
+  set_null(&q, flag);
+  return *q; // expected-warning{{Dereference of null pointer (loaded from variable 'q')}}
+}
+
+// A graph's body is kept once per file, since it does not depend on the
+// path, so this report names the body of set_null that the one through `call`
+// does, with its own path.
+// CHECK:      CFG call_again entry B2 exit B0 body 3
+// CHECK-NEXT: B2 path -> B1
+// CHECK:      CFG set_null entry B3 exit B0 body 2
+// CHECK-NEXT: B3 path -> B2
+// CHECK-NEXT: B2 path: {{.*}}; T: if flag -> B1 B0
+// CHECK:      EDGES B1->B0 B2->B1 B3->B2{{$}}
+// CHECK:      EVENT "Calling 'set_null'": call_again B1.7
 
 int loop(int *p) {
   for (int i = 0; i < 3; ++i)
@@ -87,3 +103,7 @@ int loop(int *p) {
 // CHECK:      EVENT "Entering loop body": loop B5.T
 // CHECK:      CONTROL ending at [[@LINE-13]]:9: loop B4.T
 // CHECK:      EVENT "Null pointer value stored to 'p'": loop B3.4
+
+// The five functions on the four Bug Paths.
+// CHECK:      BODIES 5
+// OFF:        BODIES 0

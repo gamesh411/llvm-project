@@ -55,7 +55,7 @@ def main():
         if trace is None:
             print("NO-TRACE")
             continue
-        trace = constraint_trace.expand(trace)
+        trace = constraint_trace.expand(trace, plist.get("constraint_trace_cfgs", []))
         print("TRACE version", trace["version"])
 
         path = diag["path"]
