@@ -75,3 +75,18 @@ As of `codechecker@8693c4955`, panel rows use `content-visibility: auto`.
 The worker found that the slow step clicks noted in the v2 entry of [execution plan](execution-plan.md) were not the panel's doing: a 1205-step tree click spends about 190 ms in Vuetify's tree and about 100 ms in jsPlumb arrows, 285 ms with constraints off too, and the panel took about 10 ms.
 A first click on the already-active tree item only deactivates it, which is Vuetify's toggle and upstream behavior, left as is.
 Left open as of `codechecker@8693c4955`: the accumulated path condition still lists symbols in symbol order (a98, a99, a100 ... a8), and at 900px the tree pane clips labels to "L23", as it did before.
+Both are superseded by the second polish pass entry below.
+
+## 2026-11-12: second polish pass accepted
+
+On 2026-11-12 the lead accepted the second polish pass, `codechecker@c26160ee7..b7b6d1c72`, after viewing `/Users/efulop/colorful-day-env/screens/polish2-after-r2960-step72-1400.png` and `polish2-after-r3142-states-1400.png`.
+The path condition and "Other symbols" use the natural sort.
+The What-If placeholder suggests only a variable the check can decide, and nothing when the trace has no SMT-LIB.
+Selecting a step scrolls its bubble into view even under about 180 stacked bubbles.
+The States view gives each frame one line, cutting long names at the start with an ellipsis.
+Panel text breaks only between tokens, and absolute paths inside symbol dumps show only the file name, with the full text on hover.
+The worker left the report tree's step labels and the 900px clipping as is, because both are unchanged from upstream's merge base `codechecker@bae448521` and look the same with "Show constraints" off.
+Left open as of `codechecker@b7b6d1c72`, all minor:
+- at 900px the What-If placeholder clips and the two checkboxes wrap below the toolbar buttons
+- raw symbol dumps can break after "(", leaving "- (" at a line end
+- the CFG view still shows full paths inside trace strings
