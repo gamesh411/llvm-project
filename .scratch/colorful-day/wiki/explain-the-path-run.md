@@ -86,3 +86,17 @@ The lead judged 5.9% low enough not to spend another classification round on it.
 Against the study's cases: case 10 (`APSInt.h:78`) is answered, the two `DestTy->isRealFloatingType()` results are tagged as different values; case 2 (`WhitespaceManager.h:343`) has its origin question answered but not the relation between cell counts and cells; case 27 (`CheckExprLifetime.cpp:1450`) is partly answered, `LK` reads as a `memcpy` value & 7 and not as `getEntityLifetime()`'s result.
 Seen by the lead in the screenshots and passed to ticket 04: a compound expression's range stays raw (`LK` reads `[1, 18446744073709551615]`, clipped at 900 pixels) because an expression has no type in the table, and `Element{SymRegion{...}}` regions and extents stay raw dumps.
 A same-call tag can link to "Arrow after step N", which reads oddly and was left open.
+
+## 2026-11-12: ticket 04 accepted
+
+On 2026-11-12 the lead accepted ticket 04 after viewing `/Users/efulop/colorful-day-env/screens/t04-llvm-case1-900.png`, `t04-llvm-case25-900.png` and `t04-tmux-accumulated-1400.png`, at `llvm-project@62bbbbf2c391..68340c213ea1` and `codechecker@89d2c578a..35d23b2e2`.
+The analyzer's `getDescriptiveName` names nothing behind a pointer or `this`, because a field read through a pointer is stored as a field of `Element{SymRegion{p},0,T}`.
+So as of `llvm-project@62bbbbf2c391`, `describeRegion` in `BugReporter.cpp` walks the region itself, and region value names, derived regions and invalidation origins all use it.
+It follows a pointer only when the pointer's own value is the initial or replaced value of named memory, and gives no name to a pointee of a call result, a temporary, a computed index or a reinterpreted element.
+The same commit adds a trace key `expressions` with the type and pointer-ness of each top-level constrained expression, kept out of `symbols` because the spec gives expressions no entry there.
+As of `llvm-project@fe10c4a08577`, an extent entry has the region whose size it is, which the lead had not asked for.
+As of `codechecker@03cf415ed`, the UI's parser of region dumps is removed, and names come only from the trace.
+Study case 1 reads "`this->Current` after `this->parse(prec::LogicalOr)` may have changed it, line 3486"; case 25's deciding value reads `Op.Node->ValueList[Op.ResNo].V.SimpleTy`; case 18 is not answered, because its deciding value is a field of a temporary.
+In the tmux report every row of the accumulated path condition renders from labels, such as `xx >= gd->linedata[py].cellsize` and `(py * 40) < size of *gd->linedata`.
+The worker's checks: Colorful Day lit 9 passed and 1 unsupported, functest 40, report-converter unit 157, server unit 119, jest 92; emission off byte-identical on 146 tmux and 21 other plists; tmux plists grew 0.64% (5,388,483 to 5,422,895 bytes); 275 of 298 tmux region values have a name.
+Left open: pointees of call results and temporaries have no name, metadata symbols have no name, and a constructor's invalidation statement prints as `*this`.
