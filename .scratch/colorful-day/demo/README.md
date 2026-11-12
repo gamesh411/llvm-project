@@ -20,11 +20,9 @@ Afterwards the server runs on the demo workspace, so `dev-loop.sh stop` and `ser
 
 Needs a built `dev-loop.sh clang`, `env`, `web` and `package`, plus Homebrew `bear`, `libevent`, `ncurses`, `autoconf` and `automake`.
 
-On a clean server the URLs are:
-
-- two-path: `http://localhost:8002/Default/report-detail?report-id=1`
-- tmux: `http://localhost:8002/Default/report-detail?report-id=5`
-- several contexts: `http://localhost:8002/Default/report-detail?report-id=33`
+The script prints the three URLs at its end.
+Report IDs depend on how many reports earlier runs stored, so use the printed ones rather than a remembered number.
+To find one later, open the run in the report list: `colorful-day-two-path`, `colorful-day-tmux` (the report at `grid.c:1073`) or `colorful-day-contexts`.
 
 Use a window at least 1280 pixels wide, so the menu keeps its labels and the panel leaves room for the code.
 

@@ -71,16 +71,20 @@ cmd_env() {
   python -c 'import lxml, sqlalchemy, thrift, ldap' && echo 'env ok'
 }
 
-cmd_clang() {
-  [ -d "$BUILD" ] || die "configure $BUILD first (see ticket 01 comments)"
-  # llvm-config is only needed by llvm-lit, see `lit`.
-  (cd "$BUILD" && ninja clang FileCheck not count llvm-config)
-  # Tools the rest of clang/test/Analysis needs: Scalable/ssaf-*, func-mapping.
-  # A stale clang-extdef-mapping or clang fails func-mapping-test.cpp with
-  # "unable to load precompiled file" (the AST embeds the build revision).
-  (cd "$BUILD" && ninja clang-ssaf-analyzer clang-ssaf-format clang-ssaf-linker \
+# Clang plus the tools clang/test/Analysis needs: llvm-config for llvm-lit,
+# Scalable/ssaf-*, func-mapping. A stale clang-extdef-mapping or clang fails
+# func-mapping-test.cpp with "unable to load precompiled file" (the AST embeds
+# the build revision), so `lit` builds them too.
+build_lit_tools() {
+  (cd "$BUILD" && ninja clang FileCheck not count llvm-config \
+    clang-ssaf-analyzer clang-ssaf-format clang-ssaf-linker \
     clang-ssaf-src-edit-merge SSAFExamplePlugin SSAFTestTransformationPlugin \
     split-file clang-extdef-mapping yaml2obj)
+}
+
+cmd_clang() {
+  [ -d "$BUILD" ] || die "configure $BUILD first (see ticket 01 comments)"
+  build_lit_tools
   grep -E '^LLVM_ENABLE_Z3_SOLVER:BOOL=ON' "$BUILD/CMakeCache.txt" >/dev/null \
     || die "Z3 is not enabled in $BUILD/CMakeCache.txt"
   "$BUILD/bin/clang" --version
@@ -332,7 +336,7 @@ PY
 # Clang lit tests of this feature, plus any extra lit paths passed as arguments.
 cmd_lit() {
   use_clang
-  (cd "$BUILD" && ninja clang FileCheck not count llvm-config >/dev/null)
+  build_lit_tools >/dev/null
   "$BUILD/bin/llvm-lit" -sv \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-control.c" \
@@ -458,8 +462,6 @@ cmd_demo() {
     || { tail -20 "$CD_ENV/logs/tmux-analyze.log" >&2; die "tmux analysis failed"; }
   "$(cc_bin)" store "$out" -n colorful-day-tmux --url "$URL" >/dev/null
 
-  # After tmux, so the report IDs of the first two stay as demo/README.md
-  # gives them.
   DEMO=$LLVM/.scratch/colorful-day/demo/several-contexts.c cmd_analyze
   RUN_NAME=colorful-day-contexts cmd_store >/dev/null
 
