@@ -828,8 +828,13 @@ ExplodedNode *ExprEngine::conservativeEvalCall(const CallEvent &Call,
   State = bindReturnValue(Call, Pred->getStackFrame(), State);
 
   // And make the result node.
+  return Engine.makeNode(Call.getProgramPoint(false, conservativeEvalCallTag()),
+                         State, Pred);
+}
+
+const ProgramPointTag *ExprEngine::conservativeEvalCallTag() {
   static SimpleProgramPointTag PT("ExprEngine", "Conservative eval call");
-  return Engine.makeNode(Call.getProgramPoint(false, &PT), State, Pred);
+  return &PT;
 }
 
 ExprEngine::CallInlinePolicy

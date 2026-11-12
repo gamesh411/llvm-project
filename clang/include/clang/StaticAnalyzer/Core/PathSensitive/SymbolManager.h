@@ -105,6 +105,9 @@ public:
   /// It might return null.
   const void *getTag() const { return SymbolTag; }
 
+  LLVM_ATTRIBUTE_RETURNS_NONNULL
+  const StackFrame *getStackFrame() const { return SF; }
+
   QualType getType() const override;
 
   StringRef getKindStr() const override;

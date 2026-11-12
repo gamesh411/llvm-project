@@ -324,6 +324,10 @@ public:
   /// This tag applies to a node created after removeDead.
   static const ProgramPointTag *cleanupNodeTag();
 
+  /// The tag of the node a call evaluated without inlining it ends in, which
+  /// is where the call's conjured return value is first bound.
+  static const ProgramPointTag *conservativeEvalCallTag();
+
   /// processCFGElement - Called by CoreEngine. Used to generate new successor
   ///  nodes by processing the 'effects' of a CFG element.
   void processCFGElement(const CFGElement E, ExplodedNode *Pred,
