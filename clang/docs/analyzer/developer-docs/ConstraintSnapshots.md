@@ -42,6 +42,7 @@ It holds the following, and everything is derived from the bug path of that one 
   It only narrows along a path, so it can still mention a symbol that the analyzer no longer tracks.
 - The control flow graph of each function the bug path runs through, with the blocks and edges the path took marked.
 - The analyzer nodes the snapshots come from, with their kind, location and call stack.
+- A table of the symbols the snapshots mention, described below.
 
 Snapshots are stored as the change from the previous node's snapshot, and every string is stored once per diagnostic, so the trace grows with the length of the path.
 The version of this encoding is the `version` key of the trace, and it is 2 at the time of writing.
@@ -49,6 +50,19 @@ The bodies of the control flow graphs are written once per plist file under the 
 
 `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py` is a reader of the format that the tests of this feature use.
 The tests are the `constraint-snapshots*.c` files under `clang/test/Analysis/diagnostics/`.
+
+## Where a symbol came from
+
+The trace's `symbols` key has one entry for each atomic symbol that the snapshots mention, alone or inside a symbolic expression, such as `conj_$5{int, LC1, S1234, #1}` in `(conj_$5{int, LC1, S1234, #1}) + 1`.
+An entry gives the symbol's kind, and, with Z3, its SMT-LIB term.
+A symbol the analyzer conjured also has an origin: the statement it was made for, with its location and the called function's name when the statement is a call, the function it was made in, and a reason.
+
+The reason is `call_result` when the symbol is the value a call returned and the analyzer evaluated that call without seeing inside the callee.
+The analyzer does not record this on the symbol, which a checker modelling the call makes in the same way.
+Clang tells them apart by the node the analyzer's conservative evaluation of a call ends in: a symbol bound to the call there is the call's result.
+Every other conjured symbol has the reason `other`, including a value a checker made for a call it models, such as `malloc` under `unix.Malloc`.
+Clang never infers a reason from the statement's text.
+Consumers must treat a reason they do not know as `other`, because more reasons may be added.
 
 ## SMT-LIB and Z3
 
