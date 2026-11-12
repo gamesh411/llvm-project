@@ -217,7 +217,10 @@ cmd_status() {
 # demo/z3-refuted.c, whose Bug Path Z3 refutes; and one from
 # demo/concrete-value.c, where a pointer holds a concrete address; and one
 # from demo/opaque-call.c, where an opaque call replaces a global; and one
-# from demo/several-contexts.c, one statement reached through two calls. Output
+# from demo/several-contexts.c, one statement reached through two calls; and
+# one from demo/call-result.c, whose symbol table has a call result and a
+# value a checker made, and the same without the table, as a Clang before the
+# table wrote it. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -265,10 +268,13 @@ for diag in plist['diagnostics']:
             variable.pop('smt_signed', None)
         nodes.append({**{key: value for key, value in node.items()
                          if key not in constraint_trace.LISTS}, **snapshot})
+    symbols = {dump: {key: value for key, value in symbol.items()
+                      if key not in ('smt', 'smt_signed')}
+               for dump, symbol in trace.symbols().items()}
     diag['constraint_trace'] = {
         **{key: value for key, value in trace.trace.items()
-           if key not in ('smtlib', 'strings', 'exploded_nodes')},
-        **constraint_trace.encode(nodes, trace.steps)}
+           if key not in ('smtlib', 'strings', 'exploded_nodes', 'symbols')},
+        **constraint_trace.encode(nodes, trace.steps, symbols)}
 with open(sys.argv[3], 'wb') as f:
     plistlib.dump(plist, f)
 PY
@@ -318,19 +324,41 @@ PY
   # opaque_call: a global checked non-null, replaced by an opaque call, then
   # assumed null, so it holds two symbols along the Bug Path.
   # several_contexts: one statement reached through two calls.
-  local name
-  for name in z3_refuted concrete_value opaque_call several_contexts; do
+  # call_result: a call result made in a callee the path leaves out, and a
+  # malloc that unix.Malloc models.
+  local name checkers
+  for name in z3_refuted concrete_value opaque_call several_contexts \
+      call_result; do
     dir=$src/$name
     mkdir -p "$dir"
     cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
+    checkers=core
+    [ "$name" = call_result ] && checkers=core,unix.Malloc
     (cd "$dir" && clang --analyze --analyzer-output plist-multi-file \
-      -Xclang -analyzer-checker=core \
+      -Xclang -analyzer-checker=$checkers \
       -Xclang -analyzer-config -Xclang emit-constraint-snapshots=true \
       -o "$name.plist" "$dir/$name.c")
     FIXTURE_DIR=$dir perl -pi -e 's/\Q$ENV{FIXTURE_DIR}\E/\$FILE_PATH\$/g' "$dir/$name.plist"
     grep -q 'FILE_PATH' "$dir/$name.plist" || die "placeholder missing in $dir"
     echo "fixture ok: $dir/$name.plist"
   done
+
+  # What a Clang from before the symbol table writes: the same trace minus
+  # the table. The strings only it named stay, which readers do not mind.
+  dir=$src/no_symbols
+  mkdir -p "$dir"
+  cp "$src/call_result/call_result.c" "$dir/call_result.c"
+  "$PYTHON" -I - "$src/call_result/call_result.plist" "$dir/call_result.plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], 'rb') as f:
+    plist = plistlib.load(f)
+for diag in plist['diagnostics']:
+    del diag['constraint_trace']['symbols']
+with open(sys.argv[2], 'wb') as f:
+    plistlib.dump(plist, f)
+PY
+  ! grep -q '<key>symbols</key>' "$dir/call_result.plist" || die "table left in $dir"
+  echo "fixture ok: $dir/call_result.plist"
 }
 
 # Clang lit tests of this feature, plus any extra lit paths passed as arguments.
@@ -345,6 +373,7 @@ cmd_lit() {
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-cfg.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-egraph.c" \
     "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-delta.c" \
+    "$LLVM/clang/test/Analysis/diagnostics/constraint-snapshots-symbols.c" \
     "$LLVM/clang/test/Analysis/analyzer-config.c" "$@"
 }
 
