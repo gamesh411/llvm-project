@@ -141,3 +141,13 @@ The share the panel names by a variable stayed at 9.3%, since caller variables a
 What-Ifs on study cases: case 1, `this->Current == null` throughout, is Infeasible at Step 3 and settles the case; case 25, `VT != 0`, is Infeasible where the study got Unknown and settles the case; case 7, `DataShadow != 0`, is Infeasible but only restates the path, since the deciding assert is compiled out.
 Left open: no spelling picks "the value after `parse()`" for an anchored check; memory is told apart by name only, so two functions' `this->Current` are one name; 9.3% of stack frames have a function name that cannot be typed before `::`.
 Seen by the lead in `t06-caller-ambiguous-1400.png`: the Unknown reason reads "at Step 10.n names 2 values" with no space after the period, passed to ticket 08 to check.
+
+## 2026-11-13: ticket 08 implemented
+
+On 2026-11-13 the ticket 08 worker built the "This path requires" list at `codechecker@08cd17806..8414ea383`, with no Clang, server or API change.
+The reader groups the path condition of the last Path Step by the symbol table into entry inputs, call results, replaced values and other, and gives each row the first Path Step that shows it as it ends, with that step's function and whether it is a silent step.
+A compound value goes by its atoms when they agree, so case 29's `m + n` is an entry input.
+Checks the worker reported: jest 127 in 7 suites, eslint clean, functest 46 passed, pycodestyle clean, pylint 10.00; mypy reports 19 errors that are missing stubs in the venv.
+The decision on where it sits and the control step rename are in [web UI decisions](web-ui-decisions.md); the Comments of `../../explain-the-path/issues/08-this-path-requires-list.md` have the rest.
+On the three LLVM cases the worker analyzed again as `t08-llvm`: the list shows the decisive requirement of case 6 (`SuperLoc` 0, first row) and of case 29 (`m + n` 0, an entry input), and of case 27 (`LK` 7) only under Other, since its call was modelled by a checker.
+The ticket 06 spacing bug ("Step 10.n") was already fixed by that ticket; a test now guards it.

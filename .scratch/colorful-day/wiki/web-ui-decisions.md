@@ -99,3 +99,14 @@ Two of the items the second polish pass entry above left open are fixed: as of `
 As of `codechecker@26c98ec4c`, the What-If Check button wraps below a narrow input, which is the fix for the placeholder clipping at 900px in the same list.
 The two checkboxes wrapping below the toolbar buttons at 900px stay open as of `codechecker@e23482c40`, as recorded in [use case review](use-case-review.md).
 The fixes after that pass, and the Explain the path tickets' UI changes, are recorded in [use case review](use-case-review.md) and [Explain the path run](explain-the-path-run.md).
+
+## 2026-11-13: "This path requires" placement and the control step name
+
+As of `codechecker@cfdb0827b`, the panel has two toggle buttons under its step line: **This step**, which is Known here and the accumulated path condition as before, and **Whole path**, which is the requires list.
+One half shows at a time and the choice stays across steps.
+The accumulated path condition of the last step holds the same rows as the list, so showing both would repeat every row at the last step, and the toggle removes that by layout while keeping the per-step tags.
+Rejected after trying it in the browser: a third section in the scroll area (it sat below the fold and a long list pushed the accumulated condition away), a collapsible section, and a pointer line that replaced the accumulated rows at the last step.
+What-If keeps its position on both halves (y = 828 at 1400 px, 764 at 900 px in a 1000 px window); the toggle row costs the snapshot area 28 px.
+The labels are "This step" and "Whole path" because "This path requires" wrapped to two rows at about 230 px.
+A control step reads "Edge after Step N" and "Edge before Step 1", replacing "Arrow after step N", which the earlier tickets left open as reading oddly; the name is one function, `controlStepLabel`.
+The Comments of `../../explain-the-path/issues/08-this-path-requires-list.md` have the screenshots, both under `/Users/efulop/colorful-day-env/screens/` with the prefix `t08-`.
