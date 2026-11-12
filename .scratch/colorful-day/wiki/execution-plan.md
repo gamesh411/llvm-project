@@ -149,3 +149,18 @@ The LLVM setup traps (precompiled headers and CIR on by default, Apple libc++ pa
 
 On 2026-11-12 the lead decided the next worker shrinks CFGs (mitigation 12) and makes the CFG view fast on huge blocks, both in one worker because both change the CFG data and its reader, followed by a second polish worker for the visual defects above and the two left open by the first.
 Mitigation 11's size guard waits for that measurement, since the CFG change targets the same driver.
+
+## 2026-11-12: CFG and store pass accepted
+
+On 2026-11-12 the lead accepted the CFG and store pass after viewing `/Users/efulop/colorful-day-env/screens/cfg2-r1313-30500rows-subexpr-1400.png` and `cfg2-r133-edge-labels-1400.png`.
+The commits are `llvm-project@a2b47aba60aa..5370369696d0` and `codechecker@07f4fbcc9..e7da30fe6`.
+As of `llvm-project@a2b47aba60aa`, each CFG body is kept once per plist file in a top-level `constraint_trace_cfgs`, and traces name it by index. As of `codechecker@398558744`, CodeChecker plists hold the blocks as JSON text.
+The stored per-report trace is unchanged, so there is no version bump and no database change.
+The worker rejected three alternatives: interning element texts (plist 1.27 times smaller), dropping CFGs no step uses (10% of the bytes), and sharing across TUs (6.6 against 6.2 times per file).
+Profiling showed the old store peaks were the whole run held in the client, a whole-zip `read()`, and one combined plist parsed on the server. As of `codechecker@567bc3fdf..cba10dbb5`, the store writes per input file and streams, and the server unzips in pieces.
+As of `codechecker@1623a33af`, the CFG view renders only blocks and rows in view, so a 30,500-row block with Subexpressions on opens in 65 ms instead of 2563 ms.
+The 6.9 s CFG open in the LLVM run entry above was a measurement artifact: work left over from earlier step clicks landed in the timed click, and settled it took 45 ms.
+On the whole LLVM set, plists went from 1,444 to 560 MB, the largest from 97.2 to 20.1 MB, the store client peak from 4.55 to 2.10 GB and one server worker from 5.11 to 1.89 GB.
+3255 of 3255 traces with CFGs rebuild identically, and 1166 of 1166 What-If checks give the same verdicts.
+Left open as of `codechecker@e7da30fe6`: both remaining peaks are Thrift's JSON codec moving the whole 112 MB base64 store zip, which is CodeChecker's own `massStoreRun` design. CFG rows scrolled out of view are not in the DOM, so Ctrl+F does not find them.
+Mitigation 11's size guard has no remaining measured need, since the largest plist is 20.1 MB.
