@@ -19,8 +19,11 @@ import constraint_trace
 def render_location(files, location):
     if location is None:
         return "@none"
-    return "@%s:%d:%d" % (files[location["file"]].rsplit("/", 1)[-1],
-                          location["line"], location["col"])
+    return "@%s:%d:%d" % (
+        files[location["file"]].rsplit("/", 1)[-1],
+        location["line"],
+        location["col"],
+    )
 
 
 def render_stack(files, frames, index):
@@ -72,8 +75,10 @@ def main():
         frames = trace["stack_frames"]
         check_tables(nodes, frames)
         ids = [node["id"] for node in nodes]
-        print("NODES %d FRAMES %d SHARED-IDS %d"
-              % (len(nodes), len(frames), len(ids) - len(set(ids))))
+        print(
+            "NODES %d FRAMES %d SHARED-IDS %d"
+            % (len(nodes), len(frames), len(ids) - len(set(ids)))
+        )
 
         steps = {step["path_index"]: step for step in trace["steps"]}
         for index, piece in enumerate(diag["path"]):
@@ -84,10 +89,16 @@ def main():
                 print("%s: NO-NODE" % step_label(piece))
                 continue
             node = nodes[step["exploded_node"]]
-            print("%s: N%d %s %s in %s" % (
-                step_label(piece), step["exploded_node"], node["kind"],
-                render_location(files, node.get("location")),
-                render_stack(files, frames, node["frame"])))
+            print(
+                "%s: N%d %s %s in %s"
+                % (
+                    step_label(piece),
+                    step["exploded_node"],
+                    node["kind"],
+                    render_location(files, node.get("location")),
+                    render_stack(files, frames, node["frame"]),
+                )
+            )
 
 
 if __name__ == "__main__":

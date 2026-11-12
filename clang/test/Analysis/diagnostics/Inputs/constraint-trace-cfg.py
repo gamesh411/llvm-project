@@ -62,7 +62,10 @@ def main():
             )
             on_path = set(cfg["path_blocks"])
             for block in cfg["blocks"]:
-                line = "B%d%s" % (block["id"], " path" if block["id"] in on_path else "")
+                line = "B%d%s" % (
+                    block["id"],
+                    " path" if block["id"] in on_path else "",
+                )
                 parts = [render_element(i, e) for i, e in enumerate(block["elements"])]
                 if "terminator" in block:
                     parts.append("T: " + block["terminator"])
@@ -71,7 +74,10 @@ def main():
                 if successors:
                     line += " -> " + " ".join(successors)
                 print(line)
-            print("EDGES " + " ".join("B%d->B%d" % (e["from"], e["to"]) for e in cfg["path_edges"]))
+            print(
+                "EDGES "
+                + " ".join("B%d->B%d" % (e["from"], e["to"]) for e in cfg["path_edges"])
+            )
 
         steps = {step["path_index"]: step for step in trace["steps"]}
         for index, piece in enumerate(diag["path"]):
@@ -79,9 +85,17 @@ def main():
             if step is None:
                 continue
             position = step.get("cfg_position")
-            print("%s: %s" % (
-                step_label(piece),
-                "NO-POSITION" if position is None else render_position(cfgs, position)))
+            print(
+                "%s: %s"
+                % (
+                    step_label(piece),
+                    (
+                        "NO-POSITION"
+                        if position is None
+                        else render_position(cfgs, position)
+                    ),
+                )
+            )
     print("BODIES %d" % len(plist.get("constraint_trace_cfgs", [])))
 
 

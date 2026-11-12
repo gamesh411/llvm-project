@@ -72,7 +72,9 @@ def main():
             entries = (
                 "MISSING"
                 if step is None
-                else "; ".join(render(field, entry) for entry in entries_of(field, step))
+                else "; ".join(
+                    render(field, entry) for entry in entries_of(field, step)
+                )
             )
             label = (
                 control_label(piece)
