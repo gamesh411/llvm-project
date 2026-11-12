@@ -61,6 +61,7 @@ The dead `:deep` rules of `Report.vue` apply, the CFG view shows file names for 
 `demo/README.md` no longer hardcodes report IDs, and `dev-loop.sh lit` builds the tools the Analysis tests need.
 The worker observed the `:deep` fix only as the rule being present and matching, not by hovering a line, and the "(" fix only in the DOM.
 Left open as of `codechecker@e23482c40`: at 900px the two checkboxes still wrap below the toolbar buttons, because the toolbar is wider than the pane, and the "Show constraints" tooltip can stay open after a click.
+The tooltip part is superseded by the 2026-11-12 second wiki lint entry below.
 
 The CodeChecker analyzer unit suite fails the same 13 tests at the merge base `codechecker@bae448521` and at `codechecker@e23482c40`, so the branch causes none of them.
 The worker traced 11 to macOS `/tmp` being a symlink to `/private/tmp` and one to needing the packaged clang, and left `test_analyze_correct_analyzer_not_enabled` unexplained.
@@ -87,6 +88,7 @@ The same control gained 30 reports over the first run's 179 on those TUs.
 The worker called this Clang drift, but the lead knows of no analyzer change between the two builds, so the cause is unexplained as of 2026-11-12.
 One untested explanation is Z3 refutation timing out more often on a loaded machine, which would let through reports that an idle run refutes.
 Until that is settled, counts of new reports between two runs are not comparable to within about 15%.
+This paragraph is superseded by the next entry.
 
 ## 2026-11-12: the 30 extra control reports explained
 
@@ -99,3 +101,12 @@ At the defaults Z3 refutation has a 15 s timeout per query, three attempts, and 
 So report sets are reproducible under load, and no Clang change between the builds alters which reports exist.
 The full-run comparison covers every TU in both runs, so this artifact does not touch its counts.
 The evidence is the last section of `../research/asserts-on-rerun.md` and `/Users/efulop/colorful-day-env/asserts-on/drift-check/`.
+
+## 2026-11-12: second wiki lint corrections
+
+The "remaining work done the same day" entry above lacks citations.
+The health check ran at `llvm-project@6dc2604108f7` and `codechecker@978ea7699`.
+The user docs were committed as `llvm-project@094e7a488fa7` and `codechecker@66253b294`.
+The `dev-loop.sh package` behavior was reported by the mechanical pass worker as of `llvm-project@51cfbad5b480`, and the lead did not verify it in the script.
+
+As of `codechecker@6776779b1`, the "Show constraints" tooltip closes on click, which supersedes the tooltip left open in that entry.

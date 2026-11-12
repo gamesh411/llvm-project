@@ -103,6 +103,7 @@ As of `codechecker@2d2fb1b74`, each API worker keeps prepared Bug Paths in an LR
 As of `codechecker@46a0137a3`, the thrift string limit is explicitly none on the server and Python clients, and `web/requirements.txt` requires `thrift~=0.25`, the first version with that argument.
 UI problems seen and queued for a later polish worker: three-digit step numbers overflow their round badges, variables sort as a0, a1, a10, a100, and the report tree keeps its old selection after a line click.
 `dev-loop.sh env` does not install `python-ldap`, which the server unit tests need.
+This is superseded by the 2026-11-12 second wiki lint entry below.
 
 On 2026-11-11 the lead decided that trace format v2 replaces v1 everywhere instead of both being read, so there is one reconstruction path in each consumer.
 A stored v1 trace gets the disabled toggle with an explanation, as a report without constraint data does, and `dev-loop.sh demo` rebuilds the demo from a clean server.
@@ -152,6 +153,7 @@ The LLVM setup traps (precompiled headers and CIR on by default, Apple libc++ pa
 
 On 2026-11-12 the lead decided the next worker shrinks CFGs (mitigation 12) and makes the CFG view fast on huge blocks, both in one worker because both change the CFG data and its reader, followed by a second polish worker for the visual defects above and the two left open by the first.
 Mitigation 11's size guard waits for that measurement, since the CFG change targets the same driver.
+The wait is superseded by the last line of the 2026-11-12 CFG and store pass entry below, which found no remaining measured need.
 
 ## 2026-11-12: CFG and store pass accepted
 
@@ -179,3 +181,7 @@ Of the visual defects listed in the LLVM run entry above:
 - the arrowhead over its "F" label and the truncated function picker were fixed in the CFG and store pass, as of `codechecker@eb3036552` and `codechecker@fb24a0812`
 - the 927 placeholder, the bubble hidden under stacked bubbles, the States frame clipping and the symbol dump wrapping and paths were fixed in the second polish pass, `codechecker@844f9d3e4`, `71f1d9f9a`, `c4f7c98bc` and `b7b6d1c72`
 - the multi-file tree labels were left as upstream behavior, as recorded in [web UI decisions](web-ui-decisions.md)
+
+## 2026-11-12: second wiki lint corrections
+
+As of `llvm-project@8898f40e455d`, `dev-loop.sh env` installs `python-ldap`, which supersedes the missing `python-ldap` noted in the lane B entry and in the 2026-11-11 wiki lint entry above.

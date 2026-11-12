@@ -48,3 +48,18 @@ The opaque-call demo shows no label because its call returns void, so the worker
 The worker also moved the path condition's change tag beside its range, which closes the wrap noted after ticket 07.
 Left open: a result made in a callee the diagnostic pruned links by line and not to its call site, and analysis time and LLVM-run size were not measured, which ticket 03 owes.
 Seen by the lead in the screenshot: a checker-modelled `malloc` result reads "origin not recorded line 11", which hides the statement text the table has, so ticket 02 was asked to show the statement for `other` symbols.
+
+## 2026-11-12: ticket 02 accepted
+
+On 2026-11-12 the lead accepted ticket 02 after viewing `/Users/efulop/colorful-day-env/screens/t02-llvm-case1-1400.png` and `t02-replaced-field-900.png`, at `llvm-project@2ddb35347d18..1add1cce508e` and `codechecker@21c2b0c56..9dd08b82e`.
+As of `llvm-project@acd3806439a9`, a tagged conjured symbol is `invalidation` when the Bug Path's conservative eval call node for its statement and frame binds it to the region its tag names and the node before does not, and `loop_widening` when an untagged entrance of its block does the same.
+Clang never dereferences a symbol tag, because checkers pass tags that are not memory; a new NFC `StoreManager::bindsSymbolTo` compares by address.
+A checker that invalidates while modelling a call, such as `memcpy`, stays `other`, and lit covers that.
+A derived symbol's entry has its parent and region, and the parent gets an entry of its own.
+Labels read "`Tok.Kind` after `lex(&Tok)` may have changed it, line 11", "a global after `refresh()` may have changed it" and "value from `malloc(16)`, line 11", the last replacing the "origin not recorded" wording the lead flagged after ticket 01.
+On study case 1 (`TokenAnnotator.cpp:3452`) the label reads "a value after `this->parse(prec::LogicalOr)` may have changed it, line 3486", which answers the triager's question of which call replaced the value; the field's name waits for ticket 04.
+The worker's checks: emission off byte-identical on 146 tmux and 18 other plists; tmux plists grew 2.0% (5,226,237 to 5,329,381 bytes); Colorful Day lit 8 passed and 1 unsupported, functest 38, report-converter unit 155, server unit 119, jest 54.
+`sarif-multi-diagnostic-test.c` did not fail in 2 full runs and 15 runs of its directory.
+The worker fixed `map_trace_locations`, which mapped only a table's last location key.
+A running server keeps the report converter it started with, so it has to be restarted after a reader change before storing.
+Seen by the lead in the case 1 screenshot: the replaced pointer's range reads `[1, 18446744073709551615]` instead of non-null, because pointer detection reads the type from the dump and a derived symbol's dump has none, so ticket 03 was asked to carry pointer-ness in the table.

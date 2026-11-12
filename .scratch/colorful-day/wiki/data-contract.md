@@ -76,3 +76,8 @@ The schema is in `../trace-format-v2.md`, and the decision is in the 2026-11-11 
 
 The per-report `constraint_trace.cfgs` of the ticket 09 entry above is superseded in Clang's output: as of `llvm-project@a2b47aba60aa`, each CFG body is kept once per plist file in a top-level `constraint_trace_cfgs`, and traces name it by index.
 As of `codechecker@398558744`, CodeChecker plists hold the blocks as JSON text, and the stored per-report trace still carries its own CFGs, so there was no version bump and no database change.
+
+## 2026-11-12: second wiki lint corrections
+
+The pointer in the 2026-11-12 wiki lint entry above is mislabelled: the decision that version 2 replaces version 1 is in the 2026-11-11 scaling pass entry of [execution plan](execution-plan.md), and the "trace format v2 accepted" entry there holds the results.
+As of `llvm-project@6024f9416d07`, a version 2 trace also has a `symbols` table, as recorded in [Explain the path run](explain-the-path-run.md).

@@ -89,4 +89,13 @@ The worker left the report tree's step labels and the 900px clipping as is, beca
 Left open as of `codechecker@b7b6d1c72`, all minor:
 - at 900px the What-If placeholder clips and the two checkboxes wrap below the toolbar buttons
 - raw symbol dumps can break after "(", leaving "- (" at a line end
+  This is superseded by the 2026-11-12 second wiki lint entry below.
 - the CFG view still shows full paths inside trace strings
+  This is superseded by the 2026-11-12 second wiki lint entry below.
+
+## 2026-11-12: second wiki lint corrections
+
+Two of the items the second polish pass entry above left open are fixed: as of `codechecker@e23482c40`, a symbol dump no longer breaks after a "(" that follows an operator, and as of `codechecker@3078311b0`, the CFG view shows file names for absolute paths.
+As of `codechecker@26c98ec4c`, the What-If Check button wraps below a narrow input, which is the fix for the placeholder clipping at 900px in the same list.
+The two checkboxes wrapping below the toolbar buttons at 900px stay open as of `codechecker@e23482c40`, as recorded in [use case review](use-case-review.md).
+The fixes after that pass, and the Explain the path tickets' UI changes, are recorded in [use case review](use-case-review.md) and [Explain the path run](explain-the-path-run.md).
