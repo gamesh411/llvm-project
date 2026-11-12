@@ -220,7 +220,9 @@ cmd_status() {
 # from demo/several-contexts.c, one statement reached through two calls; and
 # one from demo/call-result.c, whose symbol table has a call result and a
 # value a checker made, and the same without the table, as a Clang before the
-# table wrote it. Output
+# table wrote it; and one from demo/replaced-field.c, a field of an object an
+# opaque call replaced, and one from demo/widened-loop.c, values a widened loop
+# replaced. Output
 # goes into the CodeChecker test tree with the $FILE_PATH$ placeholder the
 # functional tests expect, so re-running it is the only way to change them.
 cmd_fixture() {
@@ -326,18 +328,23 @@ PY
   # several_contexts: one statement reached through two calls.
   # call_result: a call result made in a callee the path leaves out, and a
   # malloc that unix.Malloc models.
-  local name checkers
+  # replaced_field: a field of an object an opaque call replaced.
+  # widened_loop: locals a widened loop replaced, with widening turned on.
+  local name checkers widen
   for name in z3_refuted concrete_value opaque_call several_contexts \
-      call_result; do
+      call_result replaced_field widened_loop; do
     dir=$src/$name
     mkdir -p "$dir"
     cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
     checkers=core
     [ "$name" = call_result ] && checkers=core,unix.Malloc
+    widen=()
+    [ "$name" = widened_loop ] \
+      && widen=(-Xclang -analyzer-config -Xclang widen-loops=true)
     (cd "$dir" && clang --analyze --analyzer-output plist-multi-file \
       -Xclang -analyzer-checker=$checkers \
       -Xclang -analyzer-config -Xclang emit-constraint-snapshots=true \
-      -o "$name.plist" "$dir/$name.c")
+      "${widen[@]+"${widen[@]}"}" -o "$name.plist" "$dir/$name.c")
     FIXTURE_DIR=$dir perl -pi -e 's/\Q$ENV{FIXTURE_DIR}\E/\$FILE_PATH\$/g' "$dir/$name.plist"
     grep -q 'FILE_PATH' "$dir/$name.plist" || die "placeholder missing in $dir"
     echo "fixture ok: $dir/$name.plist"
