@@ -19,3 +19,17 @@ The "Show constraints" tooltip closes on click as of `codechecker@6776779b1`.
 Checks the worker reported: eslint clean, jest 28 passed, functest 33 passed.
 Left open: the worker could not open the line picker in the browser, so its readable ranges were checked by jest and code reading only, and there is no 900 pixel two-path screenshot.
 The picker check was handed to the ticket 07 worker.
+
+## 2026-11-12: ticket 07 accepted
+
+On 2026-11-12 the lead accepted ticket 07 after viewing `/Users/efulop/colorful-day-env/screens/t07-highlight-1400.png`, `t07-marker-source-1400.png` and `t07-marker-source-900.png`, at `codechecker@fc52a8e3f` and `6ed777923`, and `llvm-project@0d25257d4671`.
+Rows added or narrowed at the selected Path Step carry a `new` or `narrowed` tag and a coloured bar.
+A control step that adds to the path condition with no event gets an icon in the report tree, an amber bar and an `assumes` tag in the source, and an "Assumed, no event" tag in the panel.
+The worker measured "changed" against the closest earlier step with a different snapshot, because the printed path is not in node order.
+A step click on LLVM report 3142 took a median 1100 ms before and 1090 ms after.
+Checks the worker reported: eslint clean, jest 36 passed, functest 33 passed.
+The ticket 10 carry-over passed: the line picker on `several-contexts.c` line 13 reads `a = not 0, p = 0` with the analyzer's range on hover.
+Seen by the lead in the screenshots and left for a later polish: in the accumulated path condition the `new` tag wraps under its value where "Other symbols" keeps it on the value's line, and at 900 pixels the `assumes` tag in the source clips, which the amber bar covers for.
+Not done: a legend for the tags.
+
+On 2026-11-12 the lead started ticket 01 on Opus once no process was using `build-colorful/bin/clang`, because it spans Clang and both readers and has to verify how the analyzer conjures symbols.
