@@ -829,6 +829,19 @@ public: // Part of public interface to class.
       }
     }
   }
+
+  bool bindsSymbolTo(Store S, const void *Region, SymbolRef Sym) override {
+    // A binding of a base region or memory space is in the cluster that the
+    // region keys, and the cluster map compares its keys by address.
+    const ClusterBindings *Cluster =
+        getRegionBindings(S).lookup(static_cast<const MemRegion *>(Region));
+    if (!Cluster)
+      return false;
+    for (const auto &[Key, Value] : *Cluster)
+      if (Key.getRegion() == Region && Value.getAsSymbol() == Sym)
+        return true;
+    return false;
+  }
 };
 
 } // end anonymous namespace

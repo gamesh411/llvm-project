@@ -286,6 +286,12 @@ public:
   /// iterBindings - Iterate over the bindings in the Store.
   virtual void iterBindings(Store store, BindingsHandler& f) = 0;
 
+  /// Whether \p S binds \p Sym, directly or as its default value, to the
+  /// region \p Region itself, which is a base region or a memory space.
+  /// \p Region is compared and never dereferenced, so it may be any pointer,
+  /// such as the tag of a conjured symbol.
+  virtual bool bindsSymbolTo(Store S, const void *Region, SymbolRef Sym) = 0;
+
 protected:
   const ElementRegion *MakeElementRegion(const SubRegion *baseRegion,
                                          QualType pointeeTy,
