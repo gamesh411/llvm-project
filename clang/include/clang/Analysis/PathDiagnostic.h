@@ -497,6 +497,11 @@ struct PathDiagnosticSymbol {
     /// The value of a call that the analyzer evaluated without seeing inside
     /// the callee.
     CallResult,
+    /// The new value of memory that such a call may have changed.
+    Invalidation,
+    /// The new value of memory that a loop may have changed, made when the
+    /// analyzer stopped following the loop.
+    LoopWidening,
     /// Anything the analyzer recorded no reason for, such as a call a checker
     /// modelled.
     Other
@@ -515,6 +520,13 @@ struct PathDiagnosticSymbol {
     /// its function.
     int64_t FrameID;
     std::string Function;
+    /// For Invalidation and LoopWidening, the memory the symbol replaced:
+    /// either globals, or a region described as an access path, which is
+    /// empty when the analyzer cannot describe it.
+    bool Globals = false;
+    std::string Region;
+    /// For LoopWidening, the start of the loop.
+    SourceLocation Loop;
   };
 
   /// The symbol's dump, as the snapshot lists print it.
@@ -526,6 +538,11 @@ struct PathDiagnosticSymbol {
   bool SMTSigned = false;
   /// Only for conjured symbols.
   std::optional<Origin> Conjured;
+  /// Only for derived symbols: the dump of the symbol they are a part of,
+  /// which has an entry of its own, and the access path of their region,
+  /// empty when the analyzer cannot describe it.
+  std::string Parent;
+  std::string Region;
 };
 
 using PathDiagnosticSymbolTable = std::vector<PathDiagnosticSymbol>;

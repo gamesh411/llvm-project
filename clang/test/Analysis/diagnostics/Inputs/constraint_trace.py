@@ -77,12 +77,15 @@ def symbols(trace):
     table = {}
     for entry in trace.get("symbols", []):
         symbol = {"kind": entry["kind"]}
+        for key in ("parent", "region"):
+            if key in entry:
+                symbol[key] = strings[entry[key]]
         if "smt" in entry:
             symbol["smt"] = strings[entry["smt"]]
             symbol["smt_signed"] = entry["smt_signed"]
         if "origin" in entry:
             origin = dict(entry["origin"])
-            for key in ("statement", "callee", "function"):
+            for key in ("statement", "callee", "function", "region"):
                 if key in origin:
                     origin[key] = strings[origin[key]]
             symbol["origin"] = origin

@@ -282,6 +282,17 @@ class PathDiagnosticBuilder : public BugReporterContext {
   /// Conjured symbols that are the return value of a call the analyzer
   /// evaluated without inlining it, see recordPathHistory.
   llvm::DenseSet<const SymbolConjured *> CallResults;
+  /// The nodes that the analyzer's own evaluation of a call it did not inline
+  /// ends in, by the call and its frame. Invalidation by the call is done by
+  /// then.
+  llvm::DenseMap<std::pair<const Stmt *, const StackFrame *>,
+                 SmallVector<const ExplodedNode *, 1>>
+      ConservativeEvals;
+  /// Block entrances whose state is not their predecessor's, by the block and
+  /// its frame. Loop widening is what makes those.
+  llvm::DenseMap<std::pair<const CFGBlock *, const StackFrame *>,
+                 SmallVector<const ExplodedNode *, 1>>
+      ChangedBlockEntrances;
   /// The part of a function's control flow graph the bug path took.
   struct PathCFG {
     AnalysisDeclContext *ADC;
@@ -358,8 +369,15 @@ private:
   /// Adds the blocks and the edge \p N is at to the path's CFGs.
   void recordCFGVisit(const ExplodedNode *N);
 
-  /// Records the return value of a call \p N evaluated without inlining it.
+  /// Records the return value of a call \p N evaluated without inlining it,
+  /// and \p N among the nodes where the analyzer may have replaced memory.
   void recordCallResult(const ExplodedNode *N);
+  void recordBlockEntrance(const ExplodedNode *N);
+
+  /// Fills in the reason a conjured symbol with a tag was made, when the
+  /// path shows that it replaced memory, see recordPathHistory.
+  void describeReplacement(const SymbolConjured *Sym,
+                           PathDiagnosticSymbol::Origin &Origin) const;
 
   /// Where \p N is in the CFGs the diagnostic carries, if anywhere.
   std::optional<PathDiagnosticConstraintSnapshot::CFGPosition>
@@ -1450,7 +1468,16 @@ void PathDiagnosticBuilder::recordSymbols(
     if (Inserted)
       SymbolTable->push_back(describeSymbol(Data));
     Indices.push_back(It->second);
+    // A reader labels a part of a value from the whole value's entry.
+    if (const auto *Derived = dyn_cast<SymbolDerived>(Data))
+      recordSymbols(Derived->getParentSymbol(), Indices);
   }
+}
+
+/// \p R as the expression a reader would write for it, or empty when the
+/// analyzer has no description of it.
+static std::string describeRegion(const MemRegion *R) {
+  return R->getDescriptiveName(/*UseQuotes=*/false, /*AllowFallback=*/false);
 }
 
 /// \p S printed on one line, cut at \p MaxLength bytes with "..." appended.
@@ -1523,15 +1550,22 @@ PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
     std::tie(Result.SMTTerm, Result.SMTSigned) = *Term;
 #endif
 
+  if (const auto *Derived = dyn_cast<SymbolDerived>(Sym)) {
+    Result.Parent = getSymbolDump(Derived->getParentSymbol());
+    Result.Region = describeRegion(Derived->getRegion());
+    return Result;
+  }
+
   const auto *Conjured = dyn_cast<SymbolConjured>(Sym);
   if (!Conjured)
     return Result;
   PathDiagnosticSymbol::Origin &Origin = Result.Conjured.emplace();
   // Only what recordPathHistory saw the analyzer do gives a reason; a
   // statement's text or kind alone would be a guess.
-  Origin.Why = CallResults.contains(Conjured)
-                   ? PathDiagnosticSymbol::Reason::CallResult
-                   : PathDiagnosticSymbol::Reason::Other;
+  if (CallResults.contains(Conjured))
+    Origin.Why = PathDiagnosticSymbol::Reason::CallResult;
+  else if (Conjured->getTag())
+    describeReplacement(Conjured, Origin);
   if (const Stmt *S = Conjured->getStmt()) {
     Origin.Statement = printStatement(S, getASTContext().getLangOpts());
     Origin.Location = getSourceManager().getExpansionLoc(S->getBeginLoc());
@@ -1655,6 +1689,7 @@ void PathDiagnosticBuilder::recordPathHistory() {
     PathHistory.try_emplace(N, std::make_pair(Accumulated, Position));
     recordCFGVisit(N);
     recordCallResult(N);
+    recordBlockEntrance(N);
     ++Position;
   }
 }
@@ -1668,6 +1703,7 @@ void PathDiagnosticBuilder::recordCallResult(const ExplodedNode *N) {
   auto Point = N->getLocationAs<PostStmt>();
   if (!Point)
     return;
+  ConservativeEvals[{Point->getStmt(), N->getStackFrame()}].push_back(N);
   const auto *Call = dyn_cast<Expr>(Point->getStmt());
   if (!Call)
     return;
@@ -1678,6 +1714,58 @@ void PathDiagnosticBuilder::recordCallResult(const ExplodedNode *N) {
   if (Result && !Result->getTag() && Result->getStmt() == Call &&
       Result->getStackFrame() == N->getStackFrame())
     CallResults.insert(Result);
+}
+
+void PathDiagnosticBuilder::recordBlockEntrance(const ExplodedNode *N) {
+  // Widening a loop replaces memory at the entrance of the loop's block, and
+  // nothing else changes the state there.
+  auto Entrance = N->getLocationAs<BlockEntrance>();
+  if (!Entrance || Entrance->getTag() || !N->getFirstPred() ||
+      N->getState() == N->getFirstPred()->getState())
+    return;
+  ChangedBlockEntrances[{Entrance->getBlock(), N->getStackFrame()}].push_back(
+      N);
+}
+
+/// Whether \p Sym is bound, at \p N and not before, to the memory its tag
+/// names, which is what replacing memory with a conjured symbol does.
+static bool bindsAnew(const ExplodedNode *N, const SymbolConjured *Sym) {
+  StoreManager &Store = N->getState()->getStateManager().getStoreManager();
+  const ExplodedNode *Pred = N->getFirstPred();
+  return Store.bindsSymbolTo(N->getState()->getStore(), Sym->getTag(), Sym) &&
+         !(Pred && Store.bindsSymbolTo(Pred->getState()->getStore(),
+                                       Sym->getTag(), Sym));
+}
+
+void PathDiagnosticBuilder::describeReplacement(
+    const SymbolConjured *Sym, PathDiagnosticSymbol::Origin &Origin) const {
+  // Invalidation conjures with the replaced memory as the tag, at the
+  // statement, frame and visit of the call, or of the loop's first element
+  // when it widens the loop. Checkers that model a call replace memory with
+  // the same symbol, but not at the node the analyzer's evaluation ends in.
+  // A tag is not always memory, so it is only compared with the store's
+  // regions until the store has shown it to be one.
+  auto BindsAnew = [Sym](const ExplodedNode *N) { return bindsAnew(N, Sym); };
+  const StackFrame *Frame = Sym->getStackFrame();
+  ConstCFGElementRef Elem = Sym->getCFGElementRef();
+  if (auto It = ConservativeEvals.find({Sym->getStmt(), Frame});
+      It != ConservativeEvals.end() && llvm::any_of(It->second, BindsAnew)) {
+    Origin.Why = PathDiagnosticSymbol::Reason::Invalidation;
+  } else if (auto It = ChangedBlockEntrances.find({Elem.getParent(), Frame});
+             Elem.getIndexInBlock() == 0 && It != ChangedBlockEntrances.end() &&
+             llvm::any_of(It->second, BindsAnew)) {
+    Origin.Why = PathDiagnosticSymbol::Reason::LoopWidening;
+    if (const Stmt *Loop = Elem.getParent()->getTerminatorStmt())
+      Origin.Loop = getSourceManager().getExpansionLoc(Loop->getBeginLoc());
+  } else {
+    return;
+  }
+
+  const auto *Replaced = static_cast<const MemRegion *>(Sym->getTag());
+  if (isa<GlobalsSpaceRegion>(Replaced))
+    Origin.Globals = true;
+  else
+    Origin.Region = describeRegion(Replaced);
 }
 
 void PathDiagnosticBuilder::recordCFGVisit(const ExplodedNode *N) {

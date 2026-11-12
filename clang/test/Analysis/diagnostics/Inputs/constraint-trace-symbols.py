@@ -2,10 +2,12 @@
 """Print the symbol table of each diagnostic's constraint trace, one line per
 symbol, so a test can FileCheck it.
 
-A symbol prints as `SYMBOL <dump> <kind>`, followed for a conjured symbol by
-its origin: `<reason> "<statement>" @<file>:<line>:<col> callee <name> in
-<function> frame <index>`, each part only when the trace has it, and `frame
-none` when its frame is not in stack_frames. With the optional second
+A symbol prints as `SYMBOL <dump> <kind>`, followed for a derived symbol by
+`parent <dump> region <access path>`, and for a conjured symbol by its origin:
+`<reason> "<statement>" @<file>:<line>:<col> callee <name> region <name>
+globals loop @<file>:<line>:<col> in <function> frame <index>`, each part only
+when the trace has it, and `frame none` when its frame is not in
+stack_frames. With the optional second
 argument `smt`, a symbol with an SMT-LIB term also prints `smt <term>
 [signed|unsigned]`.
 
@@ -64,6 +66,10 @@ def render_location(files, location):
 
 def render(files, dump, symbol, smt):
     parts = ["SYMBOL", dump, symbol["kind"]]
+    if "parent" in symbol:
+        parts.append("parent " + symbol["parent"])
+    if "region" in symbol:
+        parts.append("region " + symbol["region"])
     origin = symbol.get("origin")
     if origin is not None:
         parts.append(origin["reason"])
@@ -73,6 +79,12 @@ def render(files, dump, symbol, smt):
             parts.append(render_location(files, origin["location"]))
         if "callee" in origin:
             parts.append("callee " + origin["callee"])
+        if "region" in origin:
+            parts.append("region " + origin["region"])
+        if origin.get("globals"):
+            parts.append("globals")
+        if "loop" in origin:
+            parts.append("loop " + render_location(files, origin["loop"]))
         parts.append("in " + origin["function"])
         parts.append("frame %s" % origin.get("frame", "none"))
     if smt and "smt" in symbol:

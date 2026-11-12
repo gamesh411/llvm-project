@@ -899,6 +899,10 @@ static StringRef toString(PathDiagnosticSymbol::Reason Why) {
   switch (Why) {
   case Reason::CallResult:
     return "call_result";
+  case Reason::Invalidation:
+    return "invalidation";
+  case Reason::LoopWidening:
+    return "loop_widening";
   case Reason::Other:
     return "other";
   }
@@ -931,6 +935,14 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
     EmitInteger(o, intern(Sym.Symbol)) << '\n';
     Indent(o, indent) << "<key>kind</key>";
     EmitString(o, toString(Sym.SymbolKind)) << '\n';
+    if (!Sym.Parent.empty()) {
+      Indent(o, indent) << "<key>parent</key>";
+      EmitInteger(o, intern(Sym.Parent)) << '\n';
+    }
+    if (!Sym.Region.empty()) {
+      Indent(o, indent) << "<key>region</key>";
+      EmitInteger(o, intern(Sym.Region)) << '\n';
+    }
     if (!Sym.SMTTerm.empty()) {
       Indent(o, indent) << "<key>smt</key>";
       EmitInteger(o, intern(Sym.SMTTerm)) << '\n';
@@ -954,6 +966,16 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
       if (!Origin->Callee.empty()) {
         Indent(o, indent) << "<key>callee</key>";
         EmitInteger(o, intern(Origin->Callee)) << '\n';
+      }
+      if (Origin->Globals)
+        Indent(o, indent) << "<key>globals</key><true/>\n";
+      if (!Origin->Region.empty()) {
+        Indent(o, indent) << "<key>region</key>";
+        EmitInteger(o, intern(Origin->Region)) << '\n';
+      }
+      if (Origin->Loop.isValid()) {
+        Indent(o, indent) << "<key>loop</key>\n";
+        EmitLocation(o, SM, Origin->Loop, FM, indent);
       }
       Indent(o, indent) << "<key>function</key>";
       EmitInteger(o, intern(Origin->Function)) << '\n';
@@ -1316,9 +1338,13 @@ void PlistDiagnostics::FlushDiagnosticsImpl(
     if (!D->getSymbols().empty()) {
       for (const auto &[FID, Lines] : D->getExecutedLines())
         AddFID(FM, Fids, FID);
-      for (const PathDiagnosticSymbol &Sym : D->getSymbols())
-        if (Sym.Conjured && Sym.Conjured->Location.isValid())
-          AddFID(FM, Fids, SM, Sym.Conjured->Location);
+      for (const PathDiagnosticSymbol &Sym : D->getSymbols()) {
+        if (!Sym.Conjured)
+          continue;
+        for (SourceLocation Loc : {Sym.Conjured->Location, Sym.Conjured->Loop})
+          if (Loc.isValid())
+            AddFID(FM, Fids, SM, Loc);
+      }
     }
     printBugPath(o, FM, D->path, D->getCFGs(), D->getSymbols(), Graphs);
 
