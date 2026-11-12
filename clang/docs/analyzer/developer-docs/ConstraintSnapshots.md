@@ -82,6 +82,7 @@ Memory the analyzer reads as another type than its pointer's is named through a 
 A base class and an anonymous struct or union are left out, as in the source.
 The path is absent when any part of the region has no such description, for example the pointee of a call's result, memory read as another type than its own, or an element at a computed index, and Clang never makes one up from the symbol's dump.
 Region value names, derived symbols' regions and the memory an invalidation replaced are described the same way, so `this->Current` after `this->parse()` names the field.
+An extent, the unknown size of some memory, names that memory the same way, such as `*l->cells`.
 Consumers must treat a reason they do not know as `other`, because more reasons may be added.
 
 ## SMT-LIB and Z3

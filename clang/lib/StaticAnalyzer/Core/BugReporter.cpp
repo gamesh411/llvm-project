@@ -1720,6 +1720,10 @@ PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
     Result.Name = describeRegion(Value->getRegion());
     return Result;
   }
+  if (const auto *Extent = dyn_cast<SymbolExtent>(Sym)) {
+    Result.Region = describeRegion(Extent->getRegion());
+    return Result;
+  }
 
   if (const auto *Derived = dyn_cast<SymbolDerived>(Sym)) {
     Result.Parent = getSymbolDump(Derived->getParentSymbol());

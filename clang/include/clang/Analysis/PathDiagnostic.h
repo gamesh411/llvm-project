@@ -561,8 +561,8 @@ struct PathDiagnosticSymbol {
   /// Only for conjured symbols.
   std::optional<Origin> Conjured;
   /// Only for derived symbols: the dump of the symbol they are a part of,
-  /// which has an entry of its own, and the access path of their region,
-  /// empty when the analyzer cannot describe it.
+  /// which has an entry of its own. For derived and extent symbols, the
+  /// access path of their region, empty when the analyzer cannot describe it.
   std::string Parent;
   std::string Region;
 };

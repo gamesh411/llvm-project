@@ -127,14 +127,15 @@ void global_after_a_call(void) {
 
 // A checker that models memcpy invalidates its destination itself, with the
 // same tag the analyzer would use, but no analyzer evaluation of the call is
-// on the path, so the reason is not known.
+// on the path, so the reason is not known. The size of the memory src
+// points to is named by that memory.
 void invalidated_by_a_checker(const int *src) {
   int x = 0;
   int *p = 0;
   memcpy(&x, src, sizeof(x));
   // CHECK-NEXT: TRACE Dereference of null pointer
   // CHECK-NEXT: SYMBOL conj_$[[#]]{int, LC[[#]], S[[#]], #1} conjured other "memcpy(&x, src, sizeof (x))" @constraint-snapshots-symbols.c:[[# @LINE - 2]]:3 callee memcpy in invalidated_by_a_checker frame 0{{$}}
-  // CHECK-NEXT: SYMBOL extent_$[[#]]{SymRegion{reg_$[[#]]<const int * src>}} extent{{$}}
+  // CHECK-NEXT: SYMBOL extent_$[[#]]{SymRegion{reg_$[[#]]<const int * src>}} extent region *src{{$}}
   // CHECK-NEXT: SYMBOL reg_$[[#]]<const int * src> region_value name src{{$}}
   if (x == 3)
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
