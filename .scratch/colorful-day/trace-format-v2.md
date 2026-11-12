@@ -27,6 +27,7 @@ constraint_trace: dict
     symbol_ranges, variables, path_condition, smt_declarations: list deltas (see below), each absent when that list did not change
   stack_frames: array, as in version 1
   symbols: array, the symbol table (see below), absent when the snapshots mention no symbol
+  expressions: array, the types of symbolic expressions (see below), absent when the snapshots constrain none
   strings: array of string, every string the list entries and the symbol table name, each once
 ```
 
@@ -90,6 +91,7 @@ symbols[*]: dict
   smt_signed: boolean, whether comparisons on smt are signed; present with smt
   parent: integer, index into strings of the dump of the symbol a derived symbol is part of, which has an entry too; only for a derived symbol
   region: integer, index into strings of the access path of a derived symbol's region, such as Tok.Kind; absent when the analyzer cannot describe the region
+  name: integer, index into strings of the access path of a region value's region, such as p->len or this->Current; only for region_value, and absent when the analyzer cannot describe the region
   origin: dict, only for a conjured symbol
     reason: string, why the analyzer made the symbol (see below)
     function: integer, index into strings of the function of the stack frame the symbol was made in
@@ -121,7 +123,23 @@ As of the `llvm-project` commit titled "[analyzer] Record the type of each symbo
 They exist because the dump of a derived symbol has no type, and a typedef hides the width.
 A reader that finds neither reads the type from the dump, as before.
 
-Nothing else in the trace changes with the table: the existing keys are as before, except that `strings` gains the strings only the table names, after all the others.
+As of the `llvm-project` commit titled "[analyzer] Name region values and type expressions in a constraint trace", a `region_value` entry has `name`, and access paths are described by Clang's own walk of the region rather than `MemRegion::getDescriptiveName`, so `region` in derived entries and origins covers the same memory.
+An access path follows a pointer whose value is the initial or replaced value of named memory (`*p`, `p[2]`, `p->len`, `this->Current`), names memory read as another type than its pointer's through a cast (`((struct S *)data)->len`), and leaves out base classes and anonymous structs and unions.
+It is absent when any part of the region cannot be described, such as the pointee of a call's result, an element at a computed index, or an element region that reinterprets memory that is not an array of that element type.
+No reader may make a name out of a dump.
+
+The same commit adds the trace's `expressions` key: one entry for each symbolic expression that is the symbol of a `symbol_ranges` or `path_condition` entry or the value of a `variables` entry of kind `symbol`, sorted by dump.
+Its subexpressions get none.
+It exists because a range is readable only with the type of what it constrains, which the dump of an expression does not start with.
+
+```
+expressions[*]: dict
+  symbol: integer, index into strings of the expression's dump
+  type: integer, index into strings of the expression's type, as a symbol's
+  pointer: true when the analyzer treats the expression as an address; absent otherwise
+```
+
+Nothing else in the trace changes with the table: the existing keys are as before, except that `strings` gains the strings only the table and `expressions` name, after all the others.
 A plist's `files` can gain the file of a symbol's statement or loop when no other location names it.
 Such files are added in order after the files of the diagnostic's `ExecutedLines`, so every file keeps the index it has without the table.
 
@@ -189,16 +207,16 @@ A version 1 trace stored before the change is in the database whole, and it gets
 Each language has one reader, and every consumer goes through it.
 
 - Python: `codechecker_report_converter/report/constraint_trace.py`, `ConstraintTrace`.
-  `symbols()` reads the symbol table, keyed by dump, with its strings read; `encode()` writes one.
+  `symbols()` reads the symbol table, keyed by dump, with its strings read, and `expressions()` the types of expressions; `encode()` writes both.
   `read_graphs()` reads a plist's `constraint_trace_cfgs`, `resolve_cfgs()` puts those bodies back into a trace, and `GraphTable` keeps each body once, with JSON text blocks, when a plist is written.
   The report converter uses its `check()`, and What-If uses its `lifetimes()`, which lists every entry once with the span of nodes it holds for.
   `snapshot(node)` rebuilds a whole snapshot by replaying deltas from a checkpoint kept every 64 nodes.
   `encode()` writes a version 2 trace from whole snapshots, with Clang's matching rule, for tests and fixture derivation.
 - JavaScript: `web/server/vue-cli/src/components/Report/ConstraintTrace.js`, `ConstraintTrace`.
-  `symbols` and `symbol(dump)` read the symbol table, `nearestStep()` finds the Path Step nearest to a symbol's origin, and `symbolLabel()` gives the text the panel shows for a symbol, labelling a derived symbol from its parent's entry.
+  `symbols` and `symbol(dump)` read the symbol table, `expressions` and `typeOf(dump)` the types of expressions and symbols, `nearestStep()` finds the Path Step nearest to a symbol's origin, and `symbolLabel()` gives the text the panel shows for a symbol, labelling a derived symbol from its parent's entry.
   The UI builds a step's snapshot the first time it is shown and keeps it.
   It tells whether two steps show the same snapshot without building either, from a running hash of each node's lists checked against the raw entries, and it names path condition symbols from a change log built once.
-- The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`, whose `expand()` takes the plist's `constraint_trace_cfgs` too, and whose `symbols()` reads the symbol table.
+- The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`, whose `expand()` takes the plist's `constraint_trace_cfgs` too, and whose `symbols()` and `expressions()` read the symbol table and the types of expressions.
 
 ## Sizes
 

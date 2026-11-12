@@ -275,8 +275,10 @@ for diag in plist['diagnostics']:
                for dump, symbol in trace.symbols().items()}
     diag['constraint_trace'] = {
         **{key: value for key, value in trace.trace.items()
-           if key not in ('smtlib', 'strings', 'exploded_nodes', 'symbols')},
-        **constraint_trace.encode(nodes, trace.steps, symbols)}
+           if key not in ('smtlib', 'strings', 'exploded_nodes', 'symbols',
+                          'expressions')},
+        **constraint_trace.encode(nodes, trace.steps, symbols,
+                                  trace.expressions())}
 with open(sys.argv[3], 'wb') as f:
     plistlib.dump(plist, f)
 PY
@@ -330,9 +332,11 @@ PY
   # malloc that unix.Malloc models.
   # replaced_field: a field of an object an opaque call replaced.
   # widened_loop: locals a widened loop replaced, with widening turned on.
+  # access_path: values of fields, elements and pointees, named by the
+  # expression a reader would write.
   local name checkers widen
   for name in z3_refuted concrete_value opaque_call several_contexts \
-      call_result replaced_field widened_loop; do
+      call_result replaced_field widened_loop access_path; do
     dir=$src/$name
     mkdir -p "$dir"
     cp "$LLVM/.scratch/colorful-day/demo/${name//_/-}.c" "$dir/$name.c"
@@ -361,6 +365,7 @@ with open(sys.argv[1], 'rb') as f:
     plist = plistlib.load(f)
 for diag in plist['diagnostics']:
     del diag['constraint_trace']['symbols']
+    diag['constraint_trace'].pop('expressions', None)
 with open(sys.argv[2], 'wb') as f:
     plistlib.dump(plist, f)
 PY
