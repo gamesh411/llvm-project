@@ -154,3 +154,24 @@ The assertion scan of the new run counts asserts the analyzer did see, so the 44
 ## Files
 
 - `/Users/efulop/colorful-day-env/asserts-on/`: `build/`, `cdb-all.json`, `reports/`, `reports-ctrl400-ndebug/`, `reports-ctrl30-ndebug/`, `new.jsonl`, `ctrl400.jsonl`, `ctrl30.jsonl`, `tables-new.md`, `tables-old.md`, `last_step-*.txt`, `assert_scan-*.txt`, `compare.txt`, `scripts/diff.json`, `logs/`.
+
+## Cause of the 30 extra control reports (2026-11-12)
+
+The 30 extra reports are a bookkeeping artifact of the comparison, not Clang drift and not Z3 timing.
+The first run's unique reports were keyed by (hash, file, checker) and each key was assigned to the first TU it was seen in, out of 3546 TUs.
+A report in a shared header is emitted by many TUs, so for these 30 the first-seen TU lay outside the 400-TU control sample.
+The filter "first-seen TU is in the 400" therefore dropped them from the first run's count (179) but not from the control's (209).
+All 30 are present, traced, in the first run's plists for TUs inside the 400.
+Counting a key for every TU that holds it gives 209 for the first run and 209 for the control, with 0 lost and 0 new.
+Affected checkers: security.ArrayBound (17), optin.cplusplus.UninitializedObject (9), core.BitwiseShift (2), cplusplus.NewDeleteLeaks (2).
+
+Ruled out:
+- Analyzer invocation: both runs used CodeChecker 6.30, the same checker list, `-j8`, `emit-constraint-snapshots=true`, and byte-identical compile commands for the 400 TUs; refutation is on in both (`crosscheck-with-z3=true`).
+- Clang: no change under clang/lib, clang/include or llvm/lib between the two binaries that affects the analyzer. Running the 15 TUs that hold the 30 reports with the saved first-run binary (cfg2/old-clang) gives the same 61 traced reports as the current binary, so the symbol table in traces does not change which reports exist.
+- Z3 timing: at the defaults `crosscheck-with-z3-timeout-threshold` is 15000 ms per query, `-rlimit-threshold` is 0 (unlimited), `-eqclass-timeout-threshold` is 0 (none) and `-max-attempts-per-query` is 3.
+  A wall-clock timeout exists but is far above the query times seen here.
+  Same 15 TUs: quiet -j1 twice (identical), -j8 under 16 busy loops (load average 37, identical), saved first-run binary (identical).
+  No option change is needed for reproducibility on this sample.
+
+Files are under /Users/efulop/colorful-day-env/asserts-on/drift-check/ (rep-a1, rep-a2, rep-b, rep-old, keys.py, extra30.json).
+Fix for compare.py and ctrl.py: key each report by the set of TUs that emit it, or restrict both runs to the sampled TUs before deduplicating.

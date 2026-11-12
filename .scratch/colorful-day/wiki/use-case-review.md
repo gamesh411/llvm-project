@@ -87,3 +87,15 @@ The same control gained 30 reports over the first run's 179 on those TUs.
 The worker called this Clang drift, but the lead knows of no analyzer change between the two builds, so the cause is unexplained as of 2026-11-12.
 One untested explanation is Z3 refutation timing out more often on a loaded machine, which would let through reports that an idle run refutes.
 Until that is settled, counts of new reports between two runs are not comparable to within about 15%.
+
+## 2026-11-12: the 30 extra control reports explained
+
+The "30 more reports" paragraph of the rerun entry above is superseded, together with its untested Z3 explanation and its 15% caution.
+On 2026-11-12 a worker found that the 30 were a bookkeeping artifact of the comparison scripts.
+The scripts assigned each unique report to the first TU that held it among all 3546, and for 30 header-borne reports that TU lay outside the 400-TU sample, so the first run was undercounted.
+Counted by any TU that holds the report, both runs have 209 on those TUs, with none lost and none new.
+The worker also analyzed the 15 TUs concerned on a quiet machine twice, under a load average of 37, and with the first run's Clang, and got identical report sets each time.
+At the defaults Z3 refutation has a 15 s timeout per query, three attempts, and no resource or equivalence class limit.
+So report sets are reproducible under load, and no Clang change between the builds alters which reports exist.
+The full-run comparison covers every TU in both runs, so this artifact does not touch its counts.
+The evidence is the last section of `../research/asserts-on-rerun.md` and `/Users/efulop/colorful-day-env/asserts-on/drift-check/`.
