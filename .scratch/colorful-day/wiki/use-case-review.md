@@ -71,3 +71,19 @@ The worker traced 11 to macOS `/tmp` being a symlink to `/private/tmp` and one t
 On 2026-11-12 the user approved the breakdown of the spec into ten tickets, `../../explain-the-path/issues/01` to `10`, and asked for ticket 10 (readable ranges and the tooltip that stays open) to be done first.
 Tickets 01 to 03 are slice 1, 04 to 06 slice 2, and 07 to 09 slice 3; ticket 10 is outside the spec.
 On 2026-11-12 the lead decided to run the tickets one at a time, as in the first run, because both repositories have one `colorful-day` branch and the tickets edit the same emission and panel code.
+
+## 2026-11-12: LLVM rerun with assertions on
+
+On 2026-11-12 a worker repeated the LLVM run with `LLVM_ENABLE_ASSERTIONS=ON`, using the Clang built at `llvm-project@51cfbad5b480` and `codechecker@66253b294`, and wrote `../research/asserts-on-rerun.md`.
+All 3544 common TUs were analyzed and none failed.
+Unique traced reports went from 1225 to 1053: 399 disappeared and 227 are new.
+`core.CallAndMessage` fell from 497 to 304 and `core.NullDereference` from 44 to 25, while `core.DivideZero` rose from 37 to 104, because an assert adds a branch or a division that the analyzer then follows; 89 of its 90 new reports have an assert on the path.
+Of the 30 triaged cases 11 are gone, among them all six the study tied to an assert, and all 5 true positives survive.
+Ten of the 23 false positives are gone.
+The study's tables moved little: reports with no variable at the last Path Step went from 32% to 37%, and constraint changes made in the bug's own frame from 19% to 26%, so the findings behind the spec hold.
+
+A control run of 400 TUs with the same Clang and assertions off lost no report against the first run, so the disappearances come from assertions or from the hardening flags that come with them, which were not separated.
+The same control gained 30 reports over the first run's 179 on those TUs.
+The worker called this Clang drift, but the lead knows of no analyzer change between the two builds, so the cause is unexplained as of 2026-11-12.
+One untested explanation is Z3 refutation timing out more often on a loaded machine, which would let through reports that an idle run refutes.
+Until that is settled, counts of new reports between two runs are not comparable to within about 15%.
