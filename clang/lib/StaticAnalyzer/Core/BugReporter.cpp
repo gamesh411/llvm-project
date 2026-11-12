@@ -275,10 +275,11 @@ class PathDiagnosticBuilder : public BugReporterContext {
   mutable std::map<SymbolRef, std::optional<std::pair<std::string, bool>>>
       SMTTerms;
   mutable std::map<const SymbolData *, std::string> SMTDeclarations;
-  /// The atomic symbols the built snapshots mention, each once, shared with
-  /// every diagnostic this builder makes. Null unless snapshots are on.
+  /// The atomic symbols the built snapshots mention, and the symbolic
+  /// expressions they constrain, each once, shared with every diagnostic this
+  /// builder makes. Null unless snapshots are on.
   std::shared_ptr<PathDiagnosticSymbolTable> SymbolTable;
-  mutable llvm::DenseMap<const SymbolData *, unsigned> SymbolTableIndex;
+  mutable llvm::DenseMap<SymbolRef, unsigned> SymbolTableIndex;
   /// Conjured symbols that are the return value of a call the analyzer
   /// evaluated without inlining it, see recordPathHistory.
   llvm::DenseSet<const SymbolConjured *> CallResults;
@@ -350,7 +351,10 @@ private:
   /// Adds the atomic symbols \p Sym is made of to the symbol table, and their
   /// indices to \p Indices.
   void recordSymbols(SymbolRef Sym, SmallVectorImpl<unsigned> &Indices) const;
+  void recordExpression(SymbolRef Sym,
+                        SmallVectorImpl<unsigned> &Indices) const;
   PathDiagnosticSymbol describeSymbol(const SymbolData *Sym) const;
+  void describeType(QualType Type, PathDiagnosticSymbol &Result) const;
 
 #if LLVM_WITH_Z3
   llvm::SMTSolverRef &getSMTSolver() const;
@@ -1448,11 +1452,16 @@ void PathDiagnosticBuilder::fillConstraintSnapshot(
 
   // Every symbol with a known range here is in the path condition too.
   SmallVector<unsigned, 32> Symbols;
-  for (const auto &[Sym, Range] : PathCondition)
+  for (const auto &[Sym, Range] : PathCondition) {
     recordSymbols(Sym, Symbols);
-  for (SymbolRef Sym : VariableSymbols)
-    if (Sym)
-      recordSymbols(Sym, Symbols);
+    recordExpression(Sym, Symbols);
+  }
+  for (SymbolRef Sym : VariableSymbols) {
+    if (!Sym)
+      continue;
+    recordSymbols(Sym, Symbols);
+    recordExpression(Sym, Symbols);
+  }
   llvm::sort(Symbols);
   Snapshot.Symbols.assign(Symbols.begin(), llvm::unique(Symbols));
 }
@@ -1474,10 +1483,157 @@ void PathDiagnosticBuilder::recordSymbols(
   }
 }
 
-/// \p R as the expression a reader would write for it, or empty when the
-/// analyzer has no description of it.
+/// A reader renders a symbolic expression from its atoms' entries, but its
+/// range is only readable with the expression's own type, which no atom has.
+void PathDiagnosticBuilder::recordExpression(
+    SymbolRef Sym, SmallVectorImpl<unsigned> &Indices) const {
+  if (isa<SymbolData>(Sym))
+    return;
+  auto [It, Inserted] = SymbolTableIndex.try_emplace(Sym, SymbolTable->size());
+  if (Inserted) {
+    PathDiagnosticSymbol Expression;
+    Expression.Symbol = getSymbolDump(Sym);
+    Expression.SymbolKind = PathDiagnosticSymbol::Kind::Expression;
+    describeType(Sym->getType(), Expression);
+    SymbolTable->push_back(std::move(Expression));
+  }
+  Indices.push_back(It->second);
+}
+
+static std::string describeRegion(const MemRegion *R);
+
+/// The value \p Sym as an expression: the memory it was read from, for the
+/// initial value of a region or a part of a replaced value, or empty.
+static std::string describeValue(SymbolRef Sym) {
+  const MemRegion *R = nullptr;
+  if (const auto *Value = dyn_cast<SymbolRegionValue>(Sym))
+    R = Value->getRegion();
+  else if (const auto *Derived = dyn_cast<SymbolDerived>(Sym))
+    R = Derived->getRegion();
+  if (!R)
+    return std::string();
+  std::string Name = describeRegion(R);
+  // "*p" as an operand of "->" or "[]" has to keep reading as one value.
+  if (StringRef(Name).starts_with("*"))
+    return "(" + Name + ")";
+  return Name;
+}
+
+/// The pointer that \p Region is the pointee of, as an expression, or empty.
+/// When the analyzer reads the memory as another type than the pointer's,
+/// the pointer is cast to that type, since that is what the reader would have
+/// to write.
+static std::string describePointer(const SymbolicRegion *Region,
+                                   QualType ReadAs = QualType()) {
+  std::string Pointer = describeValue(Region->getSymbol());
+  if (Pointer.empty() || ReadAs.isNull())
+    return Pointer;
+  ASTContext &Ctx = Region->getMemRegionManager().getContext();
+  QualType Pointee = Region->getPointeeStaticType();
+  if (Ctx.hasSameUnqualifiedType(Pointee, ReadAs))
+    return Pointer;
+  return "((" +
+         Ctx.getPointerType(ReadAs.getUnqualifiedType())
+             .getAsString(Ctx.getPrintingPolicy()) +
+         ")" + Pointer + ")";
+}
+
+/// The index of \p Element as source text, or empty.
+static std::string describeIndex(const ElementRegion *Element) {
+  NonLoc Index = Element->getIndex();
+  if (auto Concrete = Index.getAs<nonloc::ConcreteInt>()) {
+    SmallString<8> Text;
+    Concrete->getValue()->toString(Text);
+    return Text.str().str();
+  }
+  if (SymbolRef Sym = Index.getAsSymbol())
+    return describeValue(Sym);
+  return std::string();
+}
+
+/// \p R as the expression a reader would write for it, such as `n.next`,
+/// `p->len`, `*p`, `a[i]` or `this->Current`, or empty when the analyzer has
+/// no description of it. Unlike MemRegion::getDescriptiveName, this follows
+/// a pointer whose value the analyzer knows the memory of, and names nothing
+/// that the memory is only reinterpreted as.
 static std::string describeRegion(const MemRegion *R) {
-  return R->getDescriptiveName(/*UseQuotes=*/false, /*AllowFallback=*/false);
+  if (const auto *Field = dyn_cast<FieldRegion>(R)) {
+    // A base class and an anonymous struct or union are not in the
+    // expression: their members are named as the enclosing record's.
+    auto IsHidden = [](const MemRegion *Super) {
+      if (isa<CXXBaseObjectRegion, CXXDerivedObjectRegion>(Super))
+        return true;
+      const auto *Field = dyn_cast<FieldRegion>(Super);
+      return Field && Field->getDecl()->isAnonymousStructOrUnion();
+    };
+    const MemRegion *Super = Field->getSuperRegion();
+    while (IsHidden(Super))
+      Super = cast<SubRegion>(Super)->getSuperRegion();
+    if (Field->getDecl()->isAnonymousStructOrUnion())
+      return describeRegion(Super);
+    StringRef Name = Field->getDecl()->getName();
+    if (Name.empty())
+      return std::string();
+    // The pointee of p reads p->f rather than (*p).f.
+    std::string Pointer;
+    if (const auto *Symbolic = dyn_cast<SymbolicRegion>(Super))
+      Pointer = describePointer(Symbolic);
+    else if (const auto *Element = dyn_cast<ElementRegion>(Super);
+             Element && isa<SymbolicRegion>(Element->getSuperRegion()) &&
+             Element->getIndex().isZeroConstant())
+      Pointer = describePointer(cast<SymbolicRegion>(Element->getSuperRegion()),
+                                Element->getElementType());
+    if (!Pointer.empty())
+      return Pointer + "->" + Name.str();
+    std::string Object = describeRegion(Super);
+    if (Object.empty())
+      return std::string();
+    return Object + "." + Name.str();
+  }
+
+  if (const auto *Element = dyn_cast<ElementRegion>(R)) {
+    std::string Index = describeIndex(Element);
+    if (Index.empty())
+      return std::string();
+    const MemRegion *Super = Element->getSuperRegion();
+    if (const auto *Symbolic = dyn_cast<SymbolicRegion>(Super)) {
+      std::string Pointer =
+          describePointer(Symbolic, Element->getElementType());
+      if (Pointer.empty())
+        return std::string();
+      if (Element->getIndex().isZeroConstant())
+        return "*" + Pointer;
+      return Pointer + "[" + Index + "]";
+    }
+    // Only an element of an array is an element to the reader; any other
+    // element region is memory read as another type than its own.
+    const auto *Typed = dyn_cast<TypedValueRegion>(Super);
+    if (!Typed)
+      return std::string();
+    ASTContext &Ctx = R->getMemRegionManager().getContext();
+    const ArrayType *Array = Ctx.getAsArrayType(Typed->getValueType());
+    if (!Array || !Ctx.hasSameUnqualifiedType(Array->getElementType(),
+                                              Element->getElementType()))
+      return std::string();
+    std::string Base = describeRegion(Super);
+    if (Base.empty())
+      return std::string();
+    return Base + "[" + Index + "]";
+  }
+
+  if (const auto *Symbolic = dyn_cast<SymbolicRegion>(R)) {
+    std::string Pointer = describePointer(Symbolic);
+    return Pointer.empty() ? std::string() : "*" + Pointer;
+  }
+  if (isa<CXXThisRegion>(R))
+    return "this";
+  if (isa<CXXBaseObjectRegion, CXXDerivedObjectRegion>(R))
+    return describeRegion(cast<SubRegion>(R)->getSuperRegion());
+  if (const auto *Var = dyn_cast<VarRegion>(R))
+    return Var->getDecl() ? Var->getDecl()->getName().str() : std::string();
+  if (const auto *Ivar = dyn_cast<ObjCIvarRegion>(R))
+    return Ivar->getDecl()->getName().str();
+  return std::string();
 }
 
 /// \p S printed on one line, cut at \p MaxLength bytes with "..." appended.
@@ -1540,6 +1696,15 @@ static PathDiagnosticSymbol::Kind getSymbolKind(const SymbolData *Sym) {
   }
 }
 
+void PathDiagnosticBuilder::describeType(QualType Type,
+                                         PathDiagnosticSymbol &Result) const {
+  if (Type.isNull())
+    return;
+  Result.Type = Type.getCanonicalType().getUnqualifiedType().getAsString(
+      getASTContext().getPrintingPolicy());
+  Result.IsPointer = Loc::isLocType(Type);
+}
+
 PathDiagnosticSymbol
 PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
   PathDiagnosticSymbol Result;
@@ -1549,11 +1714,11 @@ PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
   if (const auto &Term = getSMTTerm(Sym))
     std::tie(Result.SMTTerm, Result.SMTSigned) = *Term;
 #endif
-  QualType Type = Sym->getType();
-  if (!Type.isNull()) {
-    Result.Type = Type.getCanonicalType().getUnqualifiedType().getAsString(
-        getASTContext().getPrintingPolicy());
-    Result.IsPointer = Loc::isLocType(Type);
+  describeType(Sym->getType(), Result);
+
+  if (const auto *Value = dyn_cast<SymbolRegionValue>(Sym)) {
+    Result.Name = describeRegion(Value->getRegion());
+    return Result;
   }
 
   if (const auto *Derived = dyn_cast<SymbolDerived>(Sym)) {

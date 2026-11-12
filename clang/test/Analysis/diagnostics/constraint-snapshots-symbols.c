@@ -4,7 +4,9 @@
 // RUN:   -analyzer-config emit-constraint-snapshots=true -o %t/on.plist -verify %s
 // RUN: %python %S/Inputs/constraint-trace-symbols.py %t/on.plist \
 // RUN:   | FileCheck %s --implicit-check-not=NO-ENTRY \
-// RUN:     --implicit-check-not=UNUSED-ENTRY --implicit-check-not=UNSORTED-TABLE
+// RUN:     --implicit-check-not=UNUSED-ENTRY --implicit-check-not=UNSORTED-TABLE \
+// RUN:     --implicit-check-not=NO-TYPE --implicit-check-not=UNUSED-TYPE \
+// RUN:     --implicit-check-not=UNSORTED-TYPES
 
 // With Z3 an entry also has the SMT-LIB term of its symbol.
 // RUN: %if z3 %{ %python %S/Inputs/constraint-trace-symbols.py %t/on.plist smt \
@@ -36,15 +38,16 @@ void call_result(void) {
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 
-// A symbolic expression has no entry of its own; its atoms do. A parameter's
-// value has no origin.
+// A symbolic expression has no entry among the symbols, only its type among
+// the expressions; its atoms do. A parameter's value has no origin, and is
+// named after the parameter.
 void compound(int a) {
   int *p = 0;
   if (a > 0 && get() + a == 5)
   // CHECK-NEXT: TRACE Dereference of null pointer
   // CHECK-NEXT: SYMBOL conj_$[[#]]{int, LC[[#]], S[[#]], #1} conjured call_result "get()" @constraint-snapshots-symbols.c:[[# @LINE - 2]]:16 callee get in compound frame 0{{$}}
-  // CHECK-NEXT: SYMBOL reg_$[[#]]<int a> region_value{{$}}
-  // SMT: SYMBOL reg_$[[R:[0-9]+]]<int a> region_value smt reg_$[[R]] [signed]{{$}}
+  // CHECK-NEXT: SYMBOL reg_$[[#]]<int a> region_value name a{{$}}
+  // SMT: SYMBOL reg_$[[R:[0-9]+]]<int a> region_value name a smt reg_$[[R]] [signed]{{$}}
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 
@@ -117,7 +120,7 @@ void global_after_a_call(void) {
   // CHECK-NEXT: TRACE Dereference of null pointer
   // CHECK-NEXT: SYMBOL [[GLOBALS:conj_\$[0-9]+\{int, LC[0-9]+, S[0-9]+, #1\}]] conjured invalidation "refresh()" @constraint-snapshots-symbols.c:[[# @LINE - 2]]:3 callee refresh globals in global_after_a_call frame 0{{$}}
   // CHECK-NEXT: SYMBOL derived_$[[#]]{[[GLOBALS]],counter} derived parent [[GLOBALS]] region counter{{$}}
-  // CHECK-NEXT: SYMBOL reg_$[[#]]<int counter> region_value{{$}}
+  // CHECK-NEXT: SYMBOL reg_$[[#]]<int counter> region_value name counter{{$}}
   if (counter == 5)
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
@@ -132,7 +135,7 @@ void invalidated_by_a_checker(const int *src) {
   // CHECK-NEXT: TRACE Dereference of null pointer
   // CHECK-NEXT: SYMBOL conj_$[[#]]{int, LC[[#]], S[[#]], #1} conjured other "memcpy(&x, src, sizeof (x))" @constraint-snapshots-symbols.c:[[# @LINE - 2]]:3 callee memcpy in invalidated_by_a_checker frame 0{{$}}
   // CHECK-NEXT: SYMBOL extent_$[[#]]{SymRegion{reg_$[[#]]<const int * src>}} extent{{$}}
-  // CHECK-NEXT: SYMBOL reg_$[[#]]<const int * src> region_value{{$}}
+  // CHECK-NEXT: SYMBOL reg_$[[#]]<const int * src> region_value name src{{$}}
   if (x == 3)
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
@@ -148,7 +151,7 @@ void widened_loop(int n) {
   // CHECK-NEXT: TRACE Dereference of null pointer
   // CHECK-NEXT: SYMBOL conj_$[[#]]{int, LC[[#]], S[[#]], #[[#]]} conjured loop_widening "i" @constraint-snapshots-symbols.c:[[# @LINE - 3]]:19 region i loop @constraint-snapshots-symbols.c:[[# @LINE - 3]]:3 in widened_loop frame 0{{$}}
   // CHECK-NEXT: SYMBOL conj_$[[#]]{int, LC[[#]], S[[#]], #[[#]]} conjured loop_widening "i" @constraint-snapshots-symbols.c:[[# @LINE - 4]]:19 region x loop @constraint-snapshots-symbols.c:[[# @LINE - 4]]:3 in widened_loop frame 0{{$}}
-  // CHECK-NEXT: SYMBOL reg_$[[#]]<int n> region_value{{$}}
+  // CHECK-NEXT: SYMBOL reg_$[[#]]<int n> region_value name n{{$}}
   // CHECK-NOT:  SYMBOL
   if (x == 7) {
     int *p = 0;

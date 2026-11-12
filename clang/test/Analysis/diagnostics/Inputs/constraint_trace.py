@@ -77,7 +77,7 @@ def symbols(trace):
     table = {}
     for entry in trace.get("symbols", []):
         symbol = {"kind": entry["kind"]}
-        for key in ("parent", "region"):
+        for key in ("parent", "region", "name"):
             if key in entry:
                 symbol[key] = strings[entry[key]]
         if "type" in entry:
@@ -94,6 +94,21 @@ def symbols(trace):
                     origin[key] = strings[origin[key]]
             symbol["origin"] = origin
         table[strings[entry["symbol"]]] = symbol
+    return table
+
+
+def expressions(trace):
+    """The types of the trace's symbolic expressions keyed by dump, as
+    {"type", "pointer"}. A trace from a Clang before them has none."""
+    strings = trace["strings"]
+    table = {}
+    for entry in trace.get("expressions", []):
+        expression = {}
+        if "type" in entry:
+            expression["type"] = strings[entry["type"]]
+        if entry.get("pointer"):
+            expression["pointer"] = True
+        table[strings[entry["symbol"]]] = expression
     return table
 
 

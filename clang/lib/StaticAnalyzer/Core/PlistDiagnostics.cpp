@@ -147,7 +147,8 @@ private:
   /// each stack frame of those nodes once, after its parent.
   void collectExplodedNodes();
   void ReportExplodedNodes(raw_ostream &o, unsigned indent);
-  /// The entries of \p Symbols that the listed nodes' snapshots mention.
+  /// The entries of \p Symbols that the listed nodes' snapshots mention: the
+  /// atomic symbols, then the types of the symbolic expressions.
   void ReportSymbols(raw_ostream &o, ArrayRef<PathDiagnosticSymbol> Symbols,
                      unsigned indent);
 
@@ -890,8 +891,10 @@ static StringRef toString(PathDiagnosticSymbol::Kind SymbolKind) {
     return "metadata";
   case Kind::Extent:
     return "extent";
+  case Kind::Expression:
+    break;
   }
-  llvm_unreachable("unknown symbol kind");
+  llvm_unreachable("an expression has no kind in the trace");
 }
 
 static StringRef toString(PathDiagnosticSymbol::Reason Why) {
@@ -922,12 +925,17 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
     return Symbols[L].Symbol < Symbols[R].Symbol;
   });
   Listed.erase(llvm::unique(Listed), Listed.end());
+  // Every expression has atoms, so the atoms' list is never empty.
+  auto Expressions = std::stable_partition(
+      Listed.begin(), Listed.end(), [Symbols](unsigned I) {
+        return Symbols[I].SymbolKind != PathDiagnosticSymbol::Kind::Expression;
+      });
 
   const SourceManager &SM = PP.getSourceManager();
   Indent(o, indent) << "<key>symbols</key>\n";
   Indent(o, indent) << "<array>\n";
   ++indent;
-  for (unsigned Index : Listed) {
+  for (unsigned Index : llvm::make_range(Listed.begin(), Expressions)) {
     const PathDiagnosticSymbol &Sym = Symbols[Index];
     Indent(o, indent) << "<dict>\n";
     ++indent;
@@ -942,6 +950,10 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
     if (!Sym.Region.empty()) {
       Indent(o, indent) << "<key>region</key>";
       EmitInteger(o, intern(Sym.Region)) << '\n';
+    }
+    if (!Sym.Name.empty()) {
+      Indent(o, indent) << "<key>name</key>";
+      EmitInteger(o, intern(Sym.Name)) << '\n';
     }
     if (!Sym.Type.empty()) {
       Indent(o, indent) << "<key>type</key>";
@@ -995,6 +1007,29 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
       --indent;
       Indent(o, indent) << "</dict>\n";
     }
+    --indent;
+    Indent(o, indent) << "</dict>\n";
+  }
+  --indent;
+  Indent(o, indent) << "</array>\n";
+
+  if (Expressions == Listed.end())
+    return;
+  Indent(o, indent) << "<key>expressions</key>\n";
+  Indent(o, indent) << "<array>\n";
+  ++indent;
+  for (unsigned Index : llvm::make_range(Expressions, Listed.end())) {
+    const PathDiagnosticSymbol &Expression = Symbols[Index];
+    Indent(o, indent) << "<dict>\n";
+    ++indent;
+    Indent(o, indent) << "<key>symbol</key>";
+    EmitInteger(o, intern(Expression.Symbol)) << '\n';
+    if (!Expression.Type.empty()) {
+      Indent(o, indent) << "<key>type</key>";
+      EmitInteger(o, intern(Expression.Type)) << '\n';
+    }
+    if (Expression.IsPointer)
+      Indent(o, indent) << "<key>pointer</key><true/>\n";
     --indent;
     Indent(o, indent) << "</dict>\n";
   }

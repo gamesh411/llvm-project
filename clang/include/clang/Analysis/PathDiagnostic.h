@@ -490,7 +490,17 @@ struct PathDiagnosticConstraintSnapshot {
 /// What is known about one atomic symbol of a bug path's Constraint Snapshots,
 /// which is the same at every point of the path.
 struct PathDiagnosticSymbol {
-  enum class Kind { RegionValue, Conjured, Derived, Metadata, Extent };
+  /// Expression is a symbolic expression a snapshot constrains or a variable
+  /// holds, which has only its dump and type: a reader labels it from its
+  /// atoms, which have entries of their own.
+  enum class Kind {
+    RegionValue,
+    Conjured,
+    Derived,
+    Metadata,
+    Extent,
+    Expression
+  };
 
   /// Why the analyzer made a conjured symbol, as far as it recorded it.
   enum class Reason {
@@ -544,6 +554,10 @@ struct PathDiagnosticSymbol {
   /// Whether the analyzer treats the symbol as an address: a pointer, a
   /// reference or the like.
   bool IsPointer = false;
+  /// Only for region values: the access path of the region whose initial
+  /// value the symbol is, such as `p->len`, empty when the analyzer cannot
+  /// describe it.
+  std::string Name;
   /// Only for conjured symbols.
   std::optional<Origin> Conjured;
   /// Only for derived symbols: the dump of the symbol they are a part of,

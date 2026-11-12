@@ -3,18 +3,23 @@
 symbol, so a test can FileCheck it.
 
 A symbol prints as `SYMBOL <dump> <kind>`, followed for a derived symbol by
-`parent <dump> region <access path>`, and for a conjured symbol by its origin:
+`parent <dump> region <access path>`, for a region value by `name <access
+path>` when it has one, and for a conjured symbol by its origin:
 `<reason> "<statement>" @<file>:<line>:<col> callee <name> region <name>
 globals loop @<file>:<line>:<col> in <function> frame <index>`, each part only
 when the trace has it, and `frame none` when its frame is not in
 stack_frames. With the optional second
 argument `smt`, a symbol with an SMT-LIB term also prints `smt <term>
 [signed|unsigned]`. With `types`, every symbol prints `type <type>` and, for an
-address, `pointer`, after the rest.
+address, `pointer`, after the rest, and after the symbols each symbolic
+expression prints as `EXPRESSION <dump> type <type>`, with `pointer` for an
+address.
 
 Before the symbols, the table is checked against the snapshots: an atomic
 symbol that a list names without an entry prints NO-ENTRY, and an entry that
-no list mentions prints UNUSED-ENTRY.
+no list mentions prints UNUSED-ENTRY. A symbolic expression that a list names
+without a type entry prints NO-TYPE, and a type entry for a dump no list
+names, or for an atom, prints UNUSED-TYPE.
 """
 
 import plistlib
@@ -71,6 +76,8 @@ def render(files, dump, symbol, smt, types=False):
         parts.append("parent " + symbol["parent"])
     if "region" in symbol:
         parts.append("region " + symbol["region"])
+    if "name" in symbol:
+        parts.append("name " + symbol["name"])
     origin = symbol.get("origin")
     if origin is not None:
         parts.append(origin["reason"])
@@ -124,6 +131,25 @@ def main():
             print("UNSORTED-TABLE")
         for dump, symbol in table.items():
             print(render(plist["files"], dump, symbol, smt, types))
+        typed = constraint_trace.expressions(trace)
+        for dump in sorted(dumps):
+            if not is_atom(dump) and dump not in typed:
+                print("NO-TYPE %s" % dump)
+        for dump in typed:
+            if dump not in dumps or is_atom(dump):
+                print("UNUSED-TYPE %s" % dump)
+        if list(typed) != sorted(typed):
+            print("UNSORTED-TYPES")
+        if types:
+            for dump, expression in typed.items():
+                print(
+                    "EXPRESSION %s type %s%s"
+                    % (
+                        dump,
+                        expression.get("type", "none"),
+                        " pointer" if expression.get("pointer") else "",
+                    )
+                )
 
 
 if __name__ == "__main__":
