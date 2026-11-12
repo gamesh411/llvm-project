@@ -73,7 +73,8 @@ Every SMT-LIB declaration and assertion text is in `strings` once per report.
 
 ## Control flow graphs
 
-The CFGs are written once per function per report, as in version 1, with blocks and elements as arrays instead of dicts.
+Each report has one CFG per function its Bug Path runs through, with blocks and elements as arrays instead of dicts.
+A CFG has a body, which does not depend on the path, and the part of it the path took.
 
 ```
 cfgs[*]: dict
@@ -87,8 +88,36 @@ cfgs[*]: dict
   path_edges: flat array of integers, [from, to, from, to, ...], sorted by edge
 ```
 
+`function`, `entry`, `exit` and `blocks` make up the body.
+In a plist, as of the `llvm-project` commit titled "[analyzer] Keep each CFG body of a constraint trace once per plist file", each body is written once per file, in the top-level key `constraint_trace_cfgs`, next to `files`.
+A trace's `cfgs` entry then names its body by index instead of holding it:
+
+```
+constraint_trace_cfgs: array, at the top of the plist, absent when no trace has a CFG
+  [*]: dict of function, entry, exit, blocks; blocks is a string of their JSON in a plist CodeChecker wrote
+constraint_trace.cfgs[*]: dict
+  graph: integer, index into constraint_trace_cfgs
+  path_blocks, path_edges: as above
+```
+
+The reports of one translation unit run through the same functions again and again, so this is where most of the size was.
+On the 150-TU LLVM sample of the [LLVM run](wiki/execution-plan.md), CFGs were 87% of the trace JSON, and keeping each body once per file instead of once per report cuts the CFG bytes 6.2 times; across the whole sample it would be 6.6 times.
+Clang tells bodies apart by their printed text.
+CodeChecker writes its plists the same way, keeping a body once per file by object first and by content otherwise.
+As of the `codechecker` commit titled "Constraint trace: write CFG blocks as JSON text in plists", CodeChecker writes a body's `blocks` as one string holding the JSON of the array above, because its plist writer spends most of a body's bytes on tags and indentation.
+Over the LLVM run's plists that is 177 MB of bodies instead of 466 MB.
+Clang writes `blocks` as plist arrays, and the report converter reads both.
+Since `CodeChecker analyze` rewrites every plist Clang writes, the plists in a report directory have the JSON text.
+
+A reader of a plist puts the body back into each entry, so the CFGs of a trace that CodeChecker stores, returns through `ReportDetails.constraintTrace` and the UI reads are whole, as above.
+The bodies of one plist's traces are shared objects in the report converter, not copies.
+A plist without `constraint_trace_cfgs`, written by a Clang from before that commit, carries whole CFGs in each trace, and the report converter still reads it.
+
 Measured on the version 1 tmux traces before the change, the array encoding is 70.5% of the dict encoding's plist bytes.
 Interning element texts in `strings` was measured too and did not pay: 2,789,048 bytes against 2,751,095 without, because few texts repeat.
+On 2026-11-12, on the 191 distinct bodies of the LLVM run's largest plist (`CompilerInvocation.cpp`), splitting each element's text into its expression and its `(ImplicitCastExpr, ...)` annotation and interning both per body was measured as well.
+It shrinks the bodies' JSON 2.3 times (2,521,301 to 1,073,667 bytes), but their plist only 1.27 times (6,425,801 to 5,067,667) and their zlib size 1.13 times (204,613 to 181,093), because CodeChecker's plist writer spends most bytes on tags and indentation.
+That was too little for a change to every reader once bodies are kept per file, which took that plist's CFGs from 72,910,993 to 8,710,832 bytes.
 
 ## What CodeChecker stores
 
@@ -104,13 +133,14 @@ A version 1 trace stored before the change is in the database whole, and it gets
 Each language has one reader, and every consumer goes through it.
 
 - Python: `codechecker_report_converter/report/constraint_trace.py`, `ConstraintTrace`.
+  `read_graphs()` reads a plist's `constraint_trace_cfgs`, `resolve_cfgs()` puts those bodies back into a trace, and `GraphTable` keeps each body once, with JSON text blocks, when a plist is written.
   The report converter uses its `check()`, and What-If uses its `lifetimes()`, which lists every entry once with the span of nodes it holds for.
   `snapshot(node)` rebuilds a whole snapshot by replaying deltas from a checkpoint kept every 64 nodes.
   `encode()` writes a version 2 trace from whole snapshots, with Clang's matching rule, for tests and fixture derivation.
 - JavaScript: `web/server/vue-cli/src/components/Report/ConstraintTrace.js`, `ConstraintTrace`.
   The UI builds a step's snapshot the first time it is shown and keeps it.
   It tells whether two steps show the same snapshot without building either, from a running hash of each node's lists checked against the raw entries, and it names path condition symbols from a change log built once.
-- The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`.
+- The Clang lit tests read it through `clang/test/Analysis/diagnostics/Inputs/constraint_trace.py`, whose `expand()` takes the plist's `constraint_trace_cfgs` too.
 
 ## Sizes
 
@@ -123,5 +153,14 @@ Measured on 2026-11-11 on the inputs of the [performance evaluation](perf-evalua
 | synthetic, 1205 steps | 214,996,517 | 2,358,006 | 10,827,104 | 67,914 |
 | tmux 3.5a, 146 plists | 23,489,094 | 6,894,458 | 372,757 | 255,224 |
 
+On 2026-11-12, on the whole LLVM run of the [execution plan](wiki/execution-plan.md) (3545 plists, 3928 stored reports), with CFG bodies kept once per plist file and written by CodeChecker as JSON text:
+
+| measure | CFGs in every report | bodies once per file, Clang's plist arrays | and JSON text blocks |
+| --- | --- | --- | --- |
+| plist total | 1,444,433,245 | 865,313,449 | 560,384,519 |
+| largest plist (`CompilerInvocation.cpp`) | 97,166,824 | 24,114,961 | 20,119,376 |
+| CFG bodies in plists | most of the 87% of trace JSON | 466,278,954 | about 177,000,000 |
+
+What CodeChecker stores is the same as before, so the path data and `getReportDetails` sizes did not change.
 Plist size grows about 2.0 times per doubling of the path, against 3.9 times in version 1.
 The remaining tmux bytes are mostly the CFGs and the node table's locations, which were already linear.
