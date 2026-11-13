@@ -110,3 +110,22 @@ The user docs were committed as `llvm-project@094e7a488fa7` and `codechecker@662
 The `dev-loop.sh package` behavior was reported by the mechanical pass worker as of `llvm-project@51cfbad5b480`, and the lead did not verify it in the script.
 
 As of `codechecker@6776779b1`, the "Show constraints" tooltip closes on click, which supersedes the tooltip left open in that entry.
+
+## 2026-11-13: the 30 study cases triaged again
+
+On 2026-11-13 the user asked for all 30 hand-triaged cases to be triaged again with the finished panel, and a worker wrote `../research/retriage.md` (`llvm-project@760deca13743`), against `llvm-project@297dab849243` and `codechecker@fe046668e`.
+All 30 cases matched one report each in the ticket 05 LLVM run, with the same path length.
+The deciding question is answered by the panel in 12 cases against 6 in the study, partly in 8 against 7, not in 6 against 13, and 4 are not applicable.
+Newly answered: cases 1, 9, 10, 11, 12, 16 and 20.
+By category, as yes, partly, no: value origin went from 0, 10, 0 to 7, 3, 0; correlation from 0, 1, 7 to 4, 4, 0; real caller or input from 3, 0, 4 to 5, 1, 1; unseen assert stayed at 0, 0, 6; which assumption went from 5, 0, 0 to 4, 1, 0.
+What-If can express the deciding question in 5 cases against 3, and is decisive in 1, case 29, as in the study.
+The example settled case 16 and helped case 29.
+The worker knew every verdict beforehand, so the newly answered count is an upper bound.
+
+This supersedes two claims the lead recorded on 2026-11-12 in [the run page](explain-the-path-run.md) under ticket 06, that the What-Ifs on cases 1 and 25 "settle the case".
+The retriage found case 25's `VT != 0` to be the negation of the bug event, since the index is `SimpleTy - 1`, and case 1's result foreseeable from the Whole path list.
+It also found that the study's "no" for unseen asserts had missed the report page's macro-expansion notes, which showed the deciding assert in cases 3, 7 and 25 already on 2026-11-12.
+Case 18 reads worse than before: the label of a temporary's field hides the `.Block` the raw dump showed.
+
+Gaps ranked by cases blocked: no names for memory behind a call's result, a temporary or a copied struct (7 cases); compiled-out asserts (6); relations between two values, including that What-If cannot compare two names (5); state the trace does not carry, such as dynamic type and heap ownership (4); where a concrete value came from (3); names that mislead (6).
+The worker listed eight defects, D1 to D8, with report IDs and screenshots in the research file; D1 (another object's `this` read as the analyzed function's) and D4 (a value named by the wrong variable) show a wrong name, not a missing one.
