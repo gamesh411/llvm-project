@@ -1702,7 +1702,28 @@ static std::string printStatement(const Stmt *S, const LangOptions &LO,
                                   size_t MaxLength = 120) {
   std::string Printed;
   llvm::raw_string_ostream OS(Printed);
-  S->printPretty(OS, /*Helper=*/nullptr, PrintingPolicy(LO));
+  PrintingPolicy Policy(LO);
+  // A construction the source does not spell prints as its arguments alone,
+  // such as `*this` or `"Kind"`, which reads as another statement, so the
+  // class it constructs is written before them.
+  const auto *Construct = dyn_cast<CXXConstructExpr>(S);
+  StringRef Class;
+  if (Construct && !isa<CXXTemporaryObjectExpr>(Construct))
+    Class = Construct->getConstructor()->getParent()->getName();
+  if (!Class.empty()) {
+    bool List = Construct->isListInitialization();
+    OS << Class << (List ? '{' : '(');
+    for (auto [I, Arg] : llvm::enumerate(Construct->arguments())) {
+      if (isa<CXXDefaultArgExpr>(Arg))
+        break;
+      if (I)
+        OS << ", ";
+      Arg->printPretty(OS, /*Helper=*/nullptr, Policy);
+    }
+    OS << (List ? '}' : ')');
+  } else {
+    S->printPretty(OS, /*Helper=*/nullptr, Policy);
+  }
 
   std::string Result;
   for (char C : Printed) {

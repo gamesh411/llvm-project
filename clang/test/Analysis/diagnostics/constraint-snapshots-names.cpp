@@ -113,6 +113,21 @@ void callFrames(User *U, long y) {
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 
+// A construction the source does not spell, such as converting an argument,
+// reads as the class it constructs.
+struct Point {
+  int *Block;
+  Point(int *B);
+};
+int *readBlock(const Point &P) { return P.Block; }
+void temporaries(int *B) {
+  int *p = 0;
+  if (!readBlock(B))
+  // CHECK:     TRACE Dereference of null pointer
+  // CHECK-DAG: SYMBOL conj_$[[#]]{{{.*}}} conjured invalidation "Point(B)" {{.*}} callee Point in temporaries frame 0 type int{{$}}
+    *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
+}
+
 // A symbolic expression has the type of its value, which no atom says.
 void expressions(unsigned long mask, int a, int b) {
   int *p = 0;
