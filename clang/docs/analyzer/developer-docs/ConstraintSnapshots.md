@@ -68,7 +68,10 @@ A reader needs both for symbols whose dump does not start with their type, such 
 A symbolic expression has no entry there, since a reader renders it from its atoms, but its range needs a type that no atom has.
 So the trace's `expressions` key gives the type, and whether it is an address, of each symbolic expression the path condition constrains or a variable holds, such as `unsigned long` for `(reg_$0<unsigned long mask>) & 7U`.
 A region value, the initial value of a region, has a name: the access path of its region, such as `p->len` for `reg_$2<int SymRegion{reg_$1<struct S * p>}.len>`.
+A region value of memory that belongs to a call the analyzed function made, such as the `this` of an inlined method whose object the analyzer lost track of, or a parameter whose argument it did not know, has no name, and neither has memory reached from it.
+Such names are spelled as the analyzed function's own, and two calls' are spelled alike, so the entry says `in_call` instead, and a reader does not take the value for one of the function's inputs.
 A symbol the analyzer conjured also has an origin: the statement it was made for, with its location and the called function's name when the statement is a call, the function it was made in, and a reason.
+A construction that the source does not spell, such as converting an argument to a parameter's class, prints as its arguments alone, so the statement is written as the class it constructs with those arguments, such as `Point(B)`.
 
 The reason is `call_result` when the symbol is the value a call returned and the analyzer evaluated that call without seeing inside the callee.
 The analyzer does not record this on the symbol, which a checker modelling the call makes in the same way.
@@ -88,7 +91,8 @@ The parent has an entry of its own even when no list mentions it, so a reader ca
 An access path is the expression a reader would write for the region, built from what the analyzer knows about it: variables, fields, `this`, elements of arrays with a constant index or one a variable holds, and the pointee of a pointer whose own value is the initial or replaced value of named memory, written `*p`, `p[2]` and `p->len`.
 Memory the analyzer reads as another type than its pointer's is named through a cast, such as `((struct S *)data)->len`.
 A base class and an anonymous struct or union are left out, as in the source.
-The path is absent when any part of the region has no such description, for example the pointee of a call's result, memory read as another type than its own, or an element at a computed index, and Clang never makes one up from the symbol's dump.
+The path is absent when any part of the region has no such description, for example the pointee of a call's result, a temporary, memory read as another type than its own, or an element at a computed index, and Clang never makes one up from the symbol's dump.
+A derived symbol whose path is absent gives the end of it instead, after the nearest memory that has no description, such as `.Block` for a field of a temporary or `->next` for a field of a call's result.
 Region value names, derived symbols' regions and the memory an invalidation replaced are described the same way, so `this->Current` after `this->parse()` names the field.
 An extent, the unknown size of some memory, names that memory the same way, such as `*l->cells`.
 Consumers must treat a reason they do not know as `other`, because more reasons may be added.
