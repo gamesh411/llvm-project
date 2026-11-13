@@ -977,6 +977,8 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
       Indent(o, indent) << "<key>name</key>";
       EmitInteger(o, intern(Sym.Name)) << '\n';
     }
+    if (Sym.InCall)
+      Indent(o, indent) << "<key>in_call</key><true/>\n";
     if (!Sym.Type.empty()) {
       Indent(o, indent) << "<key>type</key>";
       EmitInteger(o, intern(Sym.Type)) << '\n';

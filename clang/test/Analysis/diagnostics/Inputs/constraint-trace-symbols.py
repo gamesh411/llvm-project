@@ -3,9 +3,9 @@
 symbol, so a test can FileCheck it.
 
 A symbol prints as `SYMBOL <dump> <kind>`, followed for a derived symbol by
-`parent <dump> region <access path>`, for an extent by `region <access path>`,
-for a region value by `name <access path>`, each when it has one, and for a
-conjured symbol by its origin:
+`parent <dump> region <access path>`, for an extent by `region <access path>`, for a
+region value by `name <access path>` and `in_call` when its memory belongs to
+a call, each when it has one, and for a conjured symbol by its origin:
 `<reason> "<statement>" @<file>:<line>:<col> callee <name> region <name>
 globals loop @<file>:<line>:<col> in <function> frame <index>`, each part only
 when the trace has it, and `frame none` when its frame is not in
@@ -81,6 +81,8 @@ def render(files, dump, symbol, smt, types=False):
         parts.append("region " + symbol["region"])
     if "name" in symbol:
         parts.append("name " + symbol["name"])
+    if symbol.get("in_call"):
+        parts.append("in_call")
     origin = symbol.get("origin")
     if origin is not None:
         parts.append(origin["reason"])

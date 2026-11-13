@@ -1530,15 +1530,20 @@ void PathDiagnosticBuilder::recordExpression(
 }
 
 static std::string describeRegion(const MemRegion *R);
+static const StackFrame *getCallFrame(const MemRegion *R);
 
 /// The value \p Sym as an expression: the memory it was read from, for the
-/// initial value of a region or a part of a replaced value, or empty.
+/// initial value of a region or a part of a replaced value, or empty. The
+/// initial value of a call's own memory has no name, as describeSymbol says.
 static std::string describeValue(SymbolRef Sym) {
   const MemRegion *R = nullptr;
-  if (const auto *Value = dyn_cast<SymbolRegionValue>(Sym))
+  if (const auto *Value = dyn_cast<SymbolRegionValue>(Sym)) {
+    if (getCallFrame(Value->getRegion()))
+      return std::string();
     R = Value->getRegion();
-  else if (const auto *Derived = dyn_cast<SymbolDerived>(Sym))
+  } else if (const auto *Derived = dyn_cast<SymbolDerived>(Sym)) {
     R = Derived->getRegion();
+  }
   if (!R)
     return std::string();
   std::string Name = describeRegion(R);
@@ -1665,6 +1670,32 @@ static std::string describeRegion(const MemRegion *R) {
   return std::string();
 }
 
+/// The stack frame of a call the analyzed function made whose variable or
+/// `this` the memory \p R is reached from, through pointers whose values are
+/// the initial or replaced values of memory, or null when \p R is not reached
+/// from such a frame.
+static const StackFrame *getCallFrame(const MemRegion *R) {
+  while (true) {
+    R = R->getBaseRegion();
+    if (const auto *Symbolic = dyn_cast<SymbolicRegion>(R)) {
+      SymbolRef Pointer = Symbolic->getSymbol();
+      if (const auto *Value = dyn_cast<SymbolRegionValue>(Pointer))
+        R = Value->getRegion();
+      else if (const auto *Derived = dyn_cast<SymbolDerived>(Pointer))
+        R = Derived->getRegion();
+      else
+        return nullptr;
+      continue;
+    }
+    if (!isa<VarRegion, CXXThisRegion>(R))
+      return nullptr;
+    const auto *Stack = R->getRawMemorySpaceAs<StackSpaceRegion>();
+    if (!Stack || Stack->getStackFrame()->inTopFrame())
+      return nullptr;
+    return Stack->getStackFrame();
+  }
+}
+
 /// \p S printed on one line, cut at \p MaxLength bytes with "..." appended.
 /// The source is one click away, so this only has to tell statements apart.
 static std::string printStatement(const Stmt *S, const LangOptions &LO,
@@ -1746,7 +1777,12 @@ PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
   describeType(Sym->getType(), Result);
 
   if (const auto *Value = dyn_cast<SymbolRegionValue>(Sym)) {
-    Result.Name = describeRegion(Value->getRegion());
+    // The variables and `this` of a call are spelled as the analyzed
+    // function's own, and two calls' are spelled alike, so a name would make
+    // them read as the function's inputs or as one value.
+    Result.InCall = getCallFrame(Value->getRegion());
+    if (!Result.InCall)
+      Result.Name = describeRegion(Value->getRegion());
     return Result;
   }
   if (const auto *Extent = dyn_cast<SymbolExtent>(Sym)) {

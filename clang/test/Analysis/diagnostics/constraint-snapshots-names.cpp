@@ -87,6 +87,32 @@ void unnamed() {
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 
+// Memory of a call, such as the callee's `this` when the analyzer lost the
+// object's address, is spelled as the analyzed function's own, and two calls'
+// alike, so it has no name, and says that it belongs to a call.
+struct Use {
+  int *Val;
+  int *get() const { return Val; }
+};
+struct User {
+  unsigned N;
+  Use *ops() { return reinterpret_cast<Use *>(this) - N; }
+};
+long same(long x) { return x; }
+void callFrames(User *U, long y) {
+  int *p = 0;
+  int *a = U->ops()[0].get();
+  int *b = U->ops()[1].get();
+  long v = (long)&y;
+  if (a && !b && same(v * 3) == 5)
+  // CHECK:     TRACE Dereference of null pointer
+  // CHECK-DAG: SYMBOL reg_$[[#]]<User * U> region_value name U type User * pointer{{$}}
+  // CHECK-DAG: SYMBOL reg_$[[#]]<const struct Use * this> region_value in_call type const Use * pointer{{$}}
+  // CHECK-DAG: SYMBOL reg_$[[#]]<int * Element{SymRegion{reg_$[[#]]<const struct Use * this>},0 S64b,struct Use}.Val> region_value in_call type int * pointer{{$}}
+  // CHECK-DAG: SYMBOL reg_$[[#]]<long x> region_value in_call type long{{$}}
+    *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
+}
+
 // A symbolic expression has the type of its value, which no atom says.
 void expressions(unsigned long mask, int a, int b) {
   int *p = 0;

@@ -93,6 +93,8 @@ def symbols(trace):
         for key in ("parent", "region", "name"):
             if key in entry:
                 symbol[key] = strings[entry[key]]
+        if entry.get("in_call"):
+            symbol["in_call"] = True
         if "type" in entry:
             symbol["type"] = strings[entry["type"]]
         if entry.get("pointer"):

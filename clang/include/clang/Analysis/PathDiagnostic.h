@@ -570,6 +570,10 @@ struct PathDiagnosticSymbol {
   /// value the symbol is, such as `p->len`, empty when the analyzer cannot
   /// describe it.
   std::string Name;
+  /// Only for region values: whether the region is reached from a variable
+  /// or `this` of a call the analyzed function made rather than of the
+  /// function itself. Such a region has no Name.
+  bool InCall = false;
   /// Only for conjured symbols.
   std::optional<Origin> Conjured;
   /// Only for derived symbols: the dump of the symbol they are a part of,
