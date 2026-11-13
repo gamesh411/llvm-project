@@ -47,6 +47,7 @@ The worker's checks: emission off is byte-identical on 146 tmux plists and 17 ot
 The opaque-call demo shows no label because its call returns void, so the worker added `demo/call-result.c`.
 The worker also moved the path condition's change tag beside its range, which closes the wrap noted after ticket 07.
 Left open: a result made in a callee the diagnostic pruned links by line and not to its call site, and analysis time and LLVM-run size were not measured, which ticket 03 owes.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 Seen by the lead in the screenshot: a checker-modelled `malloc` result reads "origin not recorded line 11", which hides the statement text the table has, so ticket 02 was asked to show the statement for `other` symbols.
 
 ## 2026-11-12: ticket 02 accepted
@@ -63,6 +64,7 @@ The worker's checks: emission off byte-identical on 146 tmux and 18 other plists
 The worker fixed `map_trace_locations`, which mapped only a table's last location key.
 A running server keeps the report converter it started with, so it has to be restarted after a reader change before storing.
 Seen by the lead in the case 1 screenshot: the replaced pointer's range reads `[1, 18446744073709551615]` instead of non-null, because pointer detection reads the type from the dump and a derived symbol's dump has none, so ticket 03 was asked to carry pointer-ness in the table.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 
 ## 2026-11-12: ticket 03 accepted, slice 1 closed
 
@@ -85,7 +87,9 @@ The lead judged 5.9% low enough not to spend another classification round on it.
 
 Against the study's cases: case 10 (`APSInt.h:78`) is answered, the two `DestTy->isRealFloatingType()` results are tagged as different values; case 2 (`WhitespaceManager.h:343`) has its origin question answered but not the relation between cell counts and cells; case 27 (`CheckExprLifetime.cpp:1450`) is partly answered, `LK` reads as a `memcpy` value & 7 and not as `getEntityLifetime()`'s result.
 Seen by the lead in the screenshots and passed to ticket 04: a compound expression's range stays raw (`LK` reads `[1, 18446744073709551615]`, clipped at 900 pixels) because an expression has no type in the table, and `Element{SymRegion{...}}` regions and extents stay raw dumps.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 A same-call tag can link to "Arrow after step N", which reads oddly and was left open.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 
 ## 2026-11-12: ticket 04 accepted
 
@@ -97,6 +101,7 @@ The same commit adds a trace key `expressions` with the type and pointer-ness of
 As of `llvm-project@fe10c4a08577`, an extent entry has the region whose size it is, which the lead had not asked for.
 As of `codechecker@03cf415ed`, the UI's parser of region dumps is removed, and names come only from the trace.
 Study case 1 reads "`this->Current` after `this->parse(prec::LogicalOr)` may have changed it, line 3486"; case 25's deciding value reads `Op.Node->ValueList[Op.ResNo].V.SimpleTy`; case 18 is not answered, because its deciding value is a field of a temporary.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 In the tmux report every row of the accumulated path condition renders from labels, such as `xx >= gd->linedata[py].cellsize` and `(py * 40) < size of *gd->linedata`.
 The worker's checks: Colorful Day lit 9 passed and 1 unsupported, functest 40, report-converter unit 157, server unit 119, jest 92; emission off byte-identical on 146 tmux and 21 other plists; tmux plists grew 0.64% (5,388,483 to 5,422,895 bytes); 275 of 298 tmux region values have a name.
 Left open: pointees of call results and temporaries have no name, metadata symbols have no name, and a constructor's invalidation statement prints as `*this`.
@@ -139,6 +144,7 @@ The share the panel names by a variable stayed at 9.3%, since caller variables a
 1220 of 1225 reports have at least one What-If name.
 
 What-Ifs on study cases: case 1, `this->Current == null` throughout, is Infeasible at Step 3 and settles the case; case 25, `VT != 0`, is Infeasible where the study got Unknown and settles the case; case 7, `DataShadow != 0`, is Infeasible but only restates the path, since the deciding assert is compiled out.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 Left open: no spelling picks "the value after `parse()`" for an anchored check; memory is told apart by name only, so two functions' `this->Current` are one name; 9.3% of stack frames have a function name that cannot be typed before `::`.
 Seen by the lead in `t06-caller-ambiguous-1400.png`: the Unknown reason reads "at Step 10.n names 2 values" with no space after the period, passed to ticket 08 to check.
 
@@ -159,6 +165,7 @@ The lead accepted the worker's placement, a "This step" and "Whole path" toggle,
 The lead left a checker-modelled value such as case 27's `LK` under Other and did not add a group for it, since Clang does not record that such a value is a call's result.
 Seen by the lead in the screenshots and passed to ticket 09: a comparison row reads `xx >= end` with the value 0, which a reader has to decode as "false".
 Also seen: in case 29 a row is named `Val`, a parameter of an inlined callee, under Entry inputs, because a value goes by the variable that first held it.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 Not seen in a browser: the ungrouped list for a trace without the symbol table, which jest covers.
 
 ## 2026-11-13: ticket 09 accepted, slice 3 and the spec closed
@@ -192,3 +199,17 @@ As of `codechecker@b1988c688`, values whose labels read the same carry a count i
 As of `codechecker@17aafbf18`, a step bubble stays inside the visible source width, a defect that predates Colorful Day.
 The worker's checks: emission off byte-identical on 146 tmux and 22 other plists; Colorful Day lit 11 passed and 1 unsupported; functest 50, server unit 147, report-converter unit 159, jest 147; linters clean.
 Left open: D2 (recursive frames share one name) and D8; memory of a call shows as a long raw dump; the count gives order and not the place on the path.
+
+## 2026-11-13: wiki lint corrections
+
+On 2026-11-13 a second wiki lint found lines above that later entries of this page had overtaken without a marker, and the lead marked each one superseded.
+The ticket 01 entry's open point on analysis time and LLVM-run size was closed by the ticket 03 measurement.
+The ticket 02 entry's raw pointer range was closed at `llvm-project@e7de190f44c3`, and the ticket 03 entry's raw compound range at `llvm-project@62bbbbf2c391` by the `expressions` key.
+The ticket 03 entry's "Arrow after step N" reads "Edge after Step N" as of `codechecker@cfdb0827b`.
+The ticket 04 entry's claim that case 18 is not answered: as of `llvm-project@4597033ce5db` and `codechecker@31a544473` its label reads "`.Block` of a value after `ilist_iterator(*this)` may have changed it", and `../research/retriage.md`, written before that fix, scored the case as partly answered.
+The same entry's tmux examples predate `codechecker@2f4610231`, after which `xx >= end` reads `px >= end`; the lead did not check the `cellsize` row again.
+The ticket 06 entry's claim that the What-Ifs on cases 1 and 25 settle the case is superseded by the retriage, as recorded in [use case review](use-case-review.md).
+The ticket 08 entry's `Val` row of case 29 sits under Other as of `llvm-project@a4ee24d9a656`, and the rule "a value goes by the variable that first held it" was replaced at `codechecker@2f4610231`.
+Ticket 01's Comments give tmux plists as 5,226,320 bytes after that ticket and ticket 02's Comments give 5,226,237 before theirs; the 83-byte difference is in the sources and was not explained.
+The tmux figure of 4,991,542 bytes before ticket 01 is smaller than the 6.9 MB in [execution plan](execution-plan.md) because trace format version 2 later wrote CFG bodies once per plist file, as that page records.
+The trace keys added after `symbols` are listed only on this page: `type` and `pointer` (ticket 03), `expressions` and extent `region` (ticket 04), `caller_variables` (ticket 05), `in_call` and `member` (defect fixes), and API 6.80 (ticket 09).

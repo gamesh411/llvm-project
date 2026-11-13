@@ -12,7 +12,7 @@ Sources such as the spec and tickets are cited here, never copied.
 ## Direction
 
 - [Use case review](use-case-review.md): the 2026-11-12 triage study's findings on What-If against other uses of the constraint data, the lead's recommended order of next work, the mechanical pass, the Explain the path spec and tickets, the LLVM rerun with assertions on, and the 2026-11-13 retriage of the 30 study cases.
-- [Explain the path run](explain-the-path-run.md): ticket order, constraints, acceptance record of all ten tickets of the follow-up spec, the LLVM measurements after slices 1 and 2, and the What-If reach measured again.
+- [Explain the path run](explain-the-path-run.md): ticket order, constraints, acceptance record of all ten tickets of the follow-up spec, the LLVM measurements after slices 1 and 2, the What-If reach measured again, and the defect fixes that followed the retriage.
 
 ## Environment
 
@@ -20,5 +20,5 @@ Sources such as the spec and tickets are cited here, never copied.
 
 ## Design
 
-- [Data contract](data-contract.md): how constraint data travels from Clang to the web UI.
-- [Web UI decisions](web-ui-decisions.md): toggle and panel placement, line picker, What-If section, the ticket 08 visual pass, the graph view, the polish passes and the minor items still open.
+- [Data contract](data-contract.md): how constraint data travels from Clang to the web UI, up to the `symbols` table; later keys are in the Explain the path run page.
+- [Web UI decisions](web-ui-decisions.md): toggle and panel placement, line picker, What-If section, the ticket 08 visual pass, the graph view, the polish passes, the minor items still open, and the 2026-11-13 This step and Whole path toggle with the control step rename.

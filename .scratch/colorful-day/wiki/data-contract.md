@@ -81,3 +81,5 @@ As of `codechecker@398558744`, CodeChecker plists hold the blocks as JSON text, 
 
 The pointer in the 2026-11-12 wiki lint entry above is mislabelled: the decision that version 2 replaces version 1 is in the 2026-11-11 scaling pass entry of [execution plan](execution-plan.md), and the "trace format v2 accepted" entry there holds the results.
 As of `llvm-project@6024f9416d07`, a version 2 trace also has a `symbols` table, as recorded in [Explain the path run](explain-the-path-run.md).
+
+On 2026-11-13 a wiki lint noted that this page stops at `symbols`: the keys added since (`type`, `pointer`, `expressions`, `caller_variables`, `in_call`, `member`) and API 6.80 are recorded in [Explain the path run](explain-the-path-run.md), with their commits.

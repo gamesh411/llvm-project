@@ -126,6 +126,11 @@ This supersedes two claims the lead recorded on 2026-11-12 in [the run page](exp
 The retriage found case 25's `VT != 0` to be the negation of the bug event, since the index is `SimpleTy - 1`, and case 1's result foreseeable from the Whole path list.
 It also found that the study's "no" for unseen asserts had missed the report page's macro-expansion notes, which showed the deciding assert in cases 3, 7 and 25 already on 2026-11-12.
 Case 18 reads worse than before: the label of a temporary's field hides the `.Block` the raw dump showed.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 
 Gaps ranked by cases blocked: no names for memory behind a call's result, a temporary or a copied struct (7 cases); compiled-out asserts (6); relations between two values, including that What-If cannot compare two names (5); state the trace does not carry, such as dynamic type and heap ownership (4); where a concrete value came from (3); names that mislead (6).
 The worker listed eight defects, D1 to D8, with report IDs and screenshots in the research file; D1 (another object's `this` read as the analyzed function's) and D4 (a value named by the wrong variable) show a wrong name, not a missing one.
+
+## 2026-11-13: wiki lint correction
+
+On 2026-11-13 the lead marked the retriage entry's line on case 18 superseded: as of `llvm-project@4597033ce5db` and `codechecker@31a544473` the label shows `.Block` again, as recorded in [the run page](explain-the-path-run.md).

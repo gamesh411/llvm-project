@@ -76,6 +76,7 @@ The worker found that the slow step clicks noted in the v2 entry of [execution p
 A first click on the already-active tree item only deactivates it, which is Vuetify's toggle and upstream behavior, left as is.
 Left open as of `codechecker@8693c4955`: the accumulated path condition still lists symbols in symbol order (a98, a99, a100 ... a8), and at 900px the tree pane clips labels to "L23", as it did before.
 Both are superseded by the second polish pass entry below.
+Superseded: see the 2026-11-13 wiki lint corrections at the end of this page.
 
 ## 2026-11-12: second polish pass accepted
 
@@ -110,3 +111,9 @@ What-If keeps its position on both halves (y = 828 at 1400 px, 764 at 900 px in 
 The labels are "This step" and "Whole path" because "This path requires" wrapped to two rows at about 230 px.
 A control step reads "Edge after Step N" and "Edge before Step 1", replacing "Arrow after step N", which the earlier tickets left open as reading oddly; the name is one function, `controlStepLabel`.
 The Comments of `../../explain-the-path/issues/08-this-path-requires-list.md` have the screenshots, both under `/Users/efulop/colorful-day-env/screens/` with the prefix `t08-`.
+
+## 2026-11-13: wiki lint correction
+
+On 2026-11-13 the lead marked a 2026-11-12 line superseded because it said two open items were both closed by the second polish pass.
+Only the symbol order was; the report tree's labels still clipped at 900 pixels on 2026-11-13, as the Comments of `../../explain-the-path/issues/05-caller-frame-variables.md` note.
+In this page "ticket 08" means the Colorful Day ticket before the 2026-11-13 section and the Explain the path ticket in it.
