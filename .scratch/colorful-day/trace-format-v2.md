@@ -103,7 +103,9 @@ symbols[*]: dict
   smt_signed: boolean, whether comparisons on smt are signed; present with smt
   parent: integer, index into strings of the dump of the symbol a derived symbol is part of, which has an entry too; only for a derived symbol
   region: integer, index into strings of the access path of a derived symbol's region, such as Tok.Kind, or of the memory whose size an extent is, such as *l->cells; absent when the analyzer cannot describe the region
-  name: integer, index into strings of the access path of a region value's region, such as p->len or this->Current; only for region_value, and absent when the analyzer cannot describe the region
+  member: integer, index into strings of the end of a derived symbol's access path after the nearest memory the analyzer cannot describe, such as .Block for a field of a temporary or ->next for a field of a call's result; only for a derived symbol without region, and absent when no field or array element of it can be described
+  name: integer, index into strings of the access path of a region value's region, such as p->len or this->Current; only for region_value, and absent when the analyzer cannot describe the region or with in_call
+  in_call: true when a region value's memory is a variable or this of a call the analyzed function made, or is reached from one through pointers that are initial values of memory; only for region_value, and absent otherwise
   origin: dict, only for a conjured symbol
     reason: string, why the analyzer made the symbol (see below)
     function: integer, index into strings of the function of the stack frame the symbol was made in
@@ -139,6 +141,12 @@ As of the `llvm-project` commit titled "[analyzer] Name region values and type e
 An access path follows a pointer whose value is the initial or replaced value of named memory (`*p`, `p[2]`, `p->len`, `this->Current`), names memory read as another type than its pointer's through a cast (`((struct S *)data)->len`), and leaves out base classes and anonymous structs and unions.
 It is absent when any part of the region cannot be described, such as the pointee of a call's result, an element at a computed index, or an element region that reinterprets memory that is not an array of that element type.
 No reader may make a name out of a dump.
+
+As of the `llvm-project` commit titled "[analyzer] Name no memory of a call in a constraint trace", a variable or `this` of a stack frame other than the analyzed function's, such as the `this` of an inlined method whose object the analyzer lost track of, gives no name, and neither does memory reached from its initial value, because both would read as the analyzed function's own and two calls' would read alike.
+A region value of such memory has `in_call` instead of `name`, so that a reader does not take it for an input of the analyzed function.
+A derived symbol or an invalidation that names a callee's own local directly, such as `Tok` in "`Tok` after `lex(&Tok)`", keeps its name, since a reader is told the function it was made in.
+As of "[analyzer] Write an implicit construction as its class in a constraint trace", the statement of a construction the source does not spell, such as converting an argument, is the class it constructs with its arguments, such as `Point(B)` rather than `B`.
+As of "[analyzer] Keep the end of an access path a constraint trace cannot name", a derived symbol whose region has no access path has `member`, such as `.Block` for a field of a temporary.
 
 The same commit adds the trace's `expressions` key: one entry for each symbolic expression that is the symbol of a `symbol_ranges` or `path_condition` entry or the value of a `variables` or `caller_variables` entry of kind `symbol`, sorted by dump.
 Its subexpressions get none.
