@@ -177,3 +177,18 @@ An example request took 12 to 21 ms on study case 6 and 67 to 70 ms on case 9's 
 On the study's cases the example repeats the list where the analyzer already narrowed the deciding value to one value (cases 1, 6, 25), and helps on case 29, where `n` not 0 and `m + n` 0 become `n` 1, and under `m == 100` `n` becomes 4294967196, which makes the unsigned wrap explicit.
 Left open: a symbol that is not a row of its own, such as case 29's `m`, gets no value; a single-valued row shows a chip that repeats its value; the comparison reading in the line picker was not seen in a browser.
 With this ticket every ticket of `../../explain-the-path/issues/` is resolved.
+
+## 2026-11-13: defect fixes from the retriage accepted
+
+On 2026-11-13 the lead had a worker fix defects D1, D3, D4, D5, D6 and D7 of `../research/retriage.md`, and accepted the fixes after viewing `/Users/efulop/colorful-day-env/screens/df-d1-d7-case7-after-900.png`, `df-d6-case6-after-1400.png` and `df-d3-d5-case18-after-1400.png`, at `llvm-project@a4ee24d9a656..1476e8b1ebfa` and `codechecker@2f4610231..65086ae9d`.
+The worker's account is `../research/defect-fixes.md`.
+This supersedes parts of the ticket 04 and ticket 08 entries above.
+As of `llvm-project@a4ee24d9a656`, a region value reached from a callee frame's `this` or variable has no name and a key `in_call`, where ticket 04's `describeRegion` had named every `this` and variable by its bare name whatever its frame; the page files such a value under Other, not Entry inputs.
+As of `llvm-project@4597033ce5db`, a derived symbol with no name has `member`, the end of its access path, so case 18 reads "`.Block` of a value after `ilist_iterator(*this)` may have changed it".
+As of `llvm-project@5766148dc184`, an implicit construction is written as its class with its arguments, such as `TargetInfo(Triple)`, closing the `*this` point left open after ticket 04.
+As of `codechecker@2f4610231`, a variable names only the value it was last seen to hold, and a copy does not take over a name; the code before gave the name to the last variable by name order, where ticket 04's Comments said the first.
+A consequence in the tmux report: `xx >= end` reads `px >= end`, since the constraint is on the parameter `xx` copied.
+As of `codechecker@b1988c688`, values whose labels read the same carry a count in the order the analyzer made them, such as "2nd of 5".
+As of `codechecker@17aafbf18`, a step bubble stays inside the visible source width, a defect that predates Colorful Day.
+The worker's checks: emission off byte-identical on 146 tmux and 22 other plists; Colorful Day lit 11 passed and 1 unsupported; functest 50, server unit 147, report-converter unit 159, jest 147; linters clean.
+Left open: D2 (recursive frames share one name) and D8; memory of a call shows as a long raw dump; the count gives order and not the place on the path.
