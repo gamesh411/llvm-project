@@ -3,7 +3,8 @@
 symbol, so a test can FileCheck it.
 
 A symbol prints as `SYMBOL <dump> <kind>`, followed for a derived symbol by
-`parent <dump> region <access path>`, for an extent by `region <access path>`, for a
+`parent <dump> region <access path>`, or `member <path>` when only the end of
+its access path is known, for an extent by `region <access path>`, for a
 region value by `name <access path>` and `in_call` when its memory belongs to
 a call, each when it has one, and for a conjured symbol by its origin:
 `<reason> "<statement>" @<file>:<line>:<col> callee <name> region <name>
@@ -79,6 +80,8 @@ def render(files, dump, symbol, smt, types=False):
         parts.append("parent " + symbol["parent"])
     if "region" in symbol:
         parts.append("region " + symbol["region"])
+    if "member" in symbol:
+        parts.append("member " + symbol["member"])
     if "name" in symbol:
         parts.append("name " + symbol["name"])
     if symbol.get("in_call"):

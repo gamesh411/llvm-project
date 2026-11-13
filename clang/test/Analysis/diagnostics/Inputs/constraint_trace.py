@@ -90,7 +90,7 @@ def symbols(trace):
     table = {}
     for entry in trace.get("symbols", []):
         symbol = {"kind": entry["kind"]}
-        for key in ("parent", "region", "name"):
+        for key in ("parent", "region", "member", "name"):
             if key in entry:
                 symbol[key] = strings[entry[key]]
         if entry.get("in_call"):

@@ -973,6 +973,10 @@ void PlistPrinter::ReportSymbols(raw_ostream &o,
       Indent(o, indent) << "<key>region</key>";
       EmitInteger(o, intern(Sym.Region)) << '\n';
     }
+    if (!Sym.Member.empty()) {
+      Indent(o, indent) << "<key>member</key>";
+      EmitInteger(o, intern(Sym.Member)) << '\n';
+    }
     if (!Sym.Name.empty()) {
       Indent(o, indent) << "<key>name</key>";
       EmitInteger(o, intern(Sym.Name)) << '\n';

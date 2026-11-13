@@ -114,7 +114,8 @@ void callFrames(User *U, long y) {
 }
 
 // A construction the source does not spell, such as converting an argument,
-// reads as the class it constructs.
+// reads as the class it constructs, and a field of the temporary it made
+// keeps the end of its access path although the temporary has no name.
 struct Point {
   int *Block;
   Point(int *B);
@@ -125,6 +126,22 @@ void temporaries(int *B) {
   if (!readBlock(B))
   // CHECK:     TRACE Dereference of null pointer
   // CHECK-DAG: SYMBOL conj_$[[#]]{{{.*}}} conjured invalidation "Point(B)" {{.*}} callee Point in temporaries frame 0 type int{{$}}
+  // CHECK-DAG: SYMBOL derived_$[[#]]{conj_$[[#]]{{{.*}}},temp_object{const Point, S{{[0-9]+}}}.Block} derived parent conj_$[[#]]{{{.*}}} member .Block type int * pointer{{$}}
+    *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
+}
+
+// The end of an access path goes through pointers that are fields of memory
+// with no description.
+struct Node { Node *next; int count; };
+Node *head();
+void reset(Node *);
+void behindCall() {
+  int *p = 0;
+  Node *n = head();
+  reset(n);
+  if (n->next->count == 3)
+  // CHECK:     TRACE Dereference of null pointer
+  // CHECK-DAG: SYMBOL derived_$[[#]]{conj_$[[#]]{{{.*}}},Element{SymRegion{conj_$[[#]]{{{.*}}}},0 S64b,struct Node}.next} derived parent conj_$[[#]]{{{.*}}} member ->next type Node * pointer{{$}}
     *p = 1; // expected-warning{{Dereference of null pointer (loaded from variable 'p')}}
 }
 

@@ -1585,6 +1585,21 @@ static std::string describeIndex(const ElementRegion *Element) {
   return std::string();
 }
 
+/// \p R without the base classes and anonymous structs and unions it is in,
+/// which are not in an access path: their members are named as the
+/// enclosing record's.
+static const MemRegion *skipHiddenRecords(const MemRegion *R) {
+  auto IsHidden = [](const MemRegion *R) {
+    if (isa<CXXBaseObjectRegion, CXXDerivedObjectRegion>(R))
+      return true;
+    const auto *Field = dyn_cast<FieldRegion>(R);
+    return Field && Field->getDecl()->isAnonymousStructOrUnion();
+  };
+  while (IsHidden(R))
+    R = cast<SubRegion>(R)->getSuperRegion();
+  return R;
+}
+
 /// \p R as the expression a reader would write for it, such as `n.next`,
 /// `p->len`, `*p`, `a[i]` or `this->Current`, or empty when the analyzer has
 /// no description of it. Unlike MemRegion::getDescriptiveName, this follows
@@ -1592,17 +1607,7 @@ static std::string describeIndex(const ElementRegion *Element) {
 /// that the memory is only reinterpreted as.
 static std::string describeRegion(const MemRegion *R) {
   if (const auto *Field = dyn_cast<FieldRegion>(R)) {
-    // A base class and an anonymous struct or union are not in the
-    // expression: their members are named as the enclosing record's.
-    auto IsHidden = [](const MemRegion *Super) {
-      if (isa<CXXBaseObjectRegion, CXXDerivedObjectRegion>(Super))
-        return true;
-      const auto *Field = dyn_cast<FieldRegion>(Super);
-      return Field && Field->getDecl()->isAnonymousStructOrUnion();
-    };
-    const MemRegion *Super = Field->getSuperRegion();
-    while (IsHidden(Super))
-      Super = cast<SubRegion>(Super)->getSuperRegion();
+    const MemRegion *Super = skipHiddenRecords(Field->getSuperRegion());
     if (Field->getDecl()->isAnonymousStructOrUnion())
       return describeRegion(Super);
     StringRef Name = Field->getDecl()->getName();
@@ -1667,6 +1672,58 @@ static std::string describeRegion(const MemRegion *R) {
     return Var->getDecl() ? Var->getDecl()->getName().str() : std::string();
   if (const auto *Ivar = dyn_cast<ObjCIvarRegion>(R))
     return Ivar->getDecl()->getName().str();
+  return std::string();
+}
+
+static std::string describePointerMember(SymbolRef Sym);
+
+/// The end of \p R's access path after the nearest memory that has no
+/// description, such as `.Block` for a field of a temporary or `->next` for a
+/// field of a call's result, or empty when no field or array element of it
+/// can be told. Only meaningful when describeRegion(R) is empty.
+static std::string describeMember(const MemRegion *R) {
+  if (const auto *Field = dyn_cast<FieldRegion>(R)) {
+    const MemRegion *Super = skipHiddenRecords(Field->getSuperRegion());
+    if (Field->getDecl()->isAnonymousStructOrUnion())
+      return describeMember(Super);
+    StringRef Name = Field->getDecl()->getName();
+    if (Name.empty())
+      return std::string();
+    const SymbolicRegion *Pointee = dyn_cast<SymbolicRegion>(Super);
+    if (const auto *Element = dyn_cast<ElementRegion>(Super);
+        Element && isa<SymbolicRegion>(Element->getSuperRegion()) &&
+        Element->getIndex().isZeroConstant())
+      Pointee = cast<SymbolicRegion>(Element->getSuperRegion());
+    if (Pointee)
+      return describePointerMember(Pointee->getSymbol()) + "->" + Name.str();
+    return describeMember(Super) + "." + Name.str();
+  }
+
+  if (const auto *Element = dyn_cast<ElementRegion>(R)) {
+    // As describeRegion tells them: an element of an array, at an index that
+    // can be told. Any other element is the memory that has no description.
+    std::string Index = describeIndex(Element);
+    const auto *Typed = dyn_cast<TypedValueRegion>(Element->getSuperRegion());
+    if (Index.empty() || !Typed)
+      return std::string();
+    ASTContext &Ctx = R->getMemRegionManager().getContext();
+    const ArrayType *Array = Ctx.getAsArrayType(Typed->getValueType());
+    if (!Array || !Ctx.hasSameUnqualifiedType(Array->getElementType(),
+                                              Element->getElementType()))
+      return std::string();
+    return describeMember(Typed) + "[" + Index + "]";
+  }
+  return std::string();
+}
+
+/// The end of the access path of the memory whose value \p Sym is, as
+/// describeMember gives it, so that `p->next` reads `->a->next` when `p` is
+/// the field `a` of memory that has no description.
+static std::string describePointerMember(SymbolRef Sym) {
+  if (const auto *Value = dyn_cast<SymbolRegionValue>(Sym))
+    return describeMember(Value->getRegion());
+  if (const auto *Derived = dyn_cast<SymbolDerived>(Sym))
+    return describeMember(Derived->getRegion());
   return std::string();
 }
 
@@ -1814,6 +1871,8 @@ PathDiagnosticBuilder::describeSymbol(const SymbolData *Sym) const {
   if (const auto *Derived = dyn_cast<SymbolDerived>(Sym)) {
     Result.Parent = getSymbolDump(Derived->getParentSymbol());
     Result.Region = describeRegion(Derived->getRegion());
+    if (Result.Region.empty())
+      Result.Member = describeMember(Derived->getRegion());
     return Result;
   }
 

@@ -581,6 +581,10 @@ struct PathDiagnosticSymbol {
   /// access path of their region, empty when the analyzer cannot describe it.
   std::string Parent;
   std::string Region;
+  /// Only for derived symbols whose Region is empty: the end of the access
+  /// path after the nearest memory that has no description, such as `.Block`
+  /// of a temporary's field, empty when no part of it can be told.
+  std::string Member;
 };
 
 using PathDiagnosticSymbolTable = std::vector<PathDiagnosticSymbol>;
