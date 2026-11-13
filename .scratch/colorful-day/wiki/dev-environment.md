@@ -101,3 +101,8 @@ The citation in the functest poisoning entry above covers only the CodeChecker s
 
 The remaining report_viewer_api failure entry above says it updates a "stale" description, but the test baseline entry above never uses that word.
 What it updates is the test baseline entry's implication that the expected line numbers 15 and 25 are wrong: the ticket 03 Comments in `../issues/03-complete-the-constraint-snapshot.md` say the test is not stale but encodes Clang 14 behavior.
+
+## 2026-11-13: handoff to another machine
+
+As of `codechecker@a15e1e75e`, `../handoff/` has the report directories of the run `defects`, its compile commands and `handoff.sh`, which rewrites the `/Users/efulop` paths in them to the machine it runs on.
+On 2026-11-13 its `view` was checked on the machine that made the reports, under other paths, with 109 reports stored; its `rerun` and a second machine were not tried.
