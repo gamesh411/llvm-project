@@ -3170,6 +3170,12 @@ alpha.core.Conversion (C, C++, ObjC)
 """"""""""""""""""""""""""""""""""""
 Loss of sign/precision in implicit conversions.
 
+A loss of sign is reported only if the path contains evidence that the value is
+negative: the code compares it against a non-positive constant, tests it for
+equality with a negative constant, or compares the operands of a difference.
+A value that is negative only because the analyzer took the exit of a loop, or
+combined ``n <= 0`` with ``n != 0``, is not reported.
+
 .. code-block:: c
 
  void test(unsigned U, signed S) {

@@ -782,6 +782,11 @@ Crash and bug fixes
 - Fixed ``security.VAList`` checker producing false positives when analyzing
   C23 code where ``va_start`` expands to ``__builtin_c23_va_start``.
 
+- ``alpha.core.Conversion`` no longer reports a loss of sign when the value is
+  negative only because of the analyzer's own path constraints, such as the
+  exit of a loop or a ``<= 0`` range split by a ``!= 0`` test. The negative
+  value now has to be backed by an explicit sign test on the path.
+
 .. comment:
   This is for the Static Analyzer.
   Using the caret `^^^` underlining for subsections:
