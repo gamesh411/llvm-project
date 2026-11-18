@@ -18,17 +18,24 @@
 // * assignment / initialization when the source integer is above the range
 //   where the target floating point type can represent all integers
 //
+// A loss of sign is not reported if the value is known to be non-positive only
+// because the analyzer assumed a loop condition to be false. Leaving a loop
+// that counts up from zero bounds the count by zero, and counts, sizes and
+// lengths are rarely allowed to be negative.
+//
 // Many compilers and tools have similar checks that are based on semantic
 // analysis. Those checks are sound but have poor precision. ConversionChecker
 // is an alternative to those checks.
 //
 //===----------------------------------------------------------------------===//
-#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
 #include "clang/AST/ParentMap.h"
+#include "clang/StaticAnalyzer/Checkers/BuiltinCheckerRegistration.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporterVisitors.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "llvm/ADT/APFloat.h"
 
 #include <climits>
@@ -50,8 +57,123 @@ private:
   bool isLossOfSign(const ImplicitCastExpr *Cast, CheckerContext &C) const;
 
   void reportBug(ExplodedNode *N, const Expr *E, CheckerContext &C,
-                 const char Msg[]) const;
+                 const char Msg[],
+                 std::unique_ptr<BugReporterVisitor> Visitor = nullptr) const;
 };
+
+/// Invalidates a loss-of-sign report if the upper bound that makes the value
+/// non-positive comes from assuming a loop condition to be false.
+///
+/// The bound is looked for instead of the point where the value became
+/// negative, because the latter is often an innocent test: after
+/// \code
+///   for (i = 0; i < n; i++) {}
+///   if (n != 0) use(n);
+/// \endcode
+/// it is the exit of the loop that keeps n from being positive, the second test
+/// only excludes zero.
+class LoopBoundVisitor final : public BugReporterVisitor {
+  SVal V;
+  bool FoundBound = false;
+
+public:
+  explicit LoopBoundVisitor(SVal V) : V(V) {}
+
+  void Profile(llvm::FoldingSetNodeID &ID) const override {
+    static int Tag = 0;
+    ID.AddPointer(&Tag);
+    ID.Add(V);
+  }
+
+  PathDiagnosticPieceRef VisitNode(const ExplodedNode *N,
+                                   BugReporterContext &BRC,
+                                   PathSensitiveBugReport &BR) override;
+};
+} // namespace
+
+/// Does \p State entail V <= 0?
+static bool isKnownNonPositive(ProgramStateRef State, SVal V) {
+  if (!isa<NonLoc>(V))
+    return false;
+  SValBuilder &SVB = State->getStateManager().getSValBuilder();
+  SVal NonPositive =
+      SVB.evalBinOp(State, BO_LE, V, SVB.makeIntVal(0, /*isUnsigned=*/false),
+                    SVB.getConditionType());
+  if (NonPositive.isUnknownOrUndef())
+    return false;
+  auto [StTrue, StFalse] = State->assume(NonPositive.castAs<DefinedSVal>());
+  return StTrue && !StFalse;
+}
+
+/// Returns the condition whose outcome the analyzer assumed at \p N and sets
+/// \p Outcome. A comparison is assumed eagerly, right after it is evaluated,
+/// other conditions on the edge that leaves the branching block.
+static const Stmt *getAssumedCondition(const ExplodedNode *N, bool &Outcome) {
+  ProgramPoint PP = N->getLocation();
+  if (auto Edge = PP.getAs<BlockEdge>()) {
+    const CFGBlock *Src = Edge->getSrc();
+    Outcome = *Src->succ_begin() == Edge->getDst();
+    return Src->getTerminatorCondition();
+  }
+  if (auto PS = PP.getAs<PostStmt>()) {
+    const auto &[TrueTag, FalseTag] =
+        ExprEngine::getEagerlyAssumeBifurcationTags();
+    Outcome = PS->getTag() == TrueTag;
+    if (Outcome || PS->getTag() == FalseTag)
+      return PS->getStmt();
+  }
+  return nullptr;
+}
+
+/// Is \p S the condition of a loop, or an operand of it?
+static bool isPartOfLoopCondition(const Stmt *S, const ParentMap &PM) {
+  const Stmt *Parent = PM.getParent(S);
+  while (Parent && isa<Expr>(Parent)) {
+    S = Parent;
+    Parent = PM.getParent(S);
+  }
+  if (const auto *For = dyn_cast_or_null<ForStmt>(Parent))
+    return For->getCond() == S;
+  if (const auto *While = dyn_cast_or_null<WhileStmt>(Parent))
+    return While->getCond() == S;
+  if (const auto *Do = dyn_cast_or_null<DoStmt>(Parent))
+    return Do->getCond() == S;
+  if (const auto *RangeFor = dyn_cast_or_null<CXXForRangeStmt>(Parent))
+    return RangeFor->getCond() == S;
+  return false;
+}
+
+PathDiagnosticPieceRef LoopBoundVisitor::VisitNode(const ExplodedNode *N,
+                                                   BugReporterContext &BRC,
+                                                   PathSensitiveBugReport &BR) {
+  // The bound holds at the end of the path and constraints only accumulate,
+  // so the first node whose predecessor does not have it is its origin.
+  const ExplodedNode *Pred = N->getFirstPred();
+  if (FoundBound || !Pred || isKnownNonPositive(Pred->getState(), V))
+    return nullptr;
+  FoundBound = true;
+
+  bool Outcome = false;
+  const Stmt *Cond = getAssumedCondition(N, Outcome);
+  if (Cond && !Outcome &&
+      isPartOfLoopCondition(Cond, N->getLocationContext()->getParentMap()))
+    BR.markInvalid("Suppress loop bound", N->getLocationContext());
+  return nullptr;
+}
+
+/// Returns the value of \p E as it was before the analyzer replaced a symbol
+/// that is constrained to a single value by that value. Only the constraints
+/// of the symbol tell where such a value comes from.
+static SVal getValueBeforeFolding(const Expr *E, CheckerContext &C) {
+  SVal V = C.getSVal(E);
+  const auto *Load = dyn_cast<ImplicitCastExpr>(E->IgnoreParens());
+  if (!V.isConstant() || !Load || Load->getCastKind() != CK_LValueToRValue)
+    return V;
+  auto L = C.getSVal(Load->getSubExpr()).getAs<Loc>();
+  if (!L)
+    return V;
+  SVal Stored = C.getState()->getRawSVal(*L, Load->getType());
+  return Stored.getAsSymbol() ? Stored : V;
 }
 
 void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
@@ -118,17 +240,22 @@ void ConversionChecker::checkPreStmt(const ImplicitCastExpr *Cast,
     if (!N)
       return;
     if (LossOfSign)
-      reportBug(N, Cast, C, "Loss of sign in implicit conversion");
+      reportBug(N, Cast, C, "Loss of sign in implicit conversion",
+                std::make_unique<LoopBoundVisitor>(
+                    getValueBeforeFolding(Cast->getSubExpr(), C)));
     if (LossOfPrecision)
       reportBug(N, Cast, C, "Loss of precision in implicit conversion");
   }
 }
 
-void ConversionChecker::reportBug(ExplodedNode *N, const Expr *E,
-                                  CheckerContext &C, const char Msg[]) const {
+void ConversionChecker::reportBug(
+    ExplodedNode *N, const Expr *E, CheckerContext &C, const char Msg[],
+    std::unique_ptr<BugReporterVisitor> Visitor) const {
   // Generate a report for this bug.
   auto R = std::make_unique<PathSensitiveBugReport>(BT, Msg, N);
   bugreporter::trackExpressionValue(N, E, *R);
+  if (Visitor)
+    R->addVisitor(std::move(Visitor));
   C.emitReport(std::move(R));
 }
 
