@@ -13,7 +13,9 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerHelpers.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/APSIntType.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include <optional>
 
@@ -127,6 +129,9 @@ std::optional<int> tryExpandAsInteger(StringRef Macro, const Preprocessor &PP) {
     if (!T.isOneOf(tok::l_paren, tok::r_paren))
       FilteredTokens.push_back(T);
 
+  if (FilteredTokens.empty())
+    return std::nullopt;
+
   // Parse an integer at the end of the macro definition.
   const Token &T = FilteredTokens.back();
 
@@ -160,7 +165,14 @@ std::optional<int> tryExpandAsInteger(StringRef Macro, const Preprocessor &PP) {
     }
   }
 
-  return IntValue.getExtValue();
+  // Values that fit into the bits of the target's int are converted like C
+  // would do, e.g. DragonFly BSD defines AT_FDCWD as 0xFFFAFDCD.
+  const APSIntType IntType(PP.getTargetInfo().getIntWidth(),
+                           /*Unsigned=*/false);
+  if (IntType.testInRange(IntValue, /*AllowMixedSign=*/true) !=
+      APSIntType::RTR_Within)
+    return std::nullopt;
+  return IntType.convert(IntValue).getExtValue();
 }
 
 OperatorKind operationKindFromOverloadedOperator(OverloadedOperatorKind OOK,

@@ -1627,6 +1627,11 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 ### Static Analyzer
 
 #### Crash and bug fixes
+
+- Fixed crashes when a macro whose value the analyzer reads, such as `EOF` or
+  `O_NONBLOCK`, is defined as empty or as an integer that does not fit into
+  `int64_t`. Values that do not fit into the bits of an `int` are now ignored
+  instead of being truncated.
 - `unix.BlockInCriticalSection` checker now recognizes `mtx_timedlock`
   calls with 2 arguments as a locking call. This fixes false negatives.
   (#GH237154)

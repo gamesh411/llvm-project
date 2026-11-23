@@ -69,8 +69,10 @@ Nullability getNullabilityAnnotation(QualType Type);
 
 /// Try to parse the value of a defined preprocessor macro. We can only parse
 /// simple expressions that consist of an optional minus sign token and then a
-/// token for an integer. If we cannot parse the value then std::nullopt is
-/// returned.
+/// token for an integer. Values from INT_MIN to UINT_MAX of the target are
+/// accepted, and values above INT_MAX are interpreted as the bit pattern of an
+/// int. If we cannot parse the value, or it is outside that range, then
+/// std::nullopt is returned.
 std::optional<int> tryExpandAsInteger(StringRef Macro, const Preprocessor &PP);
 
 class OperatorKind {
