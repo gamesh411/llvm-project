@@ -2073,6 +2073,10 @@ Check for calls to blocking functions inside a critical section.
 Blocking functions detected by this checker: `sleep, getc, fgets, read, recv`.
 Critical section handling functions modeled by this checker:
 `lock, unlock, pthread_mutex_lock, pthread_mutex_trylock, pthread_mutex_unlock, mtx_lock, mtx_timedlock, mtx_trylock, mtx_unlock, lock_guard, unique_lock, scoped_lock`.
+XNU kernel locks:
+`lck_mtx_lock, lck_mtx_try_lock, lck_mtx_unlock, lck_rw_lock_exclusive, lck_rw_lock_shared, lck_rw_try_lock_exclusive, lck_rw_try_lock_shared, lck_rw_unlock_exclusive, lck_rw_unlock_shared, lck_rw_done`.
+Fuchsia locks:
+`spin_lock, spin_lock_save, spin_trylock, spin_unlock, spin_unlock_restore, sync_mutex_lock, sync_mutex_lock_with_waiter, sync_mutex_trylock, sync_mutex_timedlock, sync_mutex_unlock`.
 
 ```c
 void pthread_lock_example(pthread_mutex_t *m) {

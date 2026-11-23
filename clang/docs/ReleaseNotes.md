@@ -1658,6 +1658,10 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 
 - The lock-order-reversal check in ``alpha.unix.PthreadLock`` is now disabled by default.
   It can be re-enabled with the ``WarnOnLockOrderReversal`` option.
+- ``unix.BlockInCriticalSection`` now recognizes critical sections of the XNU
+  (``lck_mtx_*``, ``lck_rw_*``) and Fuchsia (``spin_*``, ``sync_mutex_*``)
+  locking functions, which were previously only modeled by the alpha
+  ``alpha.unix.PthreadLock`` and ``alpha.fuchsia.Lock`` checkers.
 
 #### Moved checkers
 
