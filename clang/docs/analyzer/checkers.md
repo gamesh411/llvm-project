@@ -2082,6 +2082,19 @@ void pthread_lock_example(pthread_mutex_t *m) {
 }
 ```
 
+For `pthread_mutex_trylock`, the critical section is entered only on the path where the call succeeds.
+
+```c
+void trylock_example(pthread_mutex_t *m) {
+  if (pthread_mutex_trylock(m) == 0) { // note: assuming the lock is acquired; entering critical section here
+    sleep(10); // warn: Call to blocking function 'sleep' inside of critical section
+    pthread_mutex_unlock(m);
+  } else {
+    sleep(10); // no warning: the lock was not acquired
+  }
+}
+```
+
 ```cpp
 void overlapping_critical_sections(mtx_t *m1, std::mutex &m2) {
   std::lock_guard lg{m2}; // note: entering critical section here
@@ -2095,19 +2108,11 @@ void overlapping_critical_sections(mtx_t *m1, std::mutex &m2) {
 
 **Limitations**
 
-- The `trylock` and `timedlock` versions of acquiring locks are currently assumed to always succeed.
-  This can lead to false positives.
-
-```c
-void trylock_example(pthread_mutex_t *m) {
-  if (pthread_mutex_trylock(m) == 0) { // assume trylock always succeeds
-    sleep(10); // warn: Call to blocking function 'sleep' inside of critical section
-    pthread_mutex_unlock(m);
-  } else {
-    sleep(10); // false positive: Incorrect warning about blocking function inside critical section.
-  }
-}
-```
+- `pthread_mutex_trylock` also acquires a robust mutex when it returns `EOWNERDEAD`.
+  The checker treats every non-zero return value as a failure to acquire the lock, so it can miss blocking calls on that path.
+- `mtx_trylock` and `mtx_timedlock` are assumed to always acquire the lock, which can cause false positives.
+- `std::mutex::try_lock` is not modeled, so blocking calls under a lock it acquired are not reported.
+- A `std::unique_lock` constructed with `std::try_to_lock` is assumed to always acquire the lock, which can cause false positives.
 
 (unix-chroot)=
 

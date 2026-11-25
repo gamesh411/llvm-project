@@ -89,7 +89,8 @@ struct CritSectionMarker {
 };
 
 enum class RoleKind {
-  Lock,
+  Lock,    // Assumed to always acquire the lock.
+  TryLock, // May fail; the return value tells whether the lock was acquired.
   Unlock,
 };
 
@@ -99,6 +100,13 @@ enum class LibraryKind {
   Pthread,
   C11,
   StdCXX,
+};
+
+// Whether acquiring the lock was an assumption, which decides how its note
+// reads.
+enum class AcquireKind {
+  Certain, // The call acquired the lock on this path.
+  Assumed, // The call might have failed and is assumed to succeed.
 };
 
 // llvm::function_ref does not reject stateful functors/capturing lambdas, so
@@ -189,7 +197,7 @@ private:
       {{CDM::CLibrary, {"mtx_unlock"}, 1},
        {RoleKind::Unlock, LibraryKind::C11}},
       {{CDM::CLibrary, {"pthread_mutex_trylock"}, 1},
-       {RoleKind::Lock, LibraryKind::Pthread}},
+       {RoleKind::TryLock, LibraryKind::Pthread}},
       {{CDM::CLibrary, {"mtx_trylock"}, 1}, {RoleKind::Lock, LibraryKind::C11}},
       {{CDM::CLibrary, {"mtx_timedlock"}, 2},
        {RoleKind::Lock, LibraryKind::C11}},
@@ -223,13 +231,26 @@ private:
   void reportBlockInCritSection(const CallEvent &call, CheckerContext &C) const;
 
   [[nodiscard]] const NoteTag *createCritSectionNote(CritSectionMarker M,
+                                                     AcquireKind Kind,
                                                      CheckerContext &C) const;
 
   [[nodiscard]] const ThreadingCallDescription *
   lookupThreadingCall(const CallEvent &Call) const;
 
-  void handleLock(const MemRegion *MutexRegion, const CallEvent &Call,
-                  CheckerContext &C, ProgramStateRef State) const;
+  void handleLock(const MemRegion *MutexRegion, AcquireKind Kind,
+                  const CallEvent &Call, CheckerContext &C,
+                  ProgramStateRef State) const;
+
+  // Returns the condition under which a try-lock acquired the lock, or nothing
+  // if it cannot be told. It is a condition, not a value, because some
+  // libraries, e.g. XNU, report success with any non-zero result.
+  [[nodiscard]] std::optional<DefinedSVal>
+  getTryLockSuccessCondition(ProgramStateRef State, LibraryKind Library,
+                             NonLoc RetVal, QualType ResultTy,
+                             CheckerContext &C) const;
+
+  void handleTryLock(const MemRegion *MutexRegion, LibraryKind Library,
+                     const CallEvent &Call, CheckerContext &C) const;
 
   void handleUnlock(const MemRegion *MutexRegion, CheckerContext &C) const;
 
@@ -237,9 +258,8 @@ private:
                                              CheckerContext &C) const;
 
 public:
-  /// Process unlock.
-  /// Process lock.
-  /// Process blocking functions (sleep, getc, fgets, read, recv)
+  /// Process lock, try-lock and unlock calls, and blocking functions (sleep,
+  /// getc, fgets, read, recv).
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
 
   // Process RAII lock guard constructors (to avoid double-counting by
@@ -278,13 +298,63 @@ static const MemRegion *getMutexRegion(const CallEvent &Call,
 }
 
 void BlockInCriticalSectionChecker::handleLock(const MemRegion *MutexRegion,
+                                               AcquireKind Kind,
                                                const CallEvent &Call,
                                                CheckerContext &C,
                                                ProgramStateRef State) const {
   const CritSectionMarker MarkToAdd{Call.getOriginExpr(), MutexRegion};
   ProgramStateRef StateWithLockEvent =
       State->add<ActiveCritSections>(MarkToAdd);
-  C.addTransition(StateWithLockEvent, createCritSectionNote(MarkToAdd, C));
+  C.addTransition(StateWithLockEvent,
+                  createCritSectionNote(MarkToAdd, Kind, C));
+}
+
+std::optional<DefinedSVal>
+BlockInCriticalSectionChecker::getTryLockSuccessCondition(
+    ProgramStateRef State, LibraryKind Library, NonLoc RetVal,
+    QualType ResultTy, CheckerContext &C) const {
+  SValBuilder &SVB = C.getSValBuilder();
+  const APSIntType ResultIntTy =
+      SVB.getBasicValueFactory().getAPSIntType(ResultTy);
+  llvm::APSInt SuccessValue;
+  switch (Library) {
+  case LibraryKind::Pthread:
+    SuccessValue = ResultIntTy.getZeroValue();
+    break;
+  case LibraryKind::C11:
+  case LibraryKind::StdCXX:
+    llvm_unreachable("No try-lock function of this library is modeled");
+  }
+  return SVB.evalEQ(State, RetVal, SVB.makeIntVal(SuccessValue))
+      .getAs<DefinedSVal>();
+}
+
+void BlockInCriticalSectionChecker::handleTryLock(const MemRegion *MutexRegion,
+                                                  LibraryKind Library,
+                                                  const CallEvent &Call,
+                                                  CheckerContext &C) const {
+  ProgramStateRef State = C.getState();
+  // Without a result to compare there is nothing to split on, so assume the
+  // lock is acquired.
+  std::optional<NonLoc> RetVal = Call.getReturnValue().getAs<NonLoc>();
+  std::optional<DefinedSVal> Success =
+      RetVal ? getTryLockSuccessCondition(State, Library, *RetVal,
+                                          Call.getResultType(), C)
+             : std::nullopt;
+  if (!Success) {
+    handleLock(MutexRegion, AcquireKind::Assumed, Call, C, State);
+    return;
+  }
+
+  auto [Acquired, Failed] = State->assume(*Success);
+  if (Failed)
+    C.addTransition(Failed);
+  if (!Acquired)
+    return;
+  // If the path already fixed the result, e.g. an inlined definition returned
+  // the success value, this checker assumed nothing.
+  handleLock(MutexRegion, Failed ? AcquireKind::Assumed : AcquireKind::Certain,
+             Call, C, Acquired);
 }
 
 void BlockInCriticalSectionChecker::handleUnlock(const MemRegion *MutexRegion,
@@ -339,7 +409,10 @@ void BlockInCriticalSectionChecker::checkPostCall(const CallEvent &Call,
 
   switch (Desc->Role) {
   case RoleKind::Lock:
-    handleLock(MutexRegion, Call, C, C.getState());
+    handleLock(MutexRegion, AcquireKind::Certain, Call, C, C.getState());
+    return;
+  case RoleKind::TryLock:
+    handleTryLock(MutexRegion, Desc->Library, Call, C);
     return;
   case RoleKind::Unlock:
     handleUnlock(MutexRegion, C);
@@ -374,7 +447,7 @@ bool BlockInCriticalSectionChecker::evalCall(const CallEvent &Call,
                                      /*CausesPointerEscape=*/false);
   }
   if (const MemRegion *MutexRegion = getMutexRegion(Call, *Desc))
-    handleLock(MutexRegion, Call, C, State);
+    handleLock(MutexRegion, AcquireKind::Certain, Call, C, State);
   return true;
 }
 
@@ -417,12 +490,11 @@ void BlockInCriticalSectionChecker::reportBlockInCritSection(
   C.emitReport(std::move(R));
 }
 
-const NoteTag *
-BlockInCriticalSectionChecker::createCritSectionNote(CritSectionMarker M,
-                                                     CheckerContext &C) const {
+const NoteTag *BlockInCriticalSectionChecker::createCritSectionNote(
+    CritSectionMarker M, AcquireKind Kind, CheckerContext &C) const {
   const BugType *BT = &this->BlockInCritSectionBugType;
-  return C.getNoteTag([M, BT](PathSensitiveBugReport &BR,
-                              llvm::raw_ostream &OS) {
+  return C.getNoteTag([M, BT, Kind](PathSensitiveBugReport &BR,
+                                    llvm::raw_ostream &OS) {
     if (&BR.getBugType() != BT)
       return;
 
@@ -449,10 +521,14 @@ BlockInCriticalSectionChecker::createCritSectionNote(CritSectionMarker M,
     if (Position == LocksForMutex.end())
       return;
 
+    const StringRef Entering = Kind == AcquireKind::Assumed
+                                   ? "Assuming the lock is acquired; entering"
+                                   : "Entering";
+
     // If there is only one lock event, we don't need to specify how many times
     // the critical section was entered.
     if (LocksForMutex.size() == 1) {
-      OS << "Entering critical section here";
+      OS << Entering << " critical section here";
       return;
     }
 
@@ -460,7 +536,7 @@ BlockInCriticalSectionChecker::createCritSectionNote(CritSectionMarker M,
         std::distance(std::as_const(LocksForMutex).begin(), Position);
 
     const auto OrdinalOfLock = IndexOfLock + 1;
-    OS << "Entering critical section for the " << OrdinalOfLock
+    OS << Entering << " critical section for the " << OrdinalOfLock
        << llvm::getOrdinalSuffix(OrdinalOfLock) << " time here";
   });
 }

@@ -1713,6 +1713,12 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 - The lock-order-reversal check in ``alpha.unix.PthreadLock`` is now disabled by default.
   It can be re-enabled with the ``WarnOnLockOrderReversal`` option.
 
+- `unix.BlockInCriticalSection` no longer assumes that `pthread_mutex_trylock`
+  always acquires the lock, which removes false positives on the paths where
+  the lock was not acquired. The note at such a call now starts with "Assuming
+  the lock is acquired". A robust mutex acquired with `EOWNERDEAD` is treated
+  as not acquired, so blocking calls on that path are no longer reported.
+
 #### Moved checkers
 
 The `alpha.cplusplus.UseAfterLifetimeEnd` checker was renamed to `alpha.core.UseAfterLifetimeEnd`.
