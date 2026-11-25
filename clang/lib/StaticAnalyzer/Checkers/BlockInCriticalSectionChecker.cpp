@@ -198,9 +198,10 @@ private:
        {RoleKind::Unlock, LibraryKind::C11}},
       {{CDM::CLibrary, {"pthread_mutex_trylock"}, 1},
        {RoleKind::TryLock, LibraryKind::Pthread}},
-      {{CDM::CLibrary, {"mtx_trylock"}, 1}, {RoleKind::Lock, LibraryKind::C11}},
+      {{CDM::CLibrary, {"mtx_trylock"}, 1},
+       {RoleKind::TryLock, LibraryKind::C11}},
       {{CDM::CLibrary, {"mtx_timedlock"}, 2},
-       {RoleKind::Lock, LibraryKind::C11}},
+       {RoleKind::TryLock, LibraryKind::C11}},
       {{CDM::CXXMethod, {"lock_guard", "lock_guard"}},
        {RoleKind::Lock, LibraryKind::StdCXX, getObjectUnderConstruction}},
       {{CDM::CXXMethod, {"lock_guard", "~lock_guard"}},
@@ -227,6 +228,11 @@ private:
 
   using O_NONBLOCKValueTy = std::optional<int>;
   mutable std::optional<O_NONBLOCKValueTy> O_NONBLOCKValue;
+
+  // The outer optional is empty until the lookup runs; the inner one is
+  // empty if the value of thrd_success could not be determined.
+  using ThrdSuccessValueTy = std::optional<llvm::APSInt>;
+  mutable std::optional<ThrdSuccessValueTy> ThrdSuccessValue;
 
   void reportBlockInCritSection(const CallEvent &call, CheckerContext &C) const;
 
@@ -309,6 +315,28 @@ void BlockInCriticalSectionChecker::handleLock(const MemRegion *MutexRegion,
                   createCritSectionNote(MarkToAdd, Kind, C));
 }
 
+static std::optional<llvm::APSInt> lookupEnumConstant(ASTContext &Ctx,
+                                                      StringRef Name) {
+  for (const NamedDecl *D :
+       Ctx.getTranslationUnitDecl()->lookup(&Ctx.Idents.get(Name)))
+    if (const auto *Enumerator = dyn_cast<EnumConstantDecl>(D))
+      return Enumerator->getInitVal();
+  return std::nullopt;
+}
+
+// The value of thrd_success varies: zero in glibc and musl, 4 in FreeBSD and
+// LLVM libc. The C11 libraries declare it as an enumerator, but shims such as
+// TinyCThread define it as a macro.
+static std::optional<llvm::APSInt> lookupThrdSuccess(CheckerContext &C) {
+  if (std::optional<llvm::APSInt> Value =
+          lookupEnumConstant(C.getASTContext(), "thrd_success"))
+    return Value;
+  if (std::optional<int> Value =
+          tryExpandAsInteger("thrd_success", C.getPreprocessor()))
+    return llvm::APSInt::get(*Value);
+  return std::nullopt;
+}
+
 std::optional<DefinedSVal>
 BlockInCriticalSectionChecker::getTryLockSuccessCondition(
     ProgramStateRef State, LibraryKind Library, NonLoc RetVal,
@@ -321,9 +349,21 @@ BlockInCriticalSectionChecker::getTryLockSuccessCondition(
   case LibraryKind::Pthread:
     SuccessValue = ResultIntTy.getZeroValue();
     break;
-  case LibraryKind::C11:
+  case LibraryKind::C11: {
+    if (!ThrdSuccessValue)
+      ThrdSuccessValue = lookupThrdSuccess(C);
+    const ThrdSuccessValueTy &ThrdSuccess = *ThrdSuccessValue;
+    // A guessed value would swap the success and failure paths wherever the
+    // guess is wrong.
+    if (!ThrdSuccess ||
+        ResultIntTy.testInRange(*ThrdSuccess, /*AllowMixedSign=*/true) !=
+            APSIntType::RTR_Within)
+      return std::nullopt;
+    SuccessValue = ResultIntTy.convert(*ThrdSuccess);
+    break;
+  }
   case LibraryKind::StdCXX:
-    llvm_unreachable("No try-lock function of this library is modeled");
+    llvm_unreachable("No C++ try-lock function is modeled");
   }
   return SVB.evalEQ(State, RetVal, SVB.makeIntVal(SuccessValue))
       .getAs<DefinedSVal>();
@@ -334,8 +374,8 @@ void BlockInCriticalSectionChecker::handleTryLock(const MemRegion *MutexRegion,
                                                   const CallEvent &Call,
                                                   CheckerContext &C) const {
   ProgramStateRef State = C.getState();
-  // Without a result to compare there is nothing to split on, so assume the
-  // lock is acquired.
+  // Without a result to compare or a known success value there is nothing to
+  // split on, so assume the lock is acquired.
   std::optional<NonLoc> RetVal = Call.getReturnValue().getAs<NonLoc>();
   std::optional<DefinedSVal> Success =
       RetVal ? getTryLockSuccessCondition(State, Library, *RetVal,

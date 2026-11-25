@@ -127,7 +127,7 @@ void testBlockInCriticalSectionC11Locks(mtx_t *mutex) {
           // expected-note@-1 {{Call to blocking function 'recv' inside of critical section}}
   mtx_unlock(mutex);
 
-  mtx_timedlock(mutex, nullptr); // expected-note 5{{Entering critical section here}}
+  mtx_timedlock(mutex, nullptr); // expected-note 5{{Assuming the lock is acquired; entering critical section here}}
   sleep(3); // expected-warning {{Call to blocking function 'sleep' inside of critical section}}
             // expected-note@-1 {{Call to blocking function 'sleep' inside of critical section}}
   getc(stream); // expected-warning {{Call to blocking function 'getc' inside of critical section}}
@@ -140,7 +140,7 @@ void testBlockInCriticalSectionC11Locks(mtx_t *mutex) {
           // expected-note@-1 {{Call to blocking function 'recv' inside of critical section}}
   mtx_unlock(mutex);
 
-  mtx_trylock(mutex); // expected-note 5{{Entering critical section here}}
+  mtx_trylock(mutex); // expected-note 5{{Assuming the lock is acquired; entering critical section here}}
   sleep(3); // expected-warning {{Call to blocking function 'sleep' inside of critical section}}
             // expected-note@-1 {{Call to blocking function 'sleep' inside of critical section}}
   getc(stream); // expected-warning {{Call to blocking function 'getc' inside of critical section}}
@@ -330,6 +330,21 @@ void testTrylockFailureBranch(pthread_mutex_t *m) {
     clang_analyzer_warnIfReached(); // expected-warning {{REACHABLE}}
                                     // expected-note@-1 {{REACHABLE}}
     sleep(10); // no-warning
+  }
+}
+
+// thrd_success is not declared here, so the failure is not modeled.
+void testC11TrylockWithoutThrdSuccess(mtx_t *m) {
+  if (mtx_trylock(m) != 0) { // expected-note 2 {{Assuming the lock is acquired; entering critical section here}}
+                             // expected-note@-1 {{Taking true branch}}
+                             // expected-note@-2 {{Taking false branch}}
+                             // expected-note@-3 {{Assuming the condition is true}}
+                             // expected-note@-4 {{Assuming the condition is false}}
+    sleep(10); // expected-warning {{Call to blocking function 'sleep' inside of critical section}}
+               // expected-note@-1 {{Call to blocking function 'sleep' inside of critical section}}
+  } else {
+    sleep(10); // expected-warning {{Call to blocking function 'sleep' inside of critical section}}
+               // expected-note@-1 {{Call to blocking function 'sleep' inside of critical section}}
   }
 }
 
