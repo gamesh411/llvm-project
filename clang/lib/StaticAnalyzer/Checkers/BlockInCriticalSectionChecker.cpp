@@ -93,6 +93,14 @@ enum class RoleKind {
   Unlock,
 };
 
+// The library a function belongs to. It selects how a try-lock reports
+// success.
+enum class LibraryKind {
+  Pthread,
+  C11,
+  StdCXX,
+};
+
 // llvm::function_ref does not reject stateful functors/capturing lambdas, so
 // function pointers are used to avoid future issues coming from those objects'
 // lifetimes (more specifically to prevent such configuration entries from
@@ -102,6 +110,7 @@ using FilterFn = bool (*)(const CallEvent &);
 
 struct ThreadingCallDescription {
   RoleKind Role;
+  LibraryKind Library;
   GetRegionFn GetRegion = getFirstArgRegion;
   FilterFn Filter = [](const CallEvent &) { return true; };
 };
@@ -169,28 +178,34 @@ private:
       // presence of the name parts "std" and "lock"/"unlock".
       // TODO: Ensure that CallDescription understands inherited methods.
       {{CDM::CXXMethod, {"std", /*"mutex",*/ "lock"}, 0},
-       {RoleKind::Lock, getCXXThisRegion}},
+       {RoleKind::Lock, LibraryKind::StdCXX, getCXXThisRegion}},
       {{CDM::CXXMethod, {"std", /*"mutex",*/ "unlock"}, 0},
-       {RoleKind::Unlock, getCXXThisRegion}},
-      {{CDM::CLibrary, {"pthread_mutex_lock"}, 1}, {RoleKind::Lock}},
-      {{CDM::CLibrary, {"pthread_mutex_unlock"}, 1}, {RoleKind::Unlock}},
-      {{CDM::CLibrary, {"mtx_lock"}, 1}, {RoleKind::Lock}},
-      {{CDM::CLibrary, {"mtx_unlock"}, 1}, {RoleKind::Unlock}},
-      {{CDM::CLibrary, {"pthread_mutex_trylock"}, 1}, {RoleKind::Lock}},
-      {{CDM::CLibrary, {"mtx_trylock"}, 1}, {RoleKind::Lock}},
-      {{CDM::CLibrary, {"mtx_timedlock"}, 2}, {RoleKind::Lock}},
+       {RoleKind::Unlock, LibraryKind::StdCXX, getCXXThisRegion}},
+      {{CDM::CLibrary, {"pthread_mutex_lock"}, 1},
+       {RoleKind::Lock, LibraryKind::Pthread}},
+      {{CDM::CLibrary, {"pthread_mutex_unlock"}, 1},
+       {RoleKind::Unlock, LibraryKind::Pthread}},
+      {{CDM::CLibrary, {"mtx_lock"}, 1}, {RoleKind::Lock, LibraryKind::C11}},
+      {{CDM::CLibrary, {"mtx_unlock"}, 1},
+       {RoleKind::Unlock, LibraryKind::C11}},
+      {{CDM::CLibrary, {"pthread_mutex_trylock"}, 1},
+       {RoleKind::Lock, LibraryKind::Pthread}},
+      {{CDM::CLibrary, {"mtx_trylock"}, 1}, {RoleKind::Lock, LibraryKind::C11}},
+      {{CDM::CLibrary, {"mtx_timedlock"}, 2},
+       {RoleKind::Lock, LibraryKind::C11}},
       {{CDM::CXXMethod, {"lock_guard", "lock_guard"}},
-       {RoleKind::Lock, getObjectUnderConstruction}},
+       {RoleKind::Lock, LibraryKind::StdCXX, getObjectUnderConstruction}},
       {{CDM::CXXMethod, {"lock_guard", "~lock_guard"}},
-       {RoleKind::Unlock, getCXXDestructorThisRegion}},
+       {RoleKind::Unlock, LibraryKind::StdCXX, getCXXDestructorThisRegion}},
       {{CDM::CXXMethod, {"unique_lock", "unique_lock"}},
-       {RoleKind::Lock, getObjectUnderConstruction, isNotDeferLockUniqueLock}},
+       {RoleKind::Lock, LibraryKind::StdCXX, getObjectUnderConstruction,
+        isNotDeferLockUniqueLock}},
       {{CDM::CXXMethod, {"unique_lock", "~unique_lock"}},
-       {RoleKind::Unlock, getCXXDestructorThisRegion}},
+       {RoleKind::Unlock, LibraryKind::StdCXX, getCXXDestructorThisRegion}},
       {{CDM::CXXMethod, {"scoped_lock", "scoped_lock"}},
-       {RoleKind::Lock, getObjectUnderConstruction}},
+       {RoleKind::Lock, LibraryKind::StdCXX, getObjectUnderConstruction}},
       {{CDM::CXXMethod, {"scoped_lock", "~scoped_lock"}},
-       {RoleKind::Unlock, getCXXDestructorThisRegion}},
+       {RoleKind::Unlock, LibraryKind::StdCXX, getCXXDestructorThisRegion}},
   };
 
   const CallDescriptionSet BlockingFunctions{{CDM::CLibrary, {"sleep"}},
@@ -213,11 +228,10 @@ private:
   [[nodiscard]] const ThreadingCallDescription *
   lookupThreadingCall(const CallEvent &Call) const;
 
-  void handleLock(const ThreadingCallDescription &Desc, const CallEvent &Call,
+  void handleLock(const MemRegion *MutexRegion, const CallEvent &Call,
                   CheckerContext &C, ProgramStateRef State) const;
 
-  void handleUnlock(const ThreadingCallDescription &Desc, const CallEvent &Call,
-                    CheckerContext &C) const;
+  void handleUnlock(const MemRegion *MutexRegion, CheckerContext &C) const;
 
   [[nodiscard]] bool isBlockingInCritSection(const CallEvent &Call,
                                              CheckerContext &C) const;
@@ -263,26 +277,18 @@ static const MemRegion *getMutexRegion(const CallEvent &Call,
   return skipStdBaseClassRegion(Desc.GetRegion(Call));
 }
 
-void BlockInCriticalSectionChecker::handleLock(
-    const ThreadingCallDescription &Desc, const CallEvent &Call,
-    CheckerContext &C, ProgramStateRef State) const {
-  const MemRegion *MutexRegion = getMutexRegion(Call, Desc);
-  if (!MutexRegion)
-    return;
-
+void BlockInCriticalSectionChecker::handleLock(const MemRegion *MutexRegion,
+                                               const CallEvent &Call,
+                                               CheckerContext &C,
+                                               ProgramStateRef State) const {
   const CritSectionMarker MarkToAdd{Call.getOriginExpr(), MutexRegion};
   ProgramStateRef StateWithLockEvent =
       State->add<ActiveCritSections>(MarkToAdd);
   C.addTransition(StateWithLockEvent, createCritSectionNote(MarkToAdd, C));
 }
 
-void BlockInCriticalSectionChecker::handleUnlock(
-    const ThreadingCallDescription &Desc, const CallEvent &Call,
-    CheckerContext &C) const {
-  const MemRegion *MutexRegion = getMutexRegion(Call, Desc);
-  if (!MutexRegion)
-    return;
-
+void BlockInCriticalSectionChecker::handleUnlock(const MemRegion *MutexRegion,
+                                                 CheckerContext &C) const {
   ProgramStateRef State = C.getState();
   const auto ActiveSections = State->get<ActiveCritSections>();
   const auto MostRecentLock =
@@ -327,12 +333,16 @@ void BlockInCriticalSectionChecker::checkPostCall(const CallEvent &Call,
   if (!Desc)
     return;
 
+  const MemRegion *MutexRegion = getMutexRegion(Call, *Desc);
+  if (!MutexRegion)
+    return;
+
   switch (Desc->Role) {
   case RoleKind::Lock:
-    handleLock(*Desc, Call, C, C.getState());
+    handleLock(MutexRegion, Call, C, C.getState());
     return;
   case RoleKind::Unlock:
-    handleUnlock(*Desc, Call, C);
+    handleUnlock(MutexRegion, C);
     return;
   }
 }
@@ -363,7 +373,8 @@ bool BlockInCriticalSectionChecker::evalCall(const CallEvent &Call,
                                      C.blockCount(), C.getStackFrame(),
                                      /*CausesPointerEscape=*/false);
   }
-  handleLock(*Desc, Call, C, State);
+  if (const MemRegion *MutexRegion = getMutexRegion(Call, *Desc))
+    handleLock(MutexRegion, Call, C, State);
   return true;
 }
 
